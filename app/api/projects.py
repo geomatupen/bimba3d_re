@@ -24,6 +24,13 @@ from app.models.project import (
 from app.services import status, storage, colmap, gsplat, files
 from worker import pipeline
 
+COLMAP_TO_OPENGL = (1.0, -1.0, -1.0)
+
+
+def _colmap_to_opengl_coords(x: float, y: float, z: float) -> tuple[float, float, float]:
+    ax, ay, az = COLMAP_TO_OPENGL
+    return float(ax * x), float(ay * y), float(az * z)
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -538,6 +545,7 @@ def download_sparse_json(project_id: str):
                     try:
                         # parts[0]=id, [1..3]=xyz, [4..6]=rgb
                         x = float(parts[1]); y = float(parts[2]); z = float(parts[3])
+                        x, y, z = _colmap_to_opengl_coords(x, y, z)
                         r = int(parts[4]); g = int(parts[5]); b = int(parts[6])
                         points.append({"x": x, "y": y, "z": z, "r": r, "g": g, "b": b})
                     except Exception:
@@ -560,6 +568,7 @@ def download_sparse_json(project_id: str):
                     try:
                         pid = struct.unpack("<Q", f.read(8))[0]
                         x, y, z = struct.unpack("<ddd", f.read(24))
+                        x, y, z = _colmap_to_opengl_coords(x, y, z)
                         r, g, b = struct.unpack("BBB", f.read(3))
                         error = struct.unpack("<d", f.read(8))[0]
                         track_len = struct.unpack("<Q", f.read(8))[0]

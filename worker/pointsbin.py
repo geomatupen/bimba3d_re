@@ -11,11 +11,18 @@ import math
 import struct
 from pathlib import Path
 
+COLMAP_TO_OPENGL = (1.0, -1.0, -1.0)
+
 logger = logging.getLogger(__name__)
 
 
 def _is_finite(value: float) -> bool:
     return value is not None and isinstance(value, float) and math.isfinite(value)
+
+
+def _colmap_to_opengl_coords(x: float, y: float, z: float) -> tuple[float, float, float]:
+    ax, ay, az = COLMAP_TO_OPENGL
+    return float(ax * x), float(ay * y), float(az * z)
 
 
 def convert_colmap_recon_to_pointsbin(recon_dir: Path) -> int:
@@ -57,7 +64,8 @@ def convert_colmap_recon_to_pointsbin(recon_dir: Path) -> int:
                         continue
                     if not (_is_finite(x) and _is_finite(y) and _is_finite(z)):
                         continue
-                    points.append((x, y, z, r, g, b))
+                    ox, oy, oz = _colmap_to_opengl_coords(x, y, z)
+                    points.append((ox, oy, oz, r, g, b))
         except Exception as err:
             logger.warning("Failed to parse points3D.txt: %s", err)
 
@@ -99,7 +107,8 @@ def convert_colmap_recon_to_pointsbin(recon_dir: Path) -> int:
                             pass
                     if not (_is_finite(float(x)) and _is_finite(float(y)) and _is_finite(float(z))):
                         continue
-                    points.append((float(x), float(y), float(z), int(r), int(g), int(b)))
+                    ox, oy, oz = _colmap_to_opengl_coords(float(x), float(y), float(z))
+                    points.append((ox, oy, oz, int(r), int(g), int(b)))
         except Exception as err:
             logger.warning("Failed to parse points3D.bin: %s", err)
     else:

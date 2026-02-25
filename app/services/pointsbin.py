@@ -3,11 +3,18 @@ import math
 import logging
 from pathlib import Path
 
+COLMAP_TO_OPENGL = (1.0, -1.0, -1.0)
+
 logger = logging.getLogger(__name__)
 
 
 def _is_finite(v: float) -> bool:
     return v is not None and isinstance(v, float) and math.isfinite(v)
+
+
+def _colmap_to_opengl_coords(x: float, y: float, z: float) -> tuple[float, float, float]:
+    ax, ay, az = COLMAP_TO_OPENGL
+    return float(ax * x), float(ay * y), float(az * z)
 
 
 def convert_colmap_recon_to_pointsbin(recon_dir: Path) -> int:
@@ -42,6 +49,7 @@ def convert_colmap_recon_to_pointsbin(recon_dir: Path) -> int:
                         continue
                     try:
                         x = float(parts[1]); y = float(parts[2]); z = float(parts[3])
+                        x, y, z = _colmap_to_opengl_coords(x, y, z)
                         r = int(parts[4]); g = int(parts[5]); b = int(parts[6])
                         if not (_is_finite(x) and _is_finite(y) and _is_finite(z)):
                             continue
@@ -97,7 +105,8 @@ def convert_colmap_recon_to_pointsbin(recon_dir: Path) -> int:
 
                             if not (_is_finite(x) and _is_finite(y) and _is_finite(z)):
                                 continue
-                            points.append((float(x), float(y), float(z), int(r), int(g), int(b)))
+                            x, y, z = _colmap_to_opengl_coords(float(x), float(y), float(z))
+                            points.append((x, y, z, int(r), int(g), int(b)))
                         except Exception:
                             # On parse error, try to continue to next point
                             continue

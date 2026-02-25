@@ -8,6 +8,14 @@ import numpy as np
 from pathlib import Path
 from typing import Tuple, Dict, List
 
+COLMAP_TO_OPENGL = np.array([
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, -1.0, 0.0, 0.0],
+    [0.0, 0.0, -1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+])
+COLMAP_TO_OPENGL_3X3 = COLMAP_TO_OPENGL[:3, :3]
+
 
 def read_cameras_binary(path: Path) -> Dict:
     """Read COLMAP cameras.bin file."""
@@ -100,6 +108,8 @@ class COLMAPDataset:
         cameras = read_cameras_binary(self.colmap_dir / "cameras.bin")
         images = read_images_binary(self.colmap_dir / "images.bin")
         self.points, self.points_rgb = read_points3D_binary(self.colmap_dir / "points3D.bin")
+        if len(self.points) > 0:
+            self.points = (COLMAP_TO_OPENGL_3X3 @ self.points.T).T
         
         # Parse camera data
         self.image_names = []
@@ -127,6 +137,7 @@ class COLMAPDataset:
             c2w[:3, :3] = R.T
             c2w[:3, 3] = -R.T @ t
             
+            c2w = COLMAP_TO_OPENGL @ c2w
             self.image_names.append(img_data["name"])
             self.camtoworlds.append(c2w)
             self.Ks.append(K)
