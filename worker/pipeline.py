@@ -2,6 +2,7 @@ import logging
 import os
 from pathlib import Path
 from app.services import colmap, storage, status, gsplat
+from worker.image_resize import normalize_max_size, prepare_training_images
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,52 @@ def run_full_pipeline(project_id: str, params: dict | None = None):
         project_dir = storage.get_project_dir(project_id)
         image_dir = project_dir / "images"
         output_dir = project_dir / "outputs"
+
+        training_image_dir_cache = None
+        training_max_size = normalize_max_size(params.get("training_image_max_size")) if params else None
+
+        def get_training_image_dir():
+            nonlocal training_image_dir_cache
+            if training_image_dir_cache is not None:
+                return training_image_dir_cache
+            if not training_max_size:
+                training_image_dir_cache = image_dir
+                return training_image_dir_cache
+            try:
+                logger.info(
+                    "Preparing resized training images for project %s (≤%d px)",
+                    project_id,
+                    training_max_size,
+                )
+                status.update_status(
+                    project_id,
+                    "processing",
+                    stage="training",
+                    stage_progress=2,
+                    message=f"📐 Resizing training images to ≤ {training_max_size}px...",
+                )
+                resized_dir, stats = prepare_training_images(image_dir, project_dir, training_max_size)
+                logger.info(
+                    "Prepared resized training set at %s (max=%d px): %s",
+                    resized_dir,
+                    training_max_size,
+                    stats,
+                )
+                status.update_status(
+                    project_id,
+                    "processing",
+                    stage="training",
+                    stage_progress=5,
+                    message=f"✅ Training images ready at ≤ {training_max_size}px",
+                )
+                training_image_dir_cache = resized_dir
+            except Exception as exc:
+                logger.warning(
+                    "Failed to prepare resized training images; using originals. Error: %s",
+                    exc,
+                )
+                training_image_dir_cache = image_dir
+            return training_image_dir_cache
         
         # Ensure directories exist
         if not image_dir.exists():
@@ -177,7 +224,8 @@ def run_full_pipeline(project_id: str, params: dict | None = None):
                 raise FileNotFoundError("Sparse model not found. Run COLMAP first.")
             logger.info(f"Running Gaussian Splatting for project: {project_id}")
             status.update_status(project_id, "processing", progress=60, stage="training", message="Training gaussians")
-            gs_output = gsplat.run_gsplat(image_dir, sparse_dir, output_dir, params or {})
+            training_dir = get_training_image_dir()
+            gs_output = gsplat.run_gsplat(training_dir, sparse_dir, output_dir, params or {})
             logger.info(f"Gaussian Splatting completed for project: {project_id}")
             current_status = status.get_status(project_id)
             if current_status.get("stop_requested", False):
@@ -211,7 +259,8 @@ def run_full_pipeline(project_id: str, params: dict | None = None):
 
             logger.info(f"Running Gaussian Splatting for project: {project_id}")
             status.update_status(project_id, "processing", progress=60, stage="training", message="Training gaussians")
-            gs_output = gsplat.run_gsplat(image_dir, sparse_dir, output_dir, params or {})
+            training_dir = get_training_image_dir()
+            gs_output = gsplat.run_gsplat(training_dir, sparse_dir, output_dir, params or {})
             logger.info(f"Gaussian Splatting completed for project: {project_id}")
             current_status = status.get_status(project_id)
             if current_status.get("stop_requested", False):

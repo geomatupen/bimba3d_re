@@ -84,6 +84,7 @@ class ProcessParams(BaseModel):
     pruning_enabled: Optional[bool] = None
     pruning_policy: Optional[str] = None
     pruning_weights: Optional[dict] = None
+    training_image_max_size: Optional[int] = None
 
 
 class EvaluationMetrics(BaseModel):

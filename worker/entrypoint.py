@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 import time
 
+from .image_resize import prepare_training_images, normalize_max_size
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -488,6 +490,40 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
     p = params or {}
     mode = p.get("mode", "baseline")  # "baseline" or "modified"
     max_steps = p.get("max_steps", 300)
+    project_dir = output_dir.parent
+    training_image_dir = image_dir
+    resize_stats = None
+    training_max_size = normalize_max_size(p.get("training_image_max_size"))
+    if training_max_size:
+        resize_msg = f"🪄 Downscaling training images to ≤ {training_max_size}px before training..."
+        logger.info("Starting training image resize pass (≤%d px)", training_max_size)
+        update_status(
+            project_dir,
+            "processing",
+            progress=54,
+            stage="training",
+            stage_progress=0,
+            message=resize_msg,
+            mode=mode,
+        )
+        try:
+            training_image_dir, resize_stats = prepare_training_images(image_dir, project_dir, training_max_size)
+            logger.info(
+                "Finished resizing training images (%s)",
+                resize_stats,
+            )
+            update_status(
+                project_dir,
+                "processing",
+                stage="training",
+                stage_progress=5,
+                message=f"✅ Training images ready at ≤ {training_max_size}px",
+                mode=mode,
+            )
+        except Exception as exc:
+            training_image_dir = image_dir
+            resize_stats = None
+            logger.warning("Failed to prepare resized training images; using originals. Error: %s", exc)
 
     stop_flag = output_dir.parent / "stop_requested"
 
@@ -560,11 +596,21 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
     except Exception:
         pass
 
+    init_message = f"🚀 Initializing Gaussian Splatting trainer ({'GPU ⚡' if device == 'cuda' else 'CPU'}, {mode} mode)..."
+    if resize_stats:
+        init_message = (
+            f"{init_message}\n📐 Training images limited to {training_max_size}px"
+        )
+
     update_status(
-        output_dir.parent, "processing", progress=55, stage="training", stage_progress=0,
-        message=f"🚀 Initializing Gaussian Splatting trainer ({'GPU ⚡' if device == 'cuda' else 'CPU'}, {mode} mode)...",
+        project_dir,
+        "processing",
+        progress=55,
+        stage="training",
+        stage_progress=0,
+        message=init_message,
         mode=mode,
-        timing={"start": gsplat_start}
+        timing={"start": gsplat_start},
     )
 
     # Normalize colmap_dir: if provided dir lacks cameras.bin but has a '0' subdir with cameras.bin, use it
@@ -577,7 +623,7 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
         pass
 
     trainer = GsplatTrainer(
-        image_dir=image_dir,
+        image_dir=training_image_dir,
         colmap_dir=colmap_dir,
         output_dir=output_dir,
         mode=mode,
