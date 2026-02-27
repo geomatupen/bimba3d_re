@@ -91,6 +91,8 @@ class ProcessParams(BaseModel):
     # LiteGS-specific knobs
     litegs_target_primitives: Optional[int] = None
     litegs_alpha_shrink: Optional[float] = None
+    # Sparse selection preference ("best" or specific folder name like "0")
+    sparse_preference: Optional[str] = None
 
 
 class EvaluationMetrics(BaseModel):

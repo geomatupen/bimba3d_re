@@ -7,9 +7,11 @@ Runs COLMAP + faithful gsplat training (with research hooks) + export.
 import argparse
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 import time
 
@@ -20,6 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 ENGINE_SUBDIR = "engines"
+BEST_SPARSE_META = ".best_sparse_selection.json"
 
 
 def update_status(
@@ -163,6 +166,142 @@ def _ensure_symlink(source: Path, link_path: Path):
             link_path.unlink(missing_ok=True)
     link_path.parent.mkdir(parents=True, exist_ok=True)
     link_path.symlink_to(source_path, target_is_directory=source_path.is_dir())
+
+
+def _compute_sparse_signature(colmap_dir: Path) -> str:
+    """Return a lightweight signature for cache validation."""
+    colmap_dir = Path(colmap_dir)
+    for name in ("cameras.bin", "cameras.txt"):
+        candidate = colmap_dir / name
+        if candidate.exists():
+            stat = candidate.stat()
+            return f"{stat.st_mtime_ns}-{stat.st_size}"
+    # Fallback if no expected files are present
+    return f"missing-{hash(colmap_dir)}"
+
+
+def _convert_to_pinhole_params(model: str, params: list[float]) -> tuple[float, float, float, float]:
+    """Map various COLMAP camera models to PINHOLE intrinsics."""
+    if len(params) < 3:
+        raise ValueError(f"Camera model {model} has too few parameters")
+
+    model = model.upper()
+    if model == "PINHOLE":
+        if len(params) < 4:
+            raise ValueError("PINHOLE camera missing parameters")
+        return params[0], params[1], params[2], params[3]
+
+    if model in {"SIMPLE_PINHOLE", "SIMPLE_RADIAL", "SIMPLE_RADIAL_FISHEYE"}:
+        f = params[0]
+        cx = params[1]
+        cy = params[2]
+        return f, f, cx, cy
+
+    if model in {"RADIAL", "RADIAL_FISHEYE"}:
+        f = params[0]
+        cx = params[1]
+        cy = params[2]
+        return f, f, cx, cy
+
+    if model in {"OPENCV", "OPENCV_FISHEYE", "FULL_OPENCV", "THIN_PRISM_FISHEYE"}:
+        if len(params) < 4:
+            raise ValueError(f"Camera model {model} missing fx/fy/cx/cy")
+        return params[0], params[1], params[2], params[3]
+
+    if model == "FOV":
+        f = params[0]
+        cx = params[1]
+        cy = params[2]
+        return f, f, cx, cy
+
+    raise ValueError(f"Unsupported COLMAP camera model {model}")
+
+
+def _rewrite_cameras_file_as_pinhole(cameras_txt: Path) -> tuple[bool, set[str]]:
+    """Rewrite cameras.txt so every entry becomes PINHOLE."""
+    models_seen: set[str] = set()
+    converted = False
+    updated_lines: list[str] = []
+
+    with open(cameras_txt, "r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                updated_lines.append(line)
+                continue
+            parts = stripped.split()
+            if len(parts) < 5:
+                updated_lines.append(line)
+                continue
+            camera_id, model, width, height = parts[:4]
+            params = list(map(float, parts[4:]))
+            models_seen.add(model)
+            fx, fy, cx, cy = _convert_to_pinhole_params(model, params)
+            new_line = f"{camera_id} PINHOLE {width} {height} {fx:.12f} {fy:.12f} {cx:.12f} {cy:.12f}\n"
+            updated_lines.append(new_line)
+            if model != "PINHOLE":
+                converted = True
+
+    if converted:
+        with open(cameras_txt, "w", encoding="utf-8") as handle:
+            handle.writelines(updated_lines)
+
+    return converted, models_seen
+
+
+def _prepare_pinhole_sparse_for_litegs(colmap_dir: Path, output_dir: Path) -> Path:
+    """Ensure LiteGS sees a PINHOLE-only sparse reconstruction."""
+    colmap_dir = Path(colmap_dir)
+    cache_root = Path(output_dir) / "litegs" / "cache" / "pinhole_sparse"
+    cache_root.mkdir(parents=True, exist_ok=True)
+
+    signature = _compute_sparse_signature(colmap_dir)
+    cached_dir = cache_root / colmap_dir.name
+    cache_sig_file = cached_dir / ".source_signature"
+    if cached_dir.exists() and cache_sig_file.exists():
+        try:
+            if cache_sig_file.read_text(encoding="utf-8").strip() == signature:
+                logger.info("Using cached PINHOLE sparse model at %s", cached_dir)
+                return cached_dir
+        except Exception:
+            logger.debug("Failed to read LiteGS cache signature at %s", cache_sig_file)
+
+    with tempfile.TemporaryDirectory(dir=cache_root, prefix="litegs_sparse_") as tmp_parent:
+        txt_dir = Path(tmp_parent) / "txt"
+        txt_dir.mkdir(parents=True, exist_ok=True)
+        _run_cmd_with_retry([
+            "colmap", "model_converter",
+            "--input_path", str(colmap_dir),
+            "--output_path", str(txt_dir),
+            "--output_type", "TXT",
+        ])
+
+        cameras_txt = txt_dir / "cameras.txt"
+        if not cameras_txt.exists():
+            raise FileNotFoundError(f"COLMAP cameras.txt missing in {txt_dir}")
+
+        converted, models = _rewrite_cameras_file_as_pinhole(cameras_txt)
+        if not converted:
+            logger.info("LiteGS sparse already PINHOLE-compatible (models: %s)", ", ".join(sorted(models)))
+            return colmap_dir
+
+        if cached_dir.exists():
+            shutil.rmtree(cached_dir, ignore_errors=True)
+        cached_dir.mkdir(parents=True, exist_ok=True)
+
+        _run_cmd_with_retry([
+            "colmap", "model_converter",
+            "--input_path", str(txt_dir),
+            "--output_path", str(cached_dir),
+            "--output_type", "BIN",
+        ])
+        cache_sig_file.write_text(signature, encoding="utf-8")
+        logger.info(
+            "Prepared PINHOLE sparse model for LiteGS at %s (source models: %s)",
+            cached_dir,
+            ", ".join(sorted(models)),
+        )
+        return cached_dir
 
 
 def _find_latest_litegs_checkpoint(model_root: Path) -> Path | None:
@@ -309,12 +448,44 @@ def _cleanup_sqlite_sidecars(db_path: Path):
                 logger.warning(f"Failed to remove sidecar {sidecar}: {e}")
 
 
-def _select_best_sparse_model(sparse_root: Path, image_dir: Path) -> Path:
-    """Return the sparse reconstruction containing the most registered images/points."""
+def _persist_best_sparse_choice(sparse_root: Path, best_entry: dict, candidates: list[dict]):
+    """Record the strongest sparse candidate so other components can reuse it."""
     sparse_root = Path(sparse_root)
-    if not sparse_root.exists():
-        raise FileNotFoundError(f"Sparse directory not found: {sparse_root}")
+    meta_file = sparse_root / BEST_SPARSE_META
 
+    payload = {
+        "relative_path": best_entry.get("relative_path"),
+        "images": int(best_entry.get("images", 0) or 0),
+        "points": int(best_entry.get("points", 0) or 0),
+        "timestamp": time.time(),
+        "candidates": [
+            {
+                "relative_path": item.get("relative_path"),
+                "images": item.get("images"),
+                "points": item.get("points"),
+                "label": item.get("label"),
+            }
+            for item in candidates
+        ],
+    }
+
+    try:
+        tmp_meta = meta_file.with_suffix(meta_file.suffix + ".tmp")
+        with open(tmp_meta, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+        tmp_meta.replace(meta_file)
+        logger.info(
+            "Recorded best sparse reconstruction %s (%s images, %s points)",
+            payload["relative_path"],
+            payload["images"],
+            payload["points"],
+        )
+    except Exception as exc:
+        logger.debug("Failed to persist best sparse metadata at %s: %s", meta_file, exc)
+
+
+def _evaluate_sparse_candidates(sparse_root: Path, image_dir: Path) -> list[dict]:
+    sparse_root = Path(sparse_root)
     candidates: list[Path] = []
     if (sparse_root / "cameras.bin").exists():
         candidates.append(sparse_root)
@@ -329,13 +500,7 @@ def _select_best_sparse_model(sparse_root: Path, image_dir: Path) -> Path:
         if (child / "cameras.bin").exists():
             candidates.append(child)
 
-    if not candidates:
-        raise RuntimeError(f"No COLMAP reconstructions found under {sparse_root}")
-
-    best_path = None
-    best_images = -1
-    best_points = -1
-
+    summaries: list[dict] = []
     for candidate in candidates:
         num_images = -1
         num_points = -1
@@ -352,21 +517,81 @@ def _select_best_sparse_model(sparse_root: Path, image_dir: Path) -> Path:
         except Exception as exc:
             logger.warning("Failed to load sparse candidate %s: %s", candidate, exc)
 
-        if num_images > best_images or (num_images == best_images and num_points > best_points):
-            best_path = candidate
-            best_images = num_images
-            best_points = num_points
+        try:
+            rel_path = os.path.relpath(candidate, sparse_root)
+        except Exception:
+            rel_path = candidate.name
 
-    if best_path is None:
-        raise RuntimeError(f"Unable to determine best sparse reconstruction under {sparse_root}")
+        if rel_path in {".", ""}:
+            label = "root"
+            rel_path = "."
+        else:
+            label = Path(rel_path).name
 
-    logger.info(
-        "Selected sparse reconstruction %s (%d images, %d points)",
-        best_path,
-        best_images,
-        best_points,
-    )
-    return best_path
+        summaries.append(
+            {
+                "relative_path": rel_path,
+                "label": label,
+                "images": max(num_images, 0),
+                "points": max(num_points, 0),
+            }
+        )
+
+    return summaries
+
+
+def _select_best_sparse_model(sparse_root: Path, image_dir: Path, preference: str | None = None) -> Path:
+    """Return the sparse reconstruction honoring user preference when possible."""
+    sparse_root = Path(sparse_root)
+    if not sparse_root.exists():
+        raise FileNotFoundError(f"Sparse directory not found: {sparse_root}")
+
+    summaries = _evaluate_sparse_candidates(sparse_root, image_dir)
+    if not summaries:
+        raise RuntimeError(f"No COLMAP reconstructions found under {sparse_root}")
+
+    def _score(entry: dict) -> tuple[int, int]:
+        return int(entry.get("images", 0) or 0), int(entry.get("points", 0) or 0)
+
+    best_entry = max(summaries, key=_score)
+    _persist_best_sparse_choice(sparse_root, best_entry, summaries)
+
+    chosen_entry = best_entry
+    pref = (preference or "best").strip()
+    if pref and pref.lower() != "best":
+        norm = pref.lower()
+        for entry in summaries:
+            rel = (entry.get("relative_path") or "").lower()
+            label = (entry.get("label") or "").lower()
+            if norm in {rel, label, Path(rel or ".").name.lower()}:
+                chosen_entry = entry
+                logger.info(
+                    "Using user-selected sparse candidate '%s' (%s images, %s points)",
+                    entry.get("relative_path"),
+                    entry.get("images"),
+                    entry.get("points"),
+                )
+                break
+        else:
+            logger.warning(
+                "Sparse preference '%s' not found; defaulting to best candidate %s",
+                preference,
+                best_entry.get("relative_path"),
+            )
+    else:
+        logger.info(
+            "Using best sparse candidate %s (%s images, %s points)",
+            best_entry.get("relative_path"),
+            best_entry.get("images"),
+            best_entry.get("points"),
+        )
+
+    rel_path = chosen_entry.get("relative_path") or "."
+    target = (sparse_root / rel_path).resolve()
+    base = sparse_root.resolve()
+    if target != base and base not in target.parents:
+        raise RuntimeError(f"Unsafe sparse selection resolved outside project: {target}")
+    return target
 
 
 def _get_engine_output_dir(base_output_dir: Path, engine: str) -> Path:
@@ -1037,8 +1262,14 @@ def run_litegs_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
 
     _ensure_symlink(Path(image_dir), dataset_root / "images")
     colmap_sparse_root = Path(colmap_dir)
-    sparse_src = colmap_sparse_root.parent if colmap_sparse_root.name == "0" else colmap_sparse_root
-    _ensure_symlink(sparse_src, dataset_root / "sparse")
+
+    processed_sparse = _prepare_pinhole_sparse_for_litegs(colmap_sparse_root, output_dir)
+
+    litegs_sparse_root = dataset_root / "sparse"
+    if litegs_sparse_root.is_symlink():
+        litegs_sparse_root.unlink()
+    litegs_sparse_root.mkdir(parents=True, exist_ok=True)
+    _ensure_symlink(processed_sparse, litegs_sparse_root / "0")
 
     lp, op, pp, dp = litegs_config.get_default_arg()
     lp.source_path = str(dataset_root)
@@ -1147,6 +1378,9 @@ def main():
     project_dir = Path(args.data_dir) / args.project_id
     image_dir = project_dir / "images"
     output_dir = project_dir / "outputs"
+    sparse_preference = params.get("sparse_preference") if isinstance(params, dict) else None
+    if isinstance(sparse_preference, str):
+        sparse_preference = sparse_preference.strip() or None
 
 
     # Configure file logging per project
@@ -1213,6 +1447,10 @@ def main():
             update_status(project_dir, "processing", progress=1, stage="colmap", message="🚀 Starting COLMAP structure-from-motion pipeline...", engine=engine)
             colmap_dir = run_colmap(active_image_dir, output_dir, params)
             logger.info("COLMAP completed")
+            try:
+                _select_best_sparse_model(output_dir / "sparse", active_image_dir, sparse_preference)
+            except Exception as exc:
+                logger.warning("Failed to evaluate sparse candidates after COLMAP: %s", exc)
             # Mark COLMAP as completed for frontend tick/green
             update_status(project_dir, "completed", progress=100, stage="colmap", message="✅ Sparse 3D reconstruction complete!")
             time.sleep(1.5)
@@ -1221,7 +1459,7 @@ def main():
             sparse_root = output_dir / "sparse"
             if not sparse_root.exists():
                 raise RuntimeError("Sparse model not found. Run COLMAP first.")
-            colmap_dir = _select_best_sparse_model(sparse_root, active_image_dir)
+            colmap_dir = _select_best_sparse_model(sparse_root, active_image_dir, sparse_preference)
             trainer_label = "LiteGS" if engine == "litegs" else "Gaussian Splatting"
             msg = f"🎯 Starting {trainer_label} training..."
             update_status(project_dir, "processing", progress=55, stage="training", message=msg, engine=engine)
@@ -1235,7 +1473,7 @@ def main():
             colmap_dir = run_colmap(active_image_dir, output_dir, params)
             logger.info("COLMAP completed")
 
-            colmap_dir = _select_best_sparse_model(output_dir / "sparse", active_image_dir)
+            colmap_dir = _select_best_sparse_model(output_dir / "sparse", active_image_dir, sparse_preference)
             trainer_label = "LiteGS" if engine == "litegs" else "Gaussian Splatting"
             msg = f"🎯 Starting {trainer_label} training..."
             update_status(project_dir, "processing", progress=55, stage="training", message=msg, engine=engine)

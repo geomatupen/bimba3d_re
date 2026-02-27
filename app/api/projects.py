@@ -4,6 +4,8 @@ import shutil
 import json
 import time
 import re
+import os
+import struct
 from typing import Optional
 from datetime import datetime
 from pathlib import Path
@@ -26,11 +28,45 @@ from app.services import status, storage, colmap, gsplat, files
 from worker import pipeline
 
 COLMAP_TO_OPENGL = (1.0, -1.0, -1.0)
+BEST_SPARSE_META = ".best_sparse_selection.json"
 
 
 def _colmap_to_opengl_coords(x: float, y: float, z: float) -> tuple[float, float, float]:
     ax, ay, az = COLMAP_TO_OPENGL
     return float(ax * x), float(ay * y), float(az * z)
+
+
+def _resolve_sparse_candidate_dir(sparse_root: Path, rel_path: str | None) -> Path:
+    if not rel_path or rel_path in {".", ""}:
+        return sparse_root
+    try:
+        candidate = (sparse_root / rel_path).resolve()
+        base = sparse_root.resolve()
+        if candidate == base or base in candidate.parents:
+            return candidate
+    except Exception:
+        pass
+    return sparse_root
+
+
+def _read_sparse_stats(candidate_dir: Path) -> tuple[int | None, int | None]:
+    images = None
+    points = None
+    try:
+        with open(candidate_dir / "images.bin", "rb") as handle:
+            header = handle.read(8)
+            if len(header) == 8:
+                images = int(struct.unpack("<Q", header)[0])
+    except Exception:
+        pass
+    try:
+        with open(candidate_dir / "points3D.bin", "rb") as handle:
+            header = handle.read(8)
+            if len(header) == 8:
+                points = int(struct.unpack("<Q", header)[0])
+    except Exception:
+        pass
+    return images, points
 
 logger = logging.getLogger(__name__)
 
@@ -890,10 +926,10 @@ def download_splats_bin(project_id: str, engine: str | None = Query(None)):
 
 
 @router.get("/{project_id}/download/points.bin")
-def download_points_bin(project_id: str):
+def download_points_bin(project_id: str, candidate: str | None = Query(None, description="best or specific sparse folder name")):
     """Download compact `points.bin` generated from COLMAP reconstruction.
 
-    The converter writes `points.bin` into the reconstruction directory (e.g. outputs/sparse/0/points.bin).
+    The converter writes `points.bin` into each reconstruction directory (e.g. outputs/sparse/0/points.bin).
     """
     try:
         project_dir = DATA_DIR / project_id
@@ -904,11 +940,76 @@ def download_points_bin(project_id: str):
         if not sparse_root.exists():
             raise HTTPException(status_code=404, detail="Sparse outputs not found")
 
-        # Find first recon dir with points.bin
-        for d in sorted([p for p in sparse_root.iterdir() if p.is_dir()]):
-            p = d / "points.bin"
-            if p.exists():
-                return FileResponse(path=p, filename="points.bin", media_type="application/octet-stream")
+        def try_serve(candidate_dir: Path):
+            points_path = candidate_dir / "points.bin"
+            if points_path.exists():
+                return FileResponse(path=points_path, filename="points.bin", media_type="application/octet-stream")
+            return None
+
+        def resolve_relative(rel_path: str | None) -> Path | None:
+            if rel_path in (None, "", ".", "root"):
+                target = sparse_root
+            else:
+                target = sparse_root / rel_path
+            try:
+                resolved = target.resolve()
+                base = sparse_root.resolve()
+                if resolved == base or base in resolved.parents:
+                    return resolved
+            except Exception:
+                return None
+            return None
+
+        def serve_relative(rel_path: str | None):
+            target = resolve_relative(rel_path)
+            if target and target.exists():
+                served = try_serve(target)
+                if served:
+                    return served
+            return None
+
+        meta_path = sparse_root / BEST_SPARSE_META
+        meta = None
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+            except Exception as exc:
+                logger.debug("Failed to parse sparse metadata at %s: %s", meta_path, exc)
+
+        preferred_rel = meta.get("relative_path") if isinstance(meta, dict) else None
+
+        # Honor explicit candidate requests first
+        if candidate:
+            token = candidate.strip()
+            if token:
+                if token.lower() == "best" and preferred_rel:
+                    served = serve_relative(preferred_rel)
+                    if served:
+                        return served
+                else:
+                    served = serve_relative(token)
+                    if served:
+                        return served
+
+        # Default to best-known reconstruction
+        if preferred_rel:
+            served = serve_relative(preferred_rel)
+            if served:
+                return served
+
+        # Fall back to first available reconstruction (original behavior)
+        candidates = []
+        if (sparse_root / "points.bin").exists():
+            candidates.append(sparse_root)
+        try:
+            candidates.extend(sorted([p for p in sparse_root.iterdir() if p.is_dir()]))
+        except Exception as exc:
+            logger.warning("Failed to enumerate sparse directories under %s: %s", sparse_root, exc)
+
+        for candidate_dir in candidates:
+            served = try_serve(candidate_dir)
+            if served:
+                return served
 
         raise HTTPException(status_code=404, detail="points.bin not found; reconstruction may not be converted yet")
     except HTTPException:
@@ -916,6 +1017,82 @@ def download_points_bin(project_id: str):
     except Exception as e:
         logger.error(f"Error downloading points.bin: {e}")
         raise HTTPException(status_code=500, detail="Failed to download points.bin")
+
+
+@router.get("/{project_id}/sparse/candidates")
+def list_sparse_candidates(project_id: str):
+    """Return metadata about available sparse reconstructions for UI selection."""
+    project_dir = DATA_DIR / project_id
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    sparse_root = project_dir / "outputs" / "sparse"
+    if not sparse_root.exists():
+        return {"candidates": [], "best_relative_path": None, "updated_at": None}
+
+    meta_path = sparse_root / BEST_SPARSE_META
+    meta = None
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except Exception as exc:
+            logger.debug("Failed to parse sparse metadata at %s: %s", meta_path, exc)
+
+    candidates = []
+    best_rel = None
+    updated_at = None
+    if isinstance(meta, dict):
+        best_rel = meta.get("relative_path")
+        updated_at = meta.get("timestamp")
+        raw_candidates = meta.get("candidates") or []
+        for entry in raw_candidates:
+            if not isinstance(entry, dict):
+                continue
+            rel_path = entry.get("relative_path") or "."
+            candidate_dir = _resolve_sparse_candidate_dir(sparse_root, rel_path)
+            images = entry.get("images")
+            points = entry.get("points")
+            if images is None or points is None:
+                computed_images, computed_points = _read_sparse_stats(candidate_dir)
+                if images is None:
+                    images = computed_images
+                if points is None:
+                    points = computed_points
+            candidates.append(
+                {
+                    "relative_path": rel_path,
+                    "label": entry.get("label"),
+                    "images": images,
+                    "points": points,
+                }
+            )
+
+    if not candidates:
+        try:
+            for child in sorted(p for p in sparse_root.iterdir() if p.is_dir() and (p / "points.bin").exists()):
+                try:
+                    rel_path = os.path.relpath(child, sparse_root)
+                except Exception:
+                    rel_path = child.name
+                if rel_path in {".", ""}:
+                    rel_path = "."
+                images, points = _read_sparse_stats(child)
+                candidates.append({
+                    "relative_path": rel_path,
+                    "label": Path(rel_path).name if rel_path != "." else "root",
+                    "images": images,
+                    "points": points,
+                })
+        except Exception as exc:
+            logger.debug("Failed to enumerate sparse fallbacks in %s: %s", sparse_root, exc)
+        if not best_rel and candidates:
+            best_rel = candidates[0].get("relative_path")
+
+    return {
+        "best_relative_path": best_rel,
+        "candidates": candidates,
+        "updated_at": updated_at,
+    }
 
 
 
