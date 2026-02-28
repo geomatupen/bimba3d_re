@@ -23,12 +23,23 @@ from app.models.project import (
     EvaluationMetrics,
     ComparisonRequest,
     ComparisonStatus,
+    SparseEditRequest,
 )
-from app.services import status, storage, colmap, gsplat, files
+from app.services import status, storage, colmap, gsplat, files, sparse_edit, pointsbin
 from worker import pipeline
 
 COLMAP_TO_OPENGL = (1.0, -1.0, -1.0)
 BEST_SPARSE_META = ".best_sparse_selection.json"
+def _load_sparse_metadata(sparse_root: Path) -> tuple[dict | None, Path]:
+    meta_path = sparse_root / BEST_SPARSE_META
+    meta = None
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except Exception as exc:
+            logger.debug("Failed to parse sparse metadata at %s: %s", meta_path, exc)
+    return meta, meta_path
+
 
 
 def _colmap_to_opengl_coords(x: float, y: float, z: float) -> tuple[float, float, float]:
@@ -67,6 +78,82 @@ def _read_sparse_stats(candidate_dir: Path) -> tuple[int | None, int | None]:
     except Exception:
         pass
     return images, points
+
+
+def _resolve_sparse_candidate_for_edit(project_dir: Path, requested: str | None) -> tuple[Path, str]:
+    sparse_root = project_dir / "outputs" / "sparse"
+    if not sparse_root.exists():
+        raise HTTPException(status_code=404, detail="Sparse outputs not found")
+
+    meta, _ = _load_sparse_metadata(sparse_root)
+    token = (requested or "").strip()
+    token_lower = token.lower()
+
+    def candidate_for(rel_path: str) -> Path | None:
+        resolved = _resolve_sparse_candidate_dir(sparse_root, rel_path)
+        if resolved.exists() and (
+            (resolved / "points3D.bin").exists() or (resolved / "points3D.txt").exists()
+        ):
+            return resolved
+        return None
+
+    if token and token_lower not in {"best", "auto"}:
+        normalized = "." if token in {"", ".", "root"} else token
+        candidate_dir = candidate_for(normalized)
+        if not candidate_dir:
+            raise HTTPException(status_code=404, detail="Requested sparse reconstruction not found")
+        return candidate_dir, normalized
+
+    preferred_rel = meta.get("relative_path") if isinstance(meta, dict) else None
+    if preferred_rel:
+        candidate_dir = candidate_for(preferred_rel)
+        if candidate_dir:
+            return candidate_dir, preferred_rel
+
+    root_dir = candidate_for(".")
+    if root_dir:
+        return root_dir, "."
+
+    try:
+        for child in sorted(p for p in sparse_root.iterdir() if p.is_dir()):
+            rel_path = os.path.relpath(child, sparse_root)
+            candidate_dir = candidate_for(rel_path)
+            if candidate_dir:
+                if rel_path in {"", "."}:
+                    rel_path = "."
+                return candidate_dir, rel_path
+    except Exception as exc:
+        logger.debug("Failed to enumerate sparse directories for edit: %s", exc)
+
+    raise HTTPException(status_code=404, detail="No sparse reconstruction available to edit")
+
+
+def _update_sparse_candidate_points(project_dir: Path, candidate_rel: str, points: int | None) -> None:
+    if points is None:
+        return
+    sparse_root = project_dir / "outputs" / "sparse"
+    if not sparse_root.exists():
+        return
+    meta, meta_path = _load_sparse_metadata(sparse_root)
+    if not isinstance(meta, dict):
+        meta = {}
+    candidates = meta.setdefault("candidates", [])
+    norm_rel = candidate_rel or "."
+    updated = False
+    for entry in candidates:
+        if not isinstance(entry, dict):
+            continue
+        entry_rel = entry.get("relative_path") or "."
+        if entry_rel == norm_rel:
+            entry["points"] = points
+            updated = True
+            break
+    if not updated:
+        candidates.append({"relative_path": norm_rel, "points": points})
+    try:
+        meta_path.write_text(json.dumps(meta, indent=2))
+    except Exception as exc:
+        logger.debug("Failed to update sparse metadata at %s: %s", meta_path, exc)
 
 logger = logging.getLogger(__name__)
 
@@ -926,7 +1013,11 @@ def download_splats_bin(project_id: str, engine: str | None = Query(None)):
 
 
 @router.get("/{project_id}/download/points.bin")
-def download_points_bin(project_id: str, candidate: str | None = Query(None, description="best or specific sparse folder name")):
+def download_points_bin(
+    project_id: str,
+    candidate: str | None = Query(None, description="best or specific sparse folder name"),
+    mode: str = Query("view", regex="^(view|editable)$"),
+):
     """Download compact `points.bin` generated from COLMAP reconstruction.
 
     The converter writes `points.bin` into each reconstruction directory (e.g. outputs/sparse/0/points.bin).
@@ -941,9 +1032,16 @@ def download_points_bin(project_id: str, candidate: str | None = Query(None, des
             raise HTTPException(status_code=404, detail="Sparse outputs not found")
 
         def try_serve(candidate_dir: Path):
-            points_path = candidate_dir / "points.bin"
+            target_name = "points_editable.bin" if mode == "editable" else "points.bin"
+            points_path = candidate_dir / target_name
+            if not points_path.exists() and mode == "editable":
+                try:
+                    pointsbin.convert_colmap_recon_to_pointsbin(candidate_dir)
+                    points_path = candidate_dir / target_name
+                except Exception as exc:
+                    logger.debug("Failed to refresh editable points for %s: %s", candidate_dir, exc)
             if points_path.exists():
-                return FileResponse(path=points_path, filename="points.bin", media_type="application/octet-stream")
+                return FileResponse(path=points_path, filename=target_name, media_type="application/octet-stream")
             return None
 
         def resolve_relative(rel_path: str | None) -> Path | None:
@@ -968,13 +1066,7 @@ def download_points_bin(project_id: str, candidate: str | None = Query(None, des
                     return served
             return None
 
-        meta_path = sparse_root / BEST_SPARSE_META
-        meta = None
-        if meta_path.exists():
-            try:
-                meta = json.loads(meta_path.read_text())
-            except Exception as exc:
-                logger.debug("Failed to parse sparse metadata at %s: %s", meta_path, exc)
+        meta, _ = _load_sparse_metadata(sparse_root)
 
         preferred_rel = meta.get("relative_path") if isinstance(meta, dict) else None
 
@@ -1011,7 +1103,11 @@ def download_points_bin(project_id: str, candidate: str | None = Query(None, des
             if served:
                 return served
 
-        raise HTTPException(status_code=404, detail="points.bin not found; reconstruction may not be converted yet")
+        target_name = "points_editable.bin" if mode == "editable" else "points.bin"
+        raise HTTPException(
+            status_code=404,
+            detail=f"{target_name} not found; reconstruction may not be converted yet",
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -1030,13 +1126,7 @@ def list_sparse_candidates(project_id: str):
     if not sparse_root.exists():
         return {"candidates": [], "best_relative_path": None, "updated_at": None}
 
-    meta_path = sparse_root / BEST_SPARSE_META
-    meta = None
-    if meta_path.exists():
-        try:
-            meta = json.loads(meta_path.read_text())
-        except Exception as exc:
-            logger.debug("Failed to parse sparse metadata at %s: %s", meta_path, exc)
+    meta, _ = _load_sparse_metadata(sparse_root)
 
     candidates = []
     best_rel = None
@@ -1092,6 +1182,45 @@ def list_sparse_candidates(project_id: str):
         "best_relative_path": best_rel,
         "candidates": candidates,
         "updated_at": updated_at,
+    }
+
+
+@router.post("/{project_id}/sparse/edit")
+def edit_sparse_points(project_id: str, payload: SparseEditRequest | None = Body(None)):
+    if payload is None or not payload.remove_point_ids:
+        raise HTTPException(status_code=400, detail="No point ids provided")
+
+    project_dir = DATA_DIR / project_id
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    candidate_dir, candidate_rel = _resolve_sparse_candidate_for_edit(project_dir, payload.candidate)
+
+    try:
+        remove_ids = {int(pid) for pid in payload.remove_point_ids if isinstance(pid, int)}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid point id provided") from None
+
+    if not remove_ids:
+        raise HTTPException(status_code=400, detail="No valid point ids provided")
+
+    try:
+        result = sparse_edit.apply_sparse_edits(
+            project_dir=project_dir,
+            candidate_dir=candidate_dir,
+            candidate_rel=candidate_rel,
+            remove_point_ids=remove_ids,
+            create_backup=True if payload.create_backup is None else bool(payload.create_backup),
+            reoptimize=bool(payload.reoptimize),
+        )
+    except sparse_edit.SparseEditError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _update_sparse_candidate_points(project_dir, candidate_rel, result.get("remaining_points"))
+
+    return {
+        **result,
+        "candidate_relative_path": candidate_rel,
     }
 
 

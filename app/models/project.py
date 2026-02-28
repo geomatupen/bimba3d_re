@@ -115,3 +115,10 @@ class ComparisonStatus(BaseModel):
     optimized: Optional[dict] = None
     baseline_project_id: Optional[str] = None
     optimized_project_id: Optional[str] = None
+
+
+class SparseEditRequest(BaseModel):
+    candidate: Optional[str] = None
+    remove_point_ids: list[int]
+    create_backup: Optional[bool] = True
+    reoptimize: Optional[bool] = False
