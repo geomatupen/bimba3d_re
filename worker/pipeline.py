@@ -2,7 +2,6 @@ import logging
 import os
 from pathlib import Path
 from app.services import colmap, storage, status, gsplat
-from worker.image_resize import normalize_max_size, prepare_training_images
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +21,10 @@ def run_full_pipeline(project_id: str, params: dict | None = None):
     Set USE_DOCKER_WORKER=true to use Docker worker (recommended).
     Set USE_DOCKER_WORKER=false to use local COLMAP/gsplat (must be installed).
     """
-    params = dict(params or {})
-    # Extract core selectors with sane defaults so downstream components always see explicit values
-    mode = params.get("mode", "baseline")
-    engine = params.get("engine", "gsplat")
-    params.setdefault("engine", engine)
-    max_steps = params.get("max_steps")
-    stage = params.get("stage", "full")
+    # Extract mode from params (default to baseline if not specified)
+    mode = params.get("mode", "baseline") if params else "baseline"
+    max_steps = params.get("max_steps") if params else None
+    stage = params.get("stage", "full") if params else "full"
     
     # Configure per-project file logging (local mode only)
     try:
@@ -47,7 +43,7 @@ def run_full_pipeline(project_id: str, params: dict | None = None):
 
     # Use Docker worker for processing
     if USE_DOCKER:
-        logger.info(f"Using DOCKER WORKER for project {project_id} (mode={mode}, engine={engine})")
+        logger.info(f"Using DOCKER WORKER for project {project_id} (mode: {mode})")
         try:
             # Pre-Docker: provide useful, user-visible substep messages
             logger.info("DOCKER: Preparing Docker worker (check image, GPU, volumes)...")
@@ -149,66 +145,7 @@ def run_full_pipeline(project_id: str, params: dict | None = None):
         project_dir = storage.get_project_dir(project_id)
         image_dir = project_dir / "images"
         output_dir = project_dir / "outputs"
-
-        prepared_image_dir: Path | None = None
-        images_max_size = normalize_max_size(params.get("images_max_size")) if params else None
-
-        def get_pipeline_image_dir(stage_hint: str):
-            nonlocal prepared_image_dir
-            if prepared_image_dir is not None:
-                return prepared_image_dir
-            if not images_max_size:
-                prepared_image_dir = image_dir
-                return prepared_image_dir
-            try:
-                logger.info(
-                    "Preparing resized image set for project %s (≤%d px)",
-                    project_id,
-                    images_max_size,
-                )
-                status.update_status(
-                    project_id,
-                    "processing",
-                    stage=stage_hint,
-                    stage_progress=3 if stage_hint == "training" else 5,
-                    message=f"📐 Resizing input images to ≤ {images_max_size}px...",
-                )
-                resized_dir, stats = prepare_training_images(image_dir, project_dir, images_max_size)
-                logger.info(
-                    "Prepared resized image set at %s (max=%d px): %s",
-                    resized_dir,
-                    images_max_size,
-                    stats,
-                )
-                status.update_status(
-                    project_id,
-                    "processing",
-                    stage=stage_hint,
-                    stage_progress=6 if stage_hint == "training" else 8,
-                    message=f"✅ Image set ready at ≤ {images_max_size}px",
-                )
-                prepared_image_dir = resized_dir
-            except Exception as exc:
-                logger.warning(
-                    "Failed to prepare resized images; falling back to originals. Error: %s",
-                    exc,
-                )
-                prepared_image_dir = image_dir
-            return prepared_image_dir
         
-        def params_for_colmap_stage():
-            if not params:
-                if not images_max_size:
-                    return None
-                return {"colmap": {"max_image_size": images_max_size}}
-            if not images_max_size:
-                return params
-            cloned = dict(params)
-            inner = dict(cloned.get("colmap") or {})
-            inner.setdefault("max_image_size", images_max_size)
-            cloned["colmap"] = inner
-            return cloned
-
         # Ensure directories exist
         if not image_dir.exists():
             raise FileNotFoundError(f"Images directory not found: {image_dir}")
@@ -217,10 +154,9 @@ def run_full_pipeline(project_id: str, params: dict | None = None):
         
         if stage == "colmap_only":
             # 1️⃣ COLMAP SfM only
-            active_image_dir = get_pipeline_image_dir("colmap")
             logger.info(f"Running COLMAP for project: {project_id}")
             status.update_status(project_id, "processing", progress=20, stage="colmap", message="Running COLMAP")
-            sparse_dir = colmap.run_colmap(active_image_dir, output_dir, params_for_colmap_stage())
+            sparse_dir = colmap.run_colmap(image_dir, output_dir, params)
             logger.info(f"COLMAP completed for project: {project_id}")
             # Only set completed if not stopped
             current_status = status.get_status(project_id)
@@ -241,8 +177,7 @@ def run_full_pipeline(project_id: str, params: dict | None = None):
                 raise FileNotFoundError("Sparse model not found. Run COLMAP first.")
             logger.info(f"Running Gaussian Splatting for project: {project_id}")
             status.update_status(project_id, "processing", progress=60, stage="training", message="Training gaussians")
-            training_dir = get_pipeline_image_dir("training")
-            gs_output = gsplat.run_gsplat(training_dir, sparse_dir, output_dir, params or {})
+            gs_output = gsplat.run_gsplat(image_dir, sparse_dir, output_dir, params or {})
             logger.info(f"Gaussian Splatting completed for project: {project_id}")
             current_status = status.get_status(project_id)
             if current_status.get("stop_requested", False):
@@ -257,10 +192,9 @@ def run_full_pipeline(project_id: str, params: dict | None = None):
         else:
             import time
             # Full pipeline
-            active_image_dir = get_pipeline_image_dir("colmap")
             logger.info(f"Running COLMAP for project: {project_id}")
             status.update_status(project_id, "processing", progress=20, stage="colmap", message="Running COLMAP")
-            sparse_dir = colmap.run_colmap(active_image_dir, output_dir, params_for_colmap_stage())
+            sparse_dir = colmap.run_colmap(image_dir, output_dir, params)
             logger.info(f"COLMAP completed for project: {project_id}")
             # Mark COLMAP as completed for frontend tick/green
             current_status = status.get_status(project_id)
@@ -277,8 +211,7 @@ def run_full_pipeline(project_id: str, params: dict | None = None):
 
             logger.info(f"Running Gaussian Splatting for project: {project_id}")
             status.update_status(project_id, "processing", progress=60, stage="training", message="Training gaussians")
-            training_dir = get_pipeline_image_dir("training")
-            gs_output = gsplat.run_gsplat(training_dir, sparse_dir, output_dir, params or {})
+            gs_output = gsplat.run_gsplat(image_dir, sparse_dir, output_dir, params or {})
             logger.info(f"Gaussian Splatting completed for project: {project_id}")
             current_status = status.get_status(project_id)
             if current_status.get("stop_requested", False):

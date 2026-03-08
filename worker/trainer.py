@@ -88,8 +88,10 @@ class GsplatTrainer:
         # --- ORIGINAL KERBL PARAMETERS ---
         mode: str = "baseline",  # [custom]
         max_steps: int = 300,  # [original]
+        eval_interval: Optional[int] = 1000,  # [original]
         splat_export_interval: Optional[int] = 150,  # [original]
         png_export_interval: Optional[int] = 50,  # [original]
+        checkpoint_interval: Optional[int] = None,  # [original]
         densify_from_iter: int | None = None,  # [original]
         densify_until_iter: int | None = None,  # [original]
         densification_interval: int | None = None,  # [original]
@@ -101,7 +103,7 @@ class GsplatTrainer:
         auto_early_stop: bool = False,  # [custom]
         stop_checker: Optional[Callable[[], bool]] = None,  # [custom]
         resume: bool = False,  # [custom]
-        max_init_gaussians: int | None = 20000,  # [custom]
+        max_init_gaussians: int | None = None,  # [custom]
         max_gaussians_cap: int | None = None,  # [custom]
         amp_enabled: bool = False,  # [custom]
         pruning_enabled: bool = False,  # [custom]
@@ -116,10 +118,12 @@ class GsplatTrainer:
         self.output_dir = Path(output_dir)
         self.mode = mode  # "baseline" or "modified"
         self.max_steps = max_steps
+        self.eval_interval = int(eval_interval) if eval_interval is not None else None
         self.device = device
         self.progress_callback = progress_callback
         self.splat_export_interval = splat_export_interval
         self.png_export_interval = png_export_interval
+        self.checkpoint_interval = int(checkpoint_interval) if checkpoint_interval is not None else None
         self.auto_early_stop = auto_early_stop
         self.stop_checker = stop_checker
         self.resume = resume
@@ -149,6 +153,9 @@ class GsplatTrainer:
         logger.info(f"Pruning enabled={self.pruning_enabled}, policy={self.pruning_policy}, weights={self.pruning_weights}")
         self.stop_reason: Optional[str] = None
         self.last_tuning_info = None  # Track last tuning action for status updates
+        # Match upstream behavior: progressively unlock SH bands up to degree 3.
+        self.sh_degree = 3
+        self.sh_degree_interval = 1000
 
         self.densify_from_iter = max(0, int(densify_from_iter)) if densify_from_iter is not None else 500
         default_stop = 15_000 if densify_until_iter is None else int(densify_until_iter)
@@ -243,6 +250,7 @@ class GsplatTrainer:
         self.convergence_history = []
         self.tuning_history = []
         self.tuner_runs = 0
+        self.eval_history: list[dict] = []
 
     def _init_gaussians(self):
         """Initialize Gaussian parameters from COLMAP points."""
@@ -265,16 +273,15 @@ class GsplatTrainer:
         dist_avg = torch.sqrt(dist2_avg)
         scales = torch.log(dist_avg * 1.0).unsqueeze(-1).repeat(1, 3)
         
-        # Initialize rotations as random quaternions
+        # Initialize rotations as random quaternions (rasterizer normalizes internally).
         quats = torch.rand((N, 4))
-        quats = quats / torch.norm(quats, dim=1, keepdim=True)
         
         # Initialize opacities (logit space)
         opacities = torch.logit(torch.full((N,), 0.1))
         
-        # Initialize spherical harmonics (DC band only for now)
+        # Initialize full SH storage and enable bands progressively during training.
         sh0 = rgb_to_sh(rgbs).unsqueeze(1)  # [N, 1, 3]
-        shN = torch.zeros((N, 0, 3))  # Empty higher bands
+        shN = torch.zeros((N, (self.sh_degree + 1) ** 2 - 1, 3))
         
         # Create parameter dict
         self.splats = torch.nn.ParameterDict({
@@ -306,7 +313,7 @@ class GsplatTrainer:
                 eps=1e-15,
             ),
             "opacities": torch.optim.Adam(
-                [{"params": self.splats["opacities"], "lr": 5e-2 * lr_scale, "name": "opacities"}],
+                [{"params": self.splats["opacities"], "lr": 2.5e-2 * lr_scale, "name": "opacities"}],
                 eps=1e-15,
             ),
             "sh0": torch.optim.Adam(
@@ -409,6 +416,7 @@ class GsplatTrainer:
         K: Tensor,
         width: int,
         height: int,
+        sh_degree_to_use: Optional[int] = None,
     ) -> Tensor:
         """Rasterize Gaussians to image."""
         means = self.splats["means"]
@@ -416,12 +424,14 @@ class GsplatTrainer:
         scales = torch.exp(self.splats["scales"])
         opacities = torch.sigmoid(self.splats["opacities"])
         
-        # Concatenate all SH bands: [N, total_bands, 3]
-        sh_all = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, num_bands, 3]
-        
-        # Reshape to flatten SH bands with RGB: [N, num_bands * 3]
-        N = sh_all.shape[0]
-        colors = sh_all.reshape(N, -1)  # Flatten last two dims: [N, num_bands*3]
+        if sh_degree_to_use is None:
+            sh_degree_to_use = self.sh_degree
+        sh_degree_to_use = max(0, min(int(sh_degree_to_use), self.sh_degree))
+        active_bands = (sh_degree_to_use + 1) ** 2
+        shN_active = self.splats["shN"][:, : max(0, active_bands - 1), :]
+
+        # Keep SH unflattened: gsplat SH rasterization expects [N, bands, 3].
+        colors = torch.cat([self.splats["sh0"], shN_active], 1)
         
         render_colors, render_alphas, info = rasterization(
             means=means,
@@ -429,6 +439,7 @@ class GsplatTrainer:
             scales=scales,
             opacities=opacities,
             colors=colors,
+            sh_degree=sh_degree_to_use,
             viewmats=torch.linalg.inv(camtoworld)[None],
             Ks=K[None],
             width=width,
@@ -678,6 +689,23 @@ class GsplatTrainer:
             logger.info("Saved preview PNG at step %d", step)
         except Exception as e:
             logger.warning("Could not save preview at step %d: %s", step, e)
+
+    def _record_periodic_eval(self, step: int):
+        """Run lightweight periodic evaluation and persist it to disk."""
+        try:
+            metrics = self.compute_evaluation_metrics(step)
+            self.eval_history.append(metrics)
+            out_path = self.output_dir / "eval_history.json"
+            with open(out_path, "w") as f:
+                json.dump(self.eval_history, f, indent=2)
+            logger.info(
+                "Eval %d | Loss: %.4f | GS: %d",
+                step,
+                float(metrics.get("final_loss", 0.0)),
+                int(metrics.get("num_gaussians", len(self.splats["means"]))),
+            )
+        except Exception as exc:
+            logger.warning("Periodic eval failed at step %d: %s", step, exc)
     
     def compute_evaluation_metrics(self, step: int, validation_images: list = None) -> Dict:
         """
@@ -858,12 +886,27 @@ class GsplatTrainer:
             camtoworld = torch.from_numpy(self.dataset.camtoworlds[idx]).float().to(self.device)
             K = torch.from_numpy(self.dataset.Ks[idx]).float().to(self.device)
             
+            # Match upstream behavior: progressively unlock SH degree every 1000 steps.
+            sh_degree_to_use = min(step // self.sh_degree_interval, self.sh_degree)
+
             # Forward pass (support AMP if enabled)
             if self.amp_enabled and self.scaler is not None:
                 with torch.cuda.amp.autocast():
-                    colors, alphas, info = self.rasterize(camtoworld, K, width, height)
+                    colors, alphas, info = self.rasterize(
+                        camtoworld,
+                        K,
+                        width,
+                        height,
+                        sh_degree_to_use=sh_degree_to_use,
+                    )
             else:
-                colors, alphas, info = self.rasterize(camtoworld, K, width, height)
+                colors, alphas, info = self.rasterize(
+                    camtoworld,
+                    K,
+                    width,
+                    height,
+                    sh_degree_to_use=sh_degree_to_use,
+                )
             colors = colors[0]  # Remove batch dim
             
             # Compute loss (L1 + SSIM, same as upstream)
@@ -965,6 +1008,10 @@ class GsplatTrainer:
                     progress = int((step / self.max_steps) * 100)
                     self.progress_callback(step, progress, loss.item(), self.last_tuning_info)
 
+            # Periodic evaluation (native-style cadence control)
+            if self.eval_interval and step > 0 and step % self.eval_interval == 0:
+                self._record_periodic_eval(step)
+
             # Auto early-stop (plateau detection) if enabled
             if self.auto_early_stop and step > 1000:
                 convergence = self.detect_convergence_issues(window_size=120)
@@ -976,8 +1023,11 @@ class GsplatTrainer:
                     last_step = step
                     break
             
-            # Save checkpoints
-            if step in [7_000, 15_000, self.max_steps - 1]:
+            # Save checkpoints on configured cadence and always at final step.
+            if (
+                (self.checkpoint_interval and step > 0 and step % self.checkpoint_interval == 0)
+                or step == self.max_steps - 1
+            ):
                 self._save_checkpoint(step)
 
             last_step = step

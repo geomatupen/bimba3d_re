@@ -1053,22 +1053,27 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
         timing={"start": gsplat_start},
     )
 
+    # Baseline mode must stay native gsplat: ignore custom research knobs.
+    is_modified_mode = mode == "modified"
+
     trainer = GsplatTrainer(
         image_dir=training_image_dir,
         colmap_dir=colmap_dir,
         output_dir=engine_output_dir,
         mode=mode,
         max_steps=max_steps,
-        max_init_gaussians=p.get("gsplat_max_gaussians", None),
-        max_gaussians_cap=p.get("gsplat_hard_cap", None),
-        amp_enabled=bool(p.get("amp", False)),
-        pruning_enabled=bool(p.get("pruning_enabled", False)),
-        pruning_policy=p.get("pruning_policy", "opacity"),
-        pruning_weights=p.get("pruning_weights", {}),
+        eval_interval=p.get("eval_interval", 1000),
+        max_init_gaussians=p.get("gsplat_max_gaussians", None) if is_modified_mode else None,
+        max_gaussians_cap=p.get("gsplat_hard_cap", None) if is_modified_mode else None,
+        amp_enabled=bool(p.get("amp", False)) if is_modified_mode else False,
+        pruning_enabled=bool(p.get("pruning_enabled", False)) if is_modified_mode else False,
+        pruning_policy=p.get("pruning_policy", "opacity") if is_modified_mode else "opacity",
+        pruning_weights=p.get("pruning_weights", {}) if is_modified_mode else {},
         progress_callback=progress_callback,
         splat_export_interval=p.get("splat_export_interval"),
         png_export_interval=p.get("png_export_interval"),
-        auto_early_stop=bool(p.get("auto_early_stop", False)),
+        checkpoint_interval=p.get("save_interval"),
+        auto_early_stop=bool(p.get("auto_early_stop", False)) if is_modified_mode else False,
         stop_checker=stop_checker,
         resume=resume,
         densify_from_iter=p.get("densify_from_iter"),
