@@ -48,6 +48,7 @@ def run_gsplat(image_dir: Path, colmap_sparse: Path, output_dir: Path, params: d
             "--densify_from_iter", str(p.get("densify_from_iter", 500)),
             "--densify_until_iter", str(p.get("densify_until_iter", 15000)),
             "--densification_interval", str(p.get("densification_interval", 100)),
+            "--densify_grad_threshold", str(p.get("densify_grad_threshold", 0.0002)),
             "--opacity_threshold", str(p.get("opacity_threshold", 0.005)),
             "--lambda_dssim", str(p.get("lambda_dssim", 0.2)),
         ]
@@ -99,6 +100,7 @@ def create_output_artifacts(output_dir: Path, colmap_model_dir: Path, params: di
         "densify_from_iter": int(p.get("densify_from_iter", 500)),  # [original]
         "densify_until_iter": int(p.get("densify_until_iter", 15000)),  # [original]
         "densification_interval": int(p.get("densification_interval", 100)),  # [original]
+        "densify_grad_threshold": float(p.get("densify_grad_threshold", 0.0002)),  # [original]
         "opacity_threshold": float(p.get("opacity_threshold", 0.005)),  # [original]
         "lambda_dssim": float(p.get("lambda_dssim", 0.2)),  # [original]
         # --- CUSTOM PARAMETERS ---

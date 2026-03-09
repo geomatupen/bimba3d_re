@@ -124,6 +124,7 @@ class GsplatTrainer:
         densify_from_iter: int | None = None,  # [original]
         densify_until_iter: int | None = None,  # [original]
         densification_interval: int | None = None,  # [original]
+        densify_grad_threshold: float | None = None,  # [original]
         opacity_threshold: float | None = None,  # [original]
         lambda_dssim: float | None = None,  # [original]
         position_lr_init: float = 1.6e-4,  # [original]
@@ -229,6 +230,18 @@ class GsplatTrainer:
         except Exception:
             self.lambda_dssim = default_lambda
         self.lambda_dssim = min(1.0, max(0.0, self.lambda_dssim))
+
+        default_densify_grad_threshold = 0.0002
+        try:
+            self.densify_grad_threshold = (
+                float(densify_grad_threshold)
+                if densify_grad_threshold is not None
+                else default_densify_grad_threshold
+            )
+        except Exception:
+            self.densify_grad_threshold = default_densify_grad_threshold
+        if self.densify_grad_threshold <= 0:
+            self.densify_grad_threshold = default_densify_grad_threshold
         logger.info(
             "Densify schedule configured: start=%d, stop=%d, interval=%d, reset_every=%d",
             self.densify_from_iter,
@@ -237,6 +250,7 @@ class GsplatTrainer:
             self.opacity_reset_interval,
         )
         logger.info("Trainer configured opacity_threshold=%f, lambda_dssim=%f", self.opacity_threshold, self.lambda_dssim)
+        logger.info("Trainer configured densify_grad_threshold=%f", self.densify_grad_threshold)
         logger.info(
             "Position LR schedule: init=%g final=%g delay_mult=%g max_steps=%d",
             self.position_lr_init,
@@ -289,7 +303,7 @@ class GsplatTrainer:
             "opacity_lr_mult": 1.0,
             "sh_lr_mult": 1.0,
             "position_lr_mult": 1.0,
-            "densify_threshold": 0.0002,
+            "densify_threshold": self.densify_grad_threshold,
         }
         
         # Setup training strategy

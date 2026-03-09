@@ -1078,6 +1078,7 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
         densify_from_iter=p.get("densify_from_iter"),
         densify_until_iter=p.get("densify_until_iter"),
         densification_interval=p.get("densification_interval"),
+        densify_grad_threshold=p.get("densify_grad_threshold"),
         opacity_reset_interval=p.get("opacity_reset_interval"),
         opacity_threshold=p.get("opacity_threshold"),
         lambda_dssim=p.get("lambda_dssim"),

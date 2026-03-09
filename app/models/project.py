@@ -71,6 +71,7 @@ class ProcessParams(BaseModel):
     densify_from_iter: Optional[int] = None  # [original]
     densify_until_iter: Optional[int] = None  # [original]
     densification_interval: Optional[int] = None  # [original]
+    densify_grad_threshold: Optional[float] = None  # [original]
     opacity_threshold: Optional[float] = None  # [original]
     lambda_dssim: Optional[float] = None  # [original]
     splat_export_interval: Optional[int] = None  # [original]
