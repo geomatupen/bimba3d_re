@@ -30,21 +30,6 @@ def _find_project_worker_containers(project_id: str) -> list[str]:
     except Exception:
         pass
 
-    # Backward compatibility for older workers launched without labels.
-    try:
-        result = subprocess.run(
-            ["docker", "ps", "-q", "--filter", f"name={_worker_container_name(project_id)}"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        for line in result.stdout.splitlines():
-            cid = line.strip()
-            if cid and cid not in container_ids:
-                container_ids.append(cid)
-    except Exception:
-        pass
-
     return container_ids
 
 

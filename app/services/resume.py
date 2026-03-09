@@ -4,6 +4,33 @@ from typing import Optional, Dict
 from app.config import DATA_DIR
 
 
+def _collect_checkpoint_files(output_dir: Path) -> list[Path]:
+    """Collect checkpoints from engine-scoped directories."""
+    candidates = [
+        output_dir / "engines" / "gsplat" / "ckpts",
+        output_dir / "engines" / "litegs" / "checkpoints",
+    ]
+    files: list[Path] = []
+    for ckpt_dir in candidates:
+        if not ckpt_dir.exists() or not ckpt_dir.is_dir():
+            continue
+        files.extend(sorted(ckpt_dir.glob("ckpt_*.pt")))
+        files.extend(sorted(ckpt_dir.glob("chkpnt*.pth")))
+    return files
+
+
+def _has_final_outputs(output_dir: Path) -> bool:
+    """Check for final splat outputs in engine-scoped locations."""
+    candidates = [
+        output_dir / "engines" / "gsplat",
+        output_dir / "engines" / "litegs",
+    ]
+    for root in candidates:
+        if (root / "splats.splat").exists() or (root / "splats.ply").exists() or (root / "splats.bin").exists():
+            return True
+    return False
+
+
 def can_resume_project(project_id: str) -> Dict[str, any]:
     """
     Check if a project has resumable state.
@@ -21,21 +48,23 @@ def can_resume_project(project_id: str) -> Dict[str, any]:
     has_sparse = sparse_dir.exists() and any(sparse_dir.iterdir())
     
     # Check for training checkpoints
-    ckpt_dir = output_dir / "checkpoints"
     has_checkpoints = False
     last_checkpoint_step = None
-    
-    if ckpt_dir.exists():
-        checkpoints = sorted(ckpt_dir.glob("ckpt_*.pt"))
-        if checkpoints:
-            has_checkpoints = True
-            # Extract step from filename like ckpt_001000.pt
-            latest_ckpt = checkpoints[-1]
-            try:
-                step_str = latest_ckpt.stem.split("_")[-1]
-                last_checkpoint_step = int(step_str)
-            except (IndexError, ValueError):
-                pass
+
+    checkpoints = _collect_checkpoint_files(output_dir)
+    if checkpoints:
+        has_checkpoints = True
+        latest_ckpt = checkpoints[-1]
+        try:
+            if latest_ckpt.stem.startswith("ckpt_"):
+                step_str = latest_ckpt.stem.split("_")[1]
+                last_checkpoint_step = int(step_str) + 1
+            else:
+                digits = "".join(ch for ch in latest_ckpt.stem if ch.isdigit())
+                if digits:
+                    last_checkpoint_step = int(digits)
+        except (IndexError, ValueError):
+            pass
     
     # Check for full completion: status.json status=="completed" and all outputs present
     status_file = project_dir / "status.json"
@@ -46,10 +75,7 @@ def can_resume_project(project_id: str) -> Dict[str, any]:
             with open(status_file) as f:
                 s = json.load(f)
             if s.get("status") == "completed":
-                # Check for main outputs: splats.splat and splats.ply
-                splat = output_dir / "splats.splat"
-                ply = output_dir / "splats.ply"
-                if splat.exists() and ply.exists():
+                if _has_final_outputs(output_dir):
                     fully_completed = True
         except Exception:
             pass

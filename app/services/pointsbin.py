@@ -21,7 +21,7 @@ def convert_colmap_recon_to_pointsbin(recon_dir: Path) -> int:
     """Convert a COLMAP reconstruction into compact viewer/export formats.
 
     Outputs two files alongside the reconstruction directory:
-        - points.bin (legacy viewer format: positions + rgb bytes)
+        - points.bin (viewer format: positions + rgb bytes)
         - points_editable.bin (editor format: positions + normalized rgb + point ids)
 
     Both hand back the total number of finite points written.

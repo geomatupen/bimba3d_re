@@ -706,6 +706,8 @@ class Runner:
         world_size = self.world_size
         stop_checker = getattr(cfg, "stop_checker", None)
         progress_callback = getattr(cfg, "progress_callback", None)
+        eval_callback = getattr(cfg, "eval_callback", None)
+        checkpoint_callback = getattr(cfg, "checkpoint_callback", None)
 
         # Dump cfg.
         if world_rank == 0:
@@ -979,6 +981,14 @@ class Runner:
                 torch.save(
                     data, f"{self.ckpt_dir}/ckpt_{step}_rank{self.world_rank}.pt"
                 )
+                if callable(checkpoint_callback) and world_rank == 0:
+                    try:
+                        checkpoint_callback(
+                            step=int(step + 1),
+                            checkpoint_path=f"{self.ckpt_dir}/ckpt_{step}_rank{self.world_rank}.pt",
+                        )
+                    except Exception as exc:
+                        print(f"Checkpoint callback failed at step {step}: {exc}")
             if (
                 step in [i - 1 for i in cfg.ply_steps] or step == max_steps - 1
             ) and cfg.save_ply:
@@ -1083,6 +1093,11 @@ class Runner:
             # eval the full set
             if step in [i - 1 for i in cfg.eval_steps]:
                 self.eval(step)
+                if callable(eval_callback) and world_rank == 0:
+                    try:
+                        eval_callback(step=int(step + 1))
+                    except Exception as exc:
+                        print(f"Eval callback failed at step {step}: {exc}")
                 self.render_traj(step)
 
             # run compression

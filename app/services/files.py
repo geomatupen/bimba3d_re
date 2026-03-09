@@ -9,10 +9,10 @@ logger = logging.getLogger(__name__)
 ENGINE_SUBDIR = "engines"
 
 
-def _collect_outputs(root_dir: Path, project_id: str, engine: str | None = None) -> dict:
-    """Collect export artifacts for either the legacy root or a specific engine."""
+def _collect_outputs(root_dir: Path, project_id: str, engine: str) -> dict:
+    """Collect export artifacts for a specific engine output directory."""
     bundle: dict = {}
-    query_suffix = f"?engine={engine}" if engine else ""
+    query_suffix = f"?engine={engine}"
 
     if not root_dir.exists():
         return bundle
@@ -81,7 +81,7 @@ def _collect_outputs(root_dir: Path, project_id: str, engine: str | None = None)
                 "latest_url": latest_url,
             }
 
-    ckpt_dir = root_dir / "checkpoints"
+    ckpt_dir = root_dir / "ckpts"
     if ckpt_dir.exists():
         checkpoints = []
         for ckpt in sorted(ckpt_dir.glob("*")):
@@ -138,9 +138,6 @@ def get_output_files(project_id: str) -> dict:
     
     files = {}
 
-    base_bundle = _collect_outputs(output_dir, project_id)
-    files.update(base_bundle)
-    
     # Check for images
     images_dir = project_dir / "images"
     if images_dir.exists():
@@ -189,24 +186,3 @@ def get_output_files(project_id: str) -> dict:
             files["engines"] = engine_entries
     
     return files
-
-
-def get_file_path(project_id: str, file_type: str, filename: str = None) -> Path:
-    """
-    Get path to a specific output file.
-    """
-    project_dir = DATA_DIR / project_id
-    output_dir = project_dir / "outputs"
-    
-    if file_type == "splats":
-        for candidate in ("splats.splat", "splats.ply", "splats.bin"):
-            path = output_dir / candidate
-            if path.exists():
-                return path
-        return output_dir / "splats.splat"
-    elif file_type == "metadata":
-        return output_dir / "metadata.json"
-    elif file_type == "image" and filename:
-        return project_dir / "images" / filename
-    else:
-        raise ValueError(f"Unknown file type: {file_type}")

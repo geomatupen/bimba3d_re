@@ -217,14 +217,13 @@ def _resolve_output_path(project_dir: Path, relative_path: str | Path, engine: s
     return base / rel
 
 
-def _engine_search_order(project_id: str, sanitized_engine: str | None) -> tuple[list[str | None], str | None]:
+def _engine_search_order(project_id: str, sanitized_engine: str | None) -> tuple[list[str], str | None]:
     if sanitized_engine:
         return [sanitized_engine], sanitized_engine
     inferred = _infer_engine(project_id)
-    order: list[str | None] = []
+    order: list[str] = []
     if inferred:
         order.append(inferred)
-    order.append(None)
     return order, inferred
 
 
@@ -352,9 +351,14 @@ def list_projects():
             project_status = status.get_status(project_id)
             current_status = project_status.get("status", "pending")
             progress = int(project_status.get("progress", 0) or 0)
-            has_outputs = (project_dir / "outputs" / "splats.bin").exists() or (
-                project_dir / "outputs" / "metadata.json"
-            ).exists()
+            has_outputs = (
+                (project_dir / "outputs" / "engines" / "gsplat" / "splats.splat").exists()
+                or (project_dir / "outputs" / "engines" / "gsplat" / "splats.ply").exists()
+                or (project_dir / "outputs" / "engines" / "gsplat" / "metadata.json").exists()
+                or (project_dir / "outputs" / "engines" / "litegs" / "splats.splat").exists()
+                or (project_dir / "outputs" / "engines" / "litegs" / "splats.ply").exists()
+                or (project_dir / "outputs" / "engines" / "litegs" / "metadata.json").exists()
+            )
             projects.append(
                 ProjectListItem(
                     project_id=project_id,
@@ -1577,40 +1581,6 @@ def download_snapshot(project_id: str, filename: str, engine: str | None = Query
         raise HTTPException(status_code=500, detail="Failed to download snapshot")
 
 
-@router.get("/{project_id}/download/{file_type}")
-def get_preview_download(project_id: str, file_type: str):
-    """Fallback preview endpoint for legacy clients requesting `download/{file_type}`.
-
-    This handler is intentionally registered after specific download endpoints so
-    requests for `.splat`, `.ply`, `.bin` and `sparse.json` are handled by
-    their dedicated handlers. It serves the latest preview PNG as a harmless
-    fallback for UI polling requests.
-    """
-    try:
-        project_dir = DATA_DIR / project_id
-        if not project_dir.exists():
-            raise HTTPException(status_code=404, detail="Project not found")
-
-        preview_path, _, _, _ = _find_existing_path(
-            project_id,
-            Path("previews") / "preview_latest.png",
-            None,
-        )
-        if not preview_path:
-            raise HTTPException(status_code=404, detail="Preview not available")
-
-        return FileResponse(
-            path=preview_path,
-            media_type="image/png",
-            headers={"Cache-Control": "no-store"}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting preview for download/{file_type}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get preview")
-
-
 @router.get("/{project_id}/download/sparse.json")
 def download_sparse_json(project_id: str):
     """Return a JSON representation of the first COLMAP sparse reconstruction (points only).
@@ -1703,7 +1673,7 @@ def download_sparse_json(project_id: str):
 
 
 @router.get("/{project_id}/metadata")
-def get_metadata(project_id: str):
+def get_metadata(project_id: str, engine: str | None = Query(None)):
     """Get metadata.json for a project."""
     try:
         project_dir = DATA_DIR / project_id
@@ -1711,9 +1681,8 @@ def get_metadata(project_id: str):
         if not project_dir.exists():
             raise HTTPException(status_code=404, detail="Project not found")
         
-        metadata_path = project_dir / "outputs" / "metadata.json"
-        
-        if not metadata_path.exists():
+        metadata_path, _, _, _ = _find_existing_path(project_id, "metadata.json", engine)
+        if not metadata_path:
             raise HTTPException(status_code=404, detail="Metadata not found")
         
         import json
@@ -1869,9 +1838,9 @@ def get_metrics(project_id: str):
         if not project_dir.exists():
             raise HTTPException(status_code=404, detail="Project not found")
         
-        # Check if metrics exist in metadata.json
-        metadata_path = project_dir / "outputs" / "metadata.json"
-        if metadata_path.exists():
+        # Check engine-aware metadata
+        metadata_path, _, _, _ = _find_existing_path(project_id, "metadata.json", None)
+        if metadata_path and metadata_path.exists():
             with open(metadata_path) as f:
                 metadata = json.load(f)
                 # Extract metrics from metadata
@@ -1879,9 +1848,9 @@ def get_metrics(project_id: str):
                 if metrics:
                     return EvaluationMetrics(**metrics)
         
-        # Fallback: check adaptive_tuning_results.json
-        tuning_path = project_dir / "outputs" / "adaptive_tuning_results.json"
-        if tuning_path.exists():
+        # Fallback: check adaptive_tuning_results.json (engine-aware)
+        tuning_path, _, _, _ = _find_existing_path(project_id, "adaptive_tuning_results.json", None)
+        if tuning_path and tuning_path.exists():
             with open(tuning_path) as f:
                 tuning_data = json.load(f)
                 final_metrics = tuning_data.get("final_evaluation", {})
@@ -1990,10 +1959,6 @@ def get_experiment_summary(project_id: str, engine: str | None = Query(None)):
             engine_bundle = outputs["engines"].get(resolved_engine, {})
             previews = engine_bundle.get("previews", {}) if isinstance(engine_bundle, dict) else {}
             preview_url = previews.get("latest_url")
-        if not preview_url:
-            previews = outputs.get("previews", {}) if isinstance(outputs, dict) else {}
-            if isinstance(previews, dict):
-                preview_url = previews.get("latest_url")
 
         return {
             "project_id": project_id,

@@ -210,24 +210,22 @@ def update_status(
 
 
 def write_metrics(project_dir: Path, metrics: dict, engine: str | None = None):
-    """Write training metrics to metrics.json (engine-specific + legacy root)."""
-    output_root = project_dir / "outputs"
-    targets: list[Path] = []
-    if engine:
-        targets.append(output_root / ENGINE_SUBDIR / engine)
-    targets.append(output_root)
+    """Write training metrics to engine-scoped metrics.json."""
+    if not engine:
+        logger.warning("Skipping metrics write without engine scope")
+        return
 
-    for root in targets:
-        metrics_file = root / "metrics.json"
-        metrics_file.parent.mkdir(parents=True, exist_ok=True)
+    metrics_root = project_dir / "outputs" / ENGINE_SUBDIR / engine
+    metrics_file = metrics_root / "metrics.json"
+    metrics_file.parent.mkdir(parents=True, exist_ok=True)
 
-        try:
-            temp_file = metrics_file.with_suffix('.tmp')
-            with open(temp_file, 'w') as f:
-                json.dump(metrics, f, indent=2)
-            temp_file.replace(metrics_file)
-        except Exception as e:
-            logger.error(f"Failed to write metrics for {root}: {e}")
+    try:
+        temp_file = metrics_file.with_suffix('.tmp')
+        with open(temp_file, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        temp_file.replace(metrics_file)
+    except Exception as e:
+        logger.error(f"Failed to write metrics for {metrics_root}: {e}")
 
 
 def _ensure_symlink(source: Path, link_path: Path):
@@ -1199,37 +1197,6 @@ def _get_engine_output_dir(base_output_dir: Path, engine: str) -> Path:
     return engine_dir
 
 
-def _sync_engine_artifact_dirs(base_output_dir: Path, engine_output_dir: Path, subdirs: tuple[str, ...]):
-    """Move legacy artifact folders into the engine scope and remove old copies."""
-    for name in subdirs:
-        legacy_dir = base_output_dir / name
-        engine_dir = engine_output_dir / name
-
-        if legacy_dir.exists():
-            if legacy_dir.is_symlink():
-                legacy_dir.unlink(missing_ok=True)
-            elif legacy_dir.is_dir():
-                engine_dir.mkdir(parents=True, exist_ok=True)
-                for item in legacy_dir.iterdir():
-                    target = engine_dir / item.name
-                    if target.exists():
-                        continue
-                    try:
-                        item.rename(target)
-                    except Exception:
-                        shutil.move(str(item), str(target))
-                shutil.rmtree(legacy_dir, ignore_errors=True)
-            else:
-                engine_dir.parent.mkdir(parents=True, exist_ok=True)
-                target = engine_dir / legacy_dir.name
-                try:
-                    legacy_dir.rename(target)
-                except Exception:
-                    shutil.move(str(legacy_dir), str(target))
-
-        engine_dir.mkdir(parents=True, exist_ok=True)
-
-
 def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) -> Path:
     """Run COLMAP Structure-from-Motion."""
     logger.info("Starting COLMAP...")
@@ -1505,8 +1472,15 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
     return reconstruction_dirs[0]
 
 
-def _export_with_gsplat(checkpoint_path: Path, output_dir: Path):
-    """Load a checkpoint and export .splat and .ply using gsplat exporter."""
+def _export_with_gsplat(
+    checkpoint_path: Path,
+    output_dir: Path,
+    *,
+    splat_name: str = "splats.splat",
+    ply_name: str = "splats.ply",
+    export_ply: bool = True,
+):
+    """Load a checkpoint and export .splat (and optional .ply) using gsplat exporter."""
     import torch
     from gsplat.exporter import export_splats
 
@@ -1568,7 +1542,7 @@ def _export_with_gsplat(checkpoint_path: Path, output_dir: Path):
         tuple(shN.shape),
     )
 
-    splat_path = output_dir / "splats.splat"
+    splat_path = output_dir / splat_name
     export_splats(
         means=means,
         scales=scales,
@@ -1581,18 +1555,122 @@ def _export_with_gsplat(checkpoint_path: Path, output_dir: Path):
     )
     logger.info("✓ Exported .splat -> %s (%d bytes)", splat_path, splat_path.stat().st_size)
 
-    ply_path = output_dir / "splats.ply"
-    export_splats(
-        means=means,
-        scales=scales,
-        quats=quats,
-        opacities=opacities,
-        sh0=sh0,
-        shN=shN,
-        format="ply",
-        save_to=str(ply_path),
-    )
-    logger.info("✓ Exported .ply -> %s (%d bytes)", ply_path, ply_path.stat().st_size)
+    if export_ply:
+        ply_path = output_dir / ply_name
+        export_splats(
+            means=means,
+            scales=scales,
+            quats=quats,
+            opacities=opacities,
+            sh0=sh0,
+            shN=shN,
+            format="ply",
+            save_to=str(ply_path),
+        )
+        logger.info("✓ Exported .ply -> %s (%d bytes)", ply_path, ply_path.stat().st_size)
+
+
+def _parse_step_from_name(name: str, prefix: str) -> int | None:
+    """Parse zero-based trainer step from known filename patterns."""
+    if not name.startswith(prefix):
+        return None
+    rest = name[len(prefix):]
+    digits = []
+    for ch in rest:
+        if ch.isdigit():
+            digits.append(ch)
+        else:
+            break
+    if not digits:
+        return None
+    try:
+        return int("".join(digits))
+    except Exception:
+        return None
+
+
+def _write_json_atomic(path: Path, payload: dict | list):
+    """Atomically write JSON payload."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    tmp.replace(path)
+
+
+def _collect_eval_history(engine_output_dir: Path, params: dict, mode: str) -> list[dict]:
+    """Build comparison-compatible eval history from upstream stats outputs."""
+    stats_dir = engine_output_dir / "stats"
+    if not stats_dir.exists():
+        return []
+
+    eval_history: list[dict] = []
+    for stats_file in sorted(stats_dir.glob("val_step*.json")):
+        step_zero = _parse_step_from_name(stats_file.stem, "val_step")
+        if step_zero is None:
+            continue
+        try:
+            with open(stats_file, "r", encoding="utf-8") as handle:
+                stats = json.load(handle)
+        except Exception as exc:
+            logger.warning("Failed to parse eval stats %s: %s", stats_file, exc)
+            continue
+
+        eval_history.append({
+            "step": int(step_zero + 1),
+            "convergence_speed": stats.get("psnr"),
+            "final_loss": None,
+            "lpips_mean": stats.get("lpips"),
+            "sharpness_mean": stats.get("ssim"),
+            "num_gaussians": stats.get("num_GS"),
+            "tuning_params": {
+                "mode": mode,
+                "eval_interval": params.get("eval_interval"),
+                "save_interval": params.get("save_interval"),
+                "splat_export_interval": params.get("splat_export_interval"),
+            },
+        })
+
+    return eval_history
+
+
+def _materialize_eval_previews(engine_output_dir: Path, eval_step: int | None = None):
+    """Promote one representative eval render (index 0000) per eval step into previews."""
+    render_dir = engine_output_dir / "renders"
+    previews_dir = engine_output_dir / "previews"
+    previews_dir.mkdir(parents=True, exist_ok=True)
+
+    if eval_step is not None:
+        expected_zero = max(0, int(eval_step) - 1)
+        preview_candidates = [(expected_zero + 1, render_dir / f"val_step{expected_zero}_0000.png")]
+    else:
+        preview_candidates: list[tuple[int, Path]] = []
+        for png_path in sorted(render_dir.glob("val_step*_0000.png")):
+            step_zero = _parse_step_from_name(png_path.stem, "val_step")
+            if step_zero is None:
+                continue
+            preview_candidates.append((step_zero + 1, png_path))
+
+    existing_candidates = [(s, p) for s, p in preview_candidates if p.exists()]
+    if not existing_candidates:
+        return
+
+    for step, source in existing_candidates:
+        target = previews_dir / f"preview_{step:06d}.png"
+        if target.exists():
+            continue
+        try:
+            shutil.copy2(source, target)
+        except Exception as exc:
+            logger.warning("Failed to copy preview %s -> %s: %s", source, target, exc)
+
+    latest_step, latest_source = existing_candidates[-1]
+    latest_target = previews_dir / "preview_latest.png"
+    try:
+        shutil.copy2(latest_source, latest_target)
+        logger.info("Updated preview_latest.png from eval step %s", latest_step)
+    except Exception as exc:
+        logger.warning("Failed to update preview_latest.png: %s", exc)
 
 
 def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, params: dict, resume: bool = False):
@@ -1604,19 +1682,112 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
     base_output_dir.mkdir(parents=True, exist_ok=True)
     engine_name = "gsplat"
     engine_output_dir = _get_engine_output_dir(base_output_dir, engine_name)
-    _sync_engine_artifact_dirs(base_output_dir, engine_output_dir, ("checkpoints", "previews", "snapshots"))
+    (engine_output_dir / "previews").mkdir(parents=True, exist_ok=True)
+    (engine_output_dir / "snapshots").mkdir(parents=True, exist_ok=True)
 
     p = params or {}
     mode = p.get("mode", "baseline")
     max_steps = int(p.get("max_steps", 30_000))
+    splat_interval = p.get("splat_export_interval")
+    try:
+        splat_interval = max(1, int(splat_interval)) if splat_interval is not None else None
+    except Exception:
+        splat_interval = None
     project_dir = base_output_dir.parent
     stop_flag = project_dir / "stop_requested"
     gsplat_start = time.time()
+    tuning_state: dict[str, object] = {"applied": False, "event": None}
+    runner_ref: dict[str, object] = {"runner": None}
+
+    def apply_modified_profile(step: int) -> bool:
+        """Apply one-shot deterministic profile updates for modified mode."""
+        if mode != "modified" or tuning_state.get("applied"):
+            return False
+        if step < 200:
+            return False
+
+        runner_obj = runner_ref.get("runner")
+        if runner_obj is None:
+            return False
+
+        try:
+            lr_multipliers = {
+                "means": 0.85,
+                "opacities": 0.80,
+                "scales": 0.95,
+                "quats": 0.95,
+                "sh0": 1.10,
+                "shN": 1.10,
+            }
+            before_lrs: dict[str, float] = {}
+            after_lrs: dict[str, float] = {}
+            for name, mult in lr_multipliers.items():
+                optimizer = getattr(runner_obj, "optimizers", {}).get(name)
+                if optimizer is None or not optimizer.param_groups:
+                    continue
+                current_lr = float(optimizer.param_groups[0].get("lr", 0.0))
+                before_lrs[name] = current_lr
+                new_lr = current_lr * float(mult)
+                for group in optimizer.param_groups:
+                    group["lr"] = new_lr
+                after_lrs[name] = new_lr
+
+            strategy = getattr(getattr(runner_obj, "cfg", None), "strategy", None)
+            strategy_before: dict[str, float] = {}
+            strategy_after: dict[str, float] = {}
+            if strategy is not None:
+                for key in ("grow_grad2d", "prune_opa", "refine_every", "reset_every"):
+                    strategy_before[key] = float(getattr(strategy, key))
+
+                strategy.grow_grad2d = max(5e-5, float(strategy.grow_grad2d) * 0.85)
+                strategy.prune_opa = max(1e-4, float(strategy.prune_opa) * 0.90)
+                strategy.refine_every = max(25, int(float(strategy.refine_every) * 0.80))
+                strategy.reset_every = max(strategy.refine_every, int(float(strategy.reset_every) * 0.85))
+
+                for key in ("grow_grad2d", "prune_opa", "refine_every", "reset_every"):
+                    strategy_after[key] = float(getattr(strategy, key))
+
+            event = {
+                "step": int(step),
+                "adjustments": [
+                    "step200_deterministic_profile",
+                    "lr_rebalance_means_opacity_sh",
+                    "densification_threshold_and_cadence_shift",
+                ],
+                "params": {
+                    "learning_rates": after_lrs,
+                    "strategy": strategy_after,
+                },
+                "before": {
+                    "learning_rates": before_lrs,
+                    "strategy": strategy_before,
+                },
+            }
+            tuning_state["event"] = event
+            tuning_state["applied"] = True
+
+            update_status(
+                project_dir,
+                "processing",
+                mode=mode,
+                tuning_active=True,
+                last_tuning={
+                    "step": int(step),
+                    "action": "Step-200 profile update",
+                    "reason": "Modified mode deterministic tuning",
+                },
+            )
+            logger.info("Applied modified-mode profile at step %d", step)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to apply modified-mode profile at step %d: %s", step, exc)
+            return False
 
     def stop_checker() -> bool:
         return stop_flag.exists()
 
     def progress_callback(step: int, max_steps: int, loss: float) -> None:
+        apply_modified_profile(step)
         requested_stop = stop_checker()
         status_text = "stopping" if requested_stop else "processing"
         progress_fraction = 0.0 if max_steps <= 0 else float(step) / float(max_steps)
@@ -1679,8 +1850,8 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
         timing={"start": gsplat_start},
     )
 
-    dataset_dir = engine_output_dir / "simple_trainer_data"
-    dataset_dir.mkdir(parents=True, exist_ok=True)
+    # Upstream simple_trainer expects data_dir/{images,sparse/0}. Reuse engine root directly.
+    dataset_dir = engine_output_dir
     images_link = dataset_dir / "images"
     sparse_zero = dataset_dir / "sparse" / "0"
     sparse_zero.parent.mkdir(parents=True, exist_ok=True)
@@ -1719,6 +1890,12 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
     )
 
     feature_lr = float(p.get("feature_lr", 2.5e-3))
+    eval_steps = _build_steps(p.get("eval_interval"), [7000, 30000])
+    save_steps = sorted(set(
+        _build_steps(p.get("save_interval"), [7000, 30000])
+        + _build_steps(p.get("splat_export_interval"), [7000, 30000])
+    ))
+
     cfg = Config(
         disable_viewer=True,
         disable_video=True,
@@ -1730,8 +1907,8 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
         normalize_world_space=True,
         batch_size=1,
         max_steps=max_steps,
-        eval_steps=_build_steps(p.get("eval_interval"), [7000, 30000]),
-        save_steps=_build_steps(p.get("save_interval"), [7000, 30000]),
+        eval_steps=eval_steps,
+        save_steps=save_steps,
         save_ply=False,
         ssim_lambda=float(p.get("lambda_dssim", 0.2)),
         means_lr=float(p.get("position_lr_init", 1.6e-4)),
@@ -1748,11 +1925,35 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
     cfg.stop_checker = stop_checker
     cfg.progress_callback = progress_callback
 
+    snapshots_dir = engine_output_dir / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+
+    def eval_callback(step: int) -> None:
+        _materialize_eval_previews(engine_output_dir, eval_step=step)
+
+    def checkpoint_callback(step: int, checkpoint_path: str) -> None:
+        if splat_interval and step % splat_interval != 0 and step != max_steps:
+            return
+        snapshot_name = f"snapshot_step_{step:06d}.splat"
+        snapshot_path = snapshots_dir / snapshot_name
+        if snapshot_path.exists():
+            return
+        _export_with_gsplat(
+            Path(checkpoint_path),
+            snapshots_dir,
+            splat_name=snapshot_name,
+            export_ply=False,
+        )
+
+    cfg.eval_callback = eval_callback
+    cfg.checkpoint_callback = checkpoint_callback
+
     if device == "cpu":
         # Upstream runner assumes CUDA device naming; keep compatibility guard.
         raise RuntimeError("Upstream simple_trainer currently requires CUDA in this worker path")
 
     runner = Runner(local_rank=0, world_rank=0, world_size=1, cfg=cfg)
+    runner_ref["runner"] = runner
     stop_reason = runner.train()
     gsplat_end = time.time()
 
@@ -1771,37 +1972,6 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
             stop_flag.unlink()
         return stop_reason if isinstance(stop_reason, int) else 1
 
-    # After training completes, save final metrics to metadata.json
-    logger.info("Saving evaluation metrics...")
-    try:
-        # Load metrics from adaptive_tuning_results.json if available
-        tuning_results_file = engine_output_dir / "adaptive_tuning_results.json"
-        if tuning_results_file.exists():
-            with open(tuning_results_file) as f:
-                tuning_data = json.load(f)
-                final_metrics = tuning_data.get("final_evaluation", {})
-                
-                # Save to metadata.json for easy access
-                metadata_file = engine_output_dir / "metadata.json"
-                metadata = {}
-                if metadata_file.exists():
-                    with open(metadata_file) as f:
-                        metadata = json.load(f)
-                
-                metadata["evaluation_metrics"] = final_metrics
-                with open(metadata_file, "w") as f:
-                    json.dump(metadata, f, indent=2)
-                
-                logger.info(f"Saved evaluation metrics: {final_metrics}")
-    except Exception as e:
-        logger.warning(f"Could not save evaluation metrics: {e}")
-    
-    # Keep legacy location expected by downstream export flow.
-    ckpt_src = engine_output_dir / "ckpts"
-    ckpt_dst = engine_output_dir / "checkpoints"
-    if ckpt_src.exists():
-        _ensure_symlink(ckpt_src, ckpt_dst)
-
     logger.info("Training complete, exporting final checkpoint...")
     update_status(
         project_dir, "processing", stage="training", stage_progress=100,
@@ -1813,8 +1983,34 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
     )
     time.sleep(1.5)
     update_status(project_dir, "processing", stage="export", stage_progress=10, message="📦 Preparing export of final artifacts...")
-    ckpt_dir = engine_output_dir / "checkpoints"
+    ckpt_dir = engine_output_dir / "ckpts"
     ckpts = sorted(ckpt_dir.glob("ckpt_*.pt"))
+    snapshots_dir = engine_output_dir / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+
+    exported_snapshots = 0
+    for ckpt in ckpts:
+        step_zero = _parse_step_from_name(ckpt.stem, "ckpt_")
+        if step_zero is None:
+            continue
+        step = step_zero + 1
+        if splat_interval and step % splat_interval != 0 and step != max_steps:
+            continue
+        snapshot_name = f"snapshot_step_{step:06d}.splat"
+        snapshot_path = snapshots_dir / snapshot_name
+        if snapshot_path.exists():
+            continue
+        try:
+            _export_with_gsplat(
+                ckpt,
+                snapshots_dir,
+                splat_name=snapshot_name,
+                export_ply=False,
+            )
+            exported_snapshots += 1
+        except Exception as exc:
+            logger.warning("Failed snapshot export for %s: %s", ckpt.name, exc)
+
     if ckpts:
         latest = ckpts[-1]
         logger.info(f"Exporting checkpoint: {latest}")
@@ -1831,6 +2027,57 @@ def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, par
         update_status(project_dir, "processing", stage="export", stage_progress=100, message="✅ Export complete")
     else:
         logger.info("No saved checkpoints found; skipping checkpoint export")
+
+    if exported_snapshots:
+        logger.info("Exported %d interval snapshot(s) to %s", exported_snapshots, snapshots_dir)
+
+    # Build frontend/comparison-compatible artifacts from upstream outputs.
+    _materialize_eval_previews(engine_output_dir)
+    eval_history = _collect_eval_history(engine_output_dir, p, mode)
+    if eval_history and mode == "modified":
+        for row in eval_history:
+            tuning_params = row.get("tuning_params") if isinstance(row, dict) else None
+            if isinstance(tuning_params, dict):
+                tuning_params["modified_profile_applied"] = bool(tuning_state.get("applied"))
+                if tuning_state.get("event"):
+                    tuning_params["modified_profile_step"] = tuning_state["event"].get("step")
+    if eval_history:
+        _write_json_atomic(engine_output_dir / "eval_history.json", eval_history)
+        final_eval = eval_history[-1]
+        final_metrics = {
+            "lpips_score": final_eval.get("lpips_mean"),
+            "sharpness": final_eval.get("sharpness_mean"),
+            "convergence_speed": final_eval.get("convergence_speed"),
+            "final_loss": final_eval.get("final_loss"),
+            "gaussian_count": final_eval.get("num_gaussians"),
+        }
+        adaptive_payload = {
+            "mode": mode,
+            "final_evaluation": final_metrics,
+            "tune_end_step": final_eval.get("step"),
+            "tuning_history": [tuning_state["event"]] if tuning_state.get("event") else [],
+            "final_params": (tuning_state.get("event") or {}).get("params", {}),
+        }
+        _write_json_atomic(engine_output_dir / "adaptive_tuning_results.json", adaptive_payload)
+
+        metadata_path = engine_output_dir / "metadata.json"
+        metadata = {}
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+            except Exception:
+                metadata = {}
+        metadata["evaluation_metrics"] = final_metrics
+        metadata["final_metrics"] = {
+            "convergence_speed": final_eval.get("convergence_speed"),
+            "final_loss": final_eval.get("final_loss"),
+            "lpips_mean": final_eval.get("lpips_mean"),
+            "sharpness_mean": final_eval.get("sharpness_mean"),
+        }
+        metadata["num_gaussians"] = final_eval.get("num_gaussians")
+        metadata["mode"] = mode
+        _write_json_atomic(metadata_path, metadata)
 
     if stop_flag.exists():
         stop_flag.unlink()
