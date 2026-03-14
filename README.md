@@ -7,8 +7,14 @@ This repository contains both services:
 ## Prerequisites
 - Python 3.12+
 - Node.js 18+
-- `colmap` installed on host (for local mode)
-- NVIDIA/CUDA stack (optional, for GPU training)
+- `colmap` installed on host and available on PATH (required for local mode)
+- NVIDIA driver + CUDA-capable PyTorch build (optional, for GPU training)
+
+### Important: what is installed in venv vs system
+- `pip install -r bimba3d_backend/requirements.local.txt` installs Python packages only.
+- COLMAP is **not** a pip package here; install it separately on the OS and make sure `colmap -h` works in your terminal.
+- If Windows `colmap.exe` behaves oddly, set `COLMAP_EXE` to `...\\COLMAP.bat` before starting backend.
+- On Windows, if `torch.cuda.is_available()` is false, reinstall CUDA-enabled PyTorch wheels explicitly (requirements file alone may install CPU wheels).
 
 ## 1) Install
 From repo root:
@@ -64,12 +70,34 @@ Backend supports both runtime modes for processing:
 - `docker`
 - `local`
 
+Default mode behavior:
+- Windows (`os.name == "nt"`): defaults to `local`
+- Linux/macOS: defaults to `docker`
+
 Set via env before starting backend:
 
 ```bash
 export WORKER_MODE=local   # or docker
 export USE_DOCKER_WORKER=false   # legacy flag, optional
 ```
+
+PowerShell equivalent:
+
+```powershell
+$env:WORKER_MODE = "local"   # or "docker"
+$env:USE_DOCKER_WORKER = "false"
+$env:COLMAP_EXE = "D:\\Study\\4. Thesis\\colmap\\COLMAP-3.9.1-windows-cuda\\COLMAP.bat"
+```
+
+## Windows checklist (local mode)
+1. Install Python + Node.js.
+2. Create venv and install Python deps from `requirements.local.txt`.
+3. Install COLMAP natively on Windows and ensure `colmap -h` works.
+4. (Optional GPU) Install NVIDIA driver and CUDA-enabled PyTorch wheel; verify:
+	- `python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"`
+5. Build frontend and run backend:
+	- `cd bimba3d_frontend; npm install; npm run build; cd ..`
+	- `uvicorn bimba3d_backend.app.main:app --reload --port 8005`
 
 ## Notes
 - Python import path uses underscore package names: `bimba3d_backend...`

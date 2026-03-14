@@ -20,16 +20,26 @@ import time
 
 import numpy as np
 
-from .engines import ENGINE_LABELS, SUPPORTED_ENGINES, run_selected_engine
 from .image_resize import prepare_training_images, normalize_max_size
 from .colmap_loader import COLMAPDataset, qvec2rotmat, read_images_binary, read_points3D_binary
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+COLMAP_EXE = (os.getenv("COLMAP_EXE") or "colmap").strip() or "colmap"
+
 ENGINE_SUBDIR = "engines"
+SUPPORTED_ENGINES = {"gsplat", "litegs"}
+ENGINE_LABELS = {
+    "gsplat": "Gaussian Splatting",
+    "litegs": "LiteGS",
+}
 BEST_SPARSE_META = ".best_sparse_selection.json"
 SPARSE_IMAGE_MEMBERSHIP_META = ".sparse_image_membership.json"
+
+
+def _colmap_cmd(*args: str) -> list[str]:
+    return [COLMAP_EXE, *args]
 
 
 def _read_registered_image_names(images_bin_path: Path) -> list[str]:
@@ -69,7 +79,6 @@ def _persist_sparse_image_membership(
 
 
 def _run_colmap_image_registration_pass(
-    colmap_exec: str,
     database_path: Path,
     image_dir: Path,
     reconstruction_dir: Path,
@@ -83,14 +92,14 @@ def _run_colmap_image_registration_pass(
     """
     logger.info("COLMAP: image_registrator pass for %s", reconstruction_dir)
     try:
-        _run_cmd_with_retry([
-            colmap_exec, "image_registrator",
+        _run_cmd_with_retry(_colmap_cmd(
+            "image_registrator",
             "--database_path", str(database_path),
             "--input_path", str(reconstruction_dir),
             "--output_path", str(reconstruction_dir),
-        ])
-        _run_cmd_with_retry([
-            colmap_exec, "point_triangulator",
+        ))
+        _run_cmd_with_retry(_colmap_cmd(
+            "point_triangulator",
             "--database_path", str(database_path),
             "--image_path", str(image_dir),
             "--input_path", str(reconstruction_dir),
@@ -98,15 +107,15 @@ def _run_colmap_image_registration_pass(
             "--Mapper.ba_refine_principal_point", "1" if mapper_refine_principal_point else "0",
             "--Mapper.ba_refine_focal_length", "1" if mapper_refine_focal_length else "0",
             "--Mapper.ba_refine_extra_params", "1" if mapper_refine_extra_params else "0",
-        ])
-        _run_cmd_with_retry([
-            colmap_exec, "bundle_adjuster",
+        ))
+        _run_cmd_with_retry(_colmap_cmd(
+            "bundle_adjuster",
             "--input_path", str(reconstruction_dir),
             "--output_path", str(reconstruction_dir),
             "--BundleAdjustment.refine_principal_point", "1" if mapper_refine_principal_point else "0",
             "--BundleAdjustment.refine_focal_length", "1" if mapper_refine_focal_length else "0",
             "--BundleAdjustment.refine_extra_params", "1" if mapper_refine_extra_params else "0",
-        ])
+        ))
         return True
     except Exception as exc:
         logger.warning("Post-mapper image registration pass failed for %s: %s", reconstruction_dir, exc)
@@ -355,12 +364,12 @@ def _prepare_pinhole_sparse_for_litegs(colmap_dir: Path, output_dir: Path) -> Pa
     with tempfile.TemporaryDirectory(dir=cache_root, prefix="litegs_sparse_") as tmp_parent:
         txt_dir = Path(tmp_parent) / "txt"
         txt_dir.mkdir(parents=True, exist_ok=True)
-        _run_cmd_with_retry([
-            "colmap", "model_converter",
+        _run_cmd_with_retry(_colmap_cmd(
+            "model_converter",
             "--input_path", str(colmap_dir),
             "--output_path", str(txt_dir),
             "--output_type", "TXT",
-        ])
+        ))
 
         cameras_txt = txt_dir / "cameras.txt"
         if not cameras_txt.exists():
@@ -375,12 +384,12 @@ def _prepare_pinhole_sparse_for_litegs(colmap_dir: Path, output_dir: Path) -> Pa
             shutil.rmtree(cached_dir, ignore_errors=True)
         cached_dir.mkdir(parents=True, exist_ok=True)
 
-        _run_cmd_with_retry([
-            "colmap", "model_converter",
+        _run_cmd_with_retry(_colmap_cmd(
+            "model_converter",
             "--input_path", str(txt_dir),
             "--output_path", str(cached_dir),
             "--output_type", "BIN",
-        ])
+        ))
         cache_sig_file.write_text(signature, encoding="utf-8")
         logger.info(
             "Prepared PINHOLE sparse model for LiteGS at %s (source models: %s)",
@@ -517,11 +526,6 @@ def _run_cmd_with_retry(cmd: list[str], retries: int = 3, delay_sec: float = 2.0
             # Non-retryable error
             logger.error(f"Command failed: {cmd}\nSTDOUT: {stdout}\nSTDERR: {e.stderr}")
             raise
-        except FileNotFoundError as e:
-            program = cmd[0] if cmd else "<unknown>"
-            raise RuntimeError(
-                f"Command not found: {program}. Ensure it is installed and available on PATH."
-            ) from e
     # Exhausted retries
     logger.error(f"Command failed after retries: {cmd}\nERR: {last_err}")
     raise last_err
@@ -1229,16 +1233,6 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
     # allow colmap tuning via params.colmap
     p = params.get("colmap", {}) if isinstance(params, dict) else {}
 
-    colmap_exec = shutil.which("colmap")
-    if not colmap_exec:
-        msg = (
-            "COLMAP executable not found on PATH. "
-            "Install COLMAP and ensure the `colmap` command is available in this shell."
-        )
-        logger.error(msg)
-        update_status(output_dir.parent, "failed", progress=0, error=msg, stage="colmap", message=msg)
-        raise RuntimeError(msg)
-
     mapper_refine_principal_point = bool(p.get("mapper_refine_principal_point", True))
     mapper_refine_focal_length = bool(p.get("mapper_refine_focal_length", True))
     mapper_refine_extra_params = bool(p.get("mapper_refine_extra_params", True))
@@ -1262,13 +1256,13 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
         except Exception:
             pass
         sys.exit(0)
-    feat_cmd = [
-        colmap_exec, "feature_extractor",
+    feat_cmd = _colmap_cmd(
+        "feature_extractor",
         "--database_path", str(database_path),
         "--image_path", str(image_dir),
         "--ImageReader.single_camera", "1",
         "--ImageReader.camera_model", "OPENCV",
-    ]
+    )
     if p.get("max_image_size"):
         feat_cmd += ["--SiftExtraction.max_image_size", str(p.get("max_image_size"))]
     else:
@@ -1309,9 +1303,9 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
     guided = p.get("guided_matching")
     matching_type = p.get("matching_type", "exhaustive")
     if matching_type == "sequential":
-        match_cmd = [colmap_exec, "sequential_matcher", "--database_path", str(database_path)]
+        match_cmd = _colmap_cmd("sequential_matcher", "--database_path", str(database_path))
     else:
-        match_cmd = [colmap_exec, "exhaustive_matcher", "--database_path", str(database_path)]
+        match_cmd = _colmap_cmd("exhaustive_matcher", "--database_path", str(database_path))
     if guided is not None:
         match_cmd += ["--SiftMatching.guided_matching", "1" if guided else "0"]
     if p.get("sift_matching_min_num_inliers") is not None:
@@ -1341,15 +1335,15 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
         update_status(output_dir.parent, "stopped", progress=0, stop_requested=True, stage="colmap", message="⏸️ Processing stopped by user before sparse reconstruction.", stopped_stage="colmap")
         sys.exit(0)
     try:
-        mapper_cmd = [
-            colmap_exec, "mapper",
+        mapper_cmd = _colmap_cmd(
+            "mapper",
             "--database_path", str(database_path),
             "--image_path", str(image_dir),
             "--output_path", str(sparse_dir),
             "--Mapper.ba_refine_principal_point", "1" if mapper_refine_principal_point else "0",
             "--Mapper.ba_refine_focal_length", "1" if mapper_refine_focal_length else "0",
             "--Mapper.ba_refine_extra_params", "1" if mapper_refine_extra_params else "0",
-        ]
+        )
         if p.get("mapper_num_threads"):
             mapper_cmd += ["--Mapper.num_threads", str(p.get("mapper_num_threads"))]
         else:
@@ -1438,7 +1432,6 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
         improved_dirs: list[Path] = []
         for recon_dir in reconstruction_dirs:
             if _run_colmap_image_registration_pass(
-                colmap_exec,
                 database_path,
                 image_dir,
                 recon_dir,
@@ -2812,31 +2805,15 @@ def _run_selected_training_engine(
     resume: bool,
 ):
     """Run the selected engine training pipeline through one dispatch point."""
-    context = {
-        "logger": logger,
-        "update_status": update_status,
-        "write_metrics": write_metrics,
-        "get_engine_output_dir": _get_engine_output_dir,
-        "materialize_eval_previews": _materialize_eval_previews,
-        "export_with_gsplat": _export_with_gsplat,
-        "parse_step_from_name": _parse_step_from_name,
-        "collect_eval_history": _collect_eval_history,
-        "write_json_atomic": _write_json_atomic,
-        "ensure_symlink": _ensure_symlink,
-        "prepare_pinhole_sparse_for_litegs": _prepare_pinhole_sparse_for_litegs,
-        "patch_litegs_opacity_decay": _patch_litegs_opacity_decay,
-        "find_latest_litegs_checkpoint": _find_latest_litegs_checkpoint,
-        "export_litegs_outputs": _export_litegs_outputs,
+    runner_map = {
+        "gsplat": run_gsplat_training,
+        "litegs": run_litegs_training,
     }
-    return run_selected_engine(
-        engine,
-        image_dir,
-        colmap_dir,
-        output_dir,
-        params,
-        resume=resume,
-        context=context,
-    )
+    try:
+        runner = runner_map[engine]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported training engine: {engine}") from exc
+    return runner(image_dir, colmap_dir, output_dir, params, resume=resume)
 
 
 def main():

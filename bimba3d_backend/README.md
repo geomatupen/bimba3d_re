@@ -41,7 +41,7 @@ Use that as the single source of truth to avoid duplicated instructions.
 - If request body omits `worker_mode`, backend resolves in order:
   1) `WORKER_MODE` env (`docker` or `local`)
   2) legacy `USE_DOCKER_WORKER` env (`true` => `docker`, otherwise `local`)
-  3) default `docker`
+  3) platform default (`local` on Windows, `docker` on Linux/macOS)
 - Resolved mode is persisted in project status as `worker_mode`.
 
 ## Notes
