@@ -304,6 +304,23 @@ def run_training(
     images_link = dataset_dir / "images"
     sparse_zero = dataset_dir / "sparse" / "0"
     sparse_zero.parent.mkdir(parents=True, exist_ok=True)
+
+    def _materialize_dataset_path(link_path: Path, target: Path):
+        resolved_target = Path(target).resolve()
+        try:
+            os.symlink(str(resolved_target), str(link_path), target_is_directory=True)
+            return
+        except OSError as exc:
+            is_win_symlink_priv_error = os.name == "nt" and getattr(exc, "winerror", None) == 1314
+            if not is_win_symlink_priv_error:
+                raise
+            logger.warning(
+                "Symlink privilege missing on Windows for %s -> %s; falling back to copy.",
+                link_path,
+                resolved_target,
+            )
+            shutil.copytree(resolved_target, link_path, dirs_exist_ok=True)
+
     for link_path, target in ((images_link, image_dir), (sparse_zero, colmap_dir)):
         if link_path.exists() or link_path.is_symlink():
             try:
@@ -313,7 +330,7 @@ def run_training(
                     shutil.rmtree(link_path)
             except Exception:
                 pass
-        os.symlink(str(Path(target).resolve()), str(link_path), target_is_directory=True)
+        _materialize_dataset_path(link_path, target)
 
     def _build_steps(interval_value, fallback):
         if interval_value is None:
