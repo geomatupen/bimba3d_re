@@ -1,83 +1,22 @@
-# React + TypeScript + Vite
+# Bimba3d Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + TypeScript + Vite UI for project creation, upload, processing, logs, comparison, and viewer screens.
 
-Currently, two official plugins are available:
+## Setup and Run
+Canonical install/run instructions are maintained in the root README:
+- [../README.md](../README.md)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Use that as the single source of truth to avoid duplicated instructions.
 
-## Bimba3d Frontend Usage
-- Start dev server: `npm install && npm run dev`
-- Upload page shows a GPU status banner (via backend `/health/gpu`). If no GPU is detected, training will run on CPU and be slower.
-- Choose a pipeline stage in the Upload form: `Full`, `COLMAP only`, or `Training only`.
-- Configure training: `max steps` (default 300), live export intervals for splats and preview PNGs, and optional auto early-stop.
-- During processing, the Project page shows `stage`, `message`, live preview images, and a manual Stop button.
+## Frontend-Specific Notes
+- Uses Vite for development and build output to `dist/`.
+- In monorepo single-URL mode, backend serves built frontend assets from `bimba3d_frontend/dist`.
+- In dev mode (`npm run dev`), frontend runs on `5173` and calls backend API on `8005`.
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-cloudflared tunnel run mytunnel
+## UX/Feature Areas
+- Project list and creation flows.
+- Image upload and per-project processing configuration.
+- Live status/logs/progress during processing.
+- Comparison view for run metrics and previews.
+- 3D viewer tab and output download actions.
 

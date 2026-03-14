@@ -47,3 +47,7 @@ bimba3d_frontend/.env.*
 .tmp/
 tmp/
 .serena/
+
+
+#scripts
+scripts/
