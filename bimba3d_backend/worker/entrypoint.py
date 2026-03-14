@@ -27,9 +27,31 @@ from .colmap_loader import COLMAPDataset, qvec2rotmat, read_images_binary, read_
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+COLMAP_EXE = (os.getenv("COLMAP_EXE") or "colmap").strip() or "colmap"
+
 ENGINE_SUBDIR = "engines"
 BEST_SPARSE_META = ".best_sparse_selection.json"
 SPARSE_IMAGE_MEMBERSHIP_META = ".sparse_image_membership.json"
+
+
+def _resolve_colmap_executable() -> str:
+    candidate = COLMAP_EXE
+    if os.name == "nt" and candidate.lower().endswith("colmap.exe"):
+        exe_path = Path(candidate)
+        bat_candidates = [
+            exe_path.with_name("COLMAP.bat"),
+            exe_path.parent.parent / "COLMAP.bat",
+        ]
+        for bat in bat_candidates:
+            if bat.exists():
+                return str(bat)
+    return candidate
+
+
+def _prepare_subprocess_command(cmd: list[str]) -> tuple[list[str] | str, bool]:
+    if os.name == "nt" and cmd and str(cmd[0]).lower().endswith((".bat", ".cmd")):
+        return subprocess.list2cmdline(cmd), True
+    return cmd, False
 
 
 def _read_registered_image_names(images_bin_path: Path) -> list[str]:
@@ -338,6 +360,7 @@ def _rewrite_cameras_file_as_pinhole(cameras_txt: Path) -> tuple[bool, set[str]]
 def _prepare_pinhole_sparse_for_litegs(colmap_dir: Path, output_dir: Path) -> Path:
     """Ensure LiteGS sees a PINHOLE-only sparse reconstruction."""
     colmap_dir = Path(colmap_dir)
+    colmap_exec = _resolve_colmap_executable()
     cache_root = Path(output_dir) / "litegs" / "cache" / "pinhole_sparse"
     cache_root.mkdir(parents=True, exist_ok=True)
 
@@ -356,7 +379,7 @@ def _prepare_pinhole_sparse_for_litegs(colmap_dir: Path, output_dir: Path) -> Pa
         txt_dir = Path(tmp_parent) / "txt"
         txt_dir.mkdir(parents=True, exist_ok=True)
         _run_cmd_with_retry([
-            "colmap", "model_converter",
+            colmap_exec, "model_converter",
             "--input_path", str(colmap_dir),
             "--output_path", str(txt_dir),
             "--output_type", "TXT",
@@ -376,7 +399,7 @@ def _prepare_pinhole_sparse_for_litegs(colmap_dir: Path, output_dir: Path) -> Pa
         cached_dir.mkdir(parents=True, exist_ok=True)
 
         _run_cmd_with_retry([
-            "colmap", "model_converter",
+            colmap_exec, "model_converter",
             "--input_path", str(txt_dir),
             "--output_path", str(cached_dir),
             "--output_type", "BIN",
@@ -499,7 +522,8 @@ def _run_cmd_with_retry(cmd: list[str], retries: int = 3, delay_sec: float = 2.0
     last_err = None
     for attempt in range(1, retries + 1):
         try:
-            res = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            run_cmd, use_shell = _prepare_subprocess_command(cmd)
+            res = subprocess.run(run_cmd, check=True, capture_output=True, text=True, shell=use_shell)
             if res.stdout:
                 logger.info(res.stdout.strip())
             if res.stderr:
@@ -509,6 +533,11 @@ def _run_cmd_with_retry(cmd: list[str], retries: int = 3, delay_sec: float = 2.0
             stderr = (e.stderr or "").lower()
             stdout = (e.stdout or "")
             last_err = e
+            if os.name == "nt" and getattr(e, "returncode", None) in (3221225781, 3221225786):
+                logger.error(
+                    "COLMAP crashed on Windows (code=%s). If COLMAP_EXE points to colmap.exe, set it to COLMAP.bat instead; also ensure Microsoft Visual C++ 2015-2022 Redistributable is installed.",
+                    getattr(e, "returncode", None),
+                )
             # Detect common transient lock conditions
             if "database is locked" in stderr or "busy" in stderr:
                 logger.warning(f"SQLite busy/locked detected (attempt {attempt}/{retries}). Retrying after {delay_sec}s...")
@@ -1229,15 +1258,17 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
     # allow colmap tuning via params.colmap
     p = params.get("colmap", {}) if isinstance(params, dict) else {}
 
-    colmap_exec = shutil.which("colmap")
-    if not colmap_exec:
+    colmap_exec = _resolve_colmap_executable()
+    colmap_exec_path = shutil.which(colmap_exec) if not os.path.isabs(colmap_exec) else colmap_exec
+    if not colmap_exec_path:
         msg = (
-            "COLMAP executable not found on PATH. "
-            "Install COLMAP and ensure the `colmap` command is available in this shell."
+            f"COLMAP executable not found: {colmap_exec}. "
+            "Install COLMAP and/or set COLMAP_EXE to full path (on Windows, COLMAP.bat is recommended)."
         )
         logger.error(msg)
         update_status(output_dir.parent, "failed", progress=0, error=msg, stage="colmap", message=msg)
         raise RuntimeError(msg)
+    colmap_exec = colmap_exec_path
 
     mapper_refine_principal_point = bool(p.get("mapper_refine_principal_point", True))
     mapper_refine_focal_length = bool(p.get("mapper_refine_focal_length", True))
@@ -1372,12 +1403,14 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
         # Stream COLMAP mapper output into the application logger so it is
         # persisted to the project's processing.log and visible via frontend.
         # Use a pipe and continuously read to avoid deadlocks.
+        popen_cmd, popen_shell = _prepare_subprocess_command(mapper_cmd)
         proc = subprocess.Popen(
-            mapper_cmd,
+            popen_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            shell=popen_shell,
         )
         try:
             assert proc.stdout is not None
@@ -2901,14 +2934,14 @@ def main():
         images_max_size = normalize_max_size(params.get("images_max_size"))
         if images_max_size:
             resize_stage = "training" if stage == "train_only" else "colmap"
-            logger.info("Preparing resized image set (≤%d px) for project %s", images_max_size, args.project_id)
+            logger.info("Preparing resized image set (<=%d px) for project %s", images_max_size, args.project_id)
             update_status(
                 project_dir,
                 "processing",
                 progress=5 if resize_stage == "colmap" else 55,
                 stage=resize_stage,
                 stage_progress=2 if resize_stage == "training" else 5,
-                message=f"📐 Resizing input images to ≤ {images_max_size}px...",
+                message=f"📐 Resizing input images to <= {images_max_size}px...",
                 engine=engine,
             )
             try:
@@ -2919,7 +2952,7 @@ def main():
                     "processing",
                     stage=resize_stage,
                     stage_progress=6 if resize_stage == "training" else 8,
-                    message=f"✅ Image set ready at ≤ {images_max_size}px",
+                    message=f"✅ Image set ready at <= {images_max_size}px",
                 )
                 colmap_cfg = dict(params.get("colmap") or {})
                 colmap_cfg.setdefault("max_image_size", images_max_size)

@@ -43,8 +43,23 @@ def _colmap_cmd(*args: str) -> list[str]:
 
 
 def _prepare_subprocess_command(cmd: list[str]) -> tuple[list[str] | str, bool]:
-    if os.name == "nt" and cmd and str(cmd[0]).lower().endswith((".bat", ".cmd")):
-        return subprocess.list2cmdline(cmd), True
+    if os.name == "nt" and cmd:
+        resolved = list(cmd)
+        exe = str(resolved[0])
+        exe_lower = exe.lower()
+        if exe_lower.endswith("colmap.exe"):
+            exe_path = Path(exe)
+            candidates = [
+                exe_path.with_name("COLMAP.bat"),
+                exe_path.parent.parent / "COLMAP.bat",
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    resolved[0] = str(candidate)
+                    break
+        if str(resolved[0]).lower().endswith((".bat", ".cmd")):
+            return subprocess.list2cmdline(resolved), True
+        return resolved, False
     return cmd, False
 
 
@@ -525,6 +540,11 @@ def _run_cmd_with_retry(cmd: list[str], retries: int = 3, delay_sec: float = 2.0
             stderr = (e.stderr or "").lower()
             stdout = (e.stdout or "")
             last_err = e
+            if os.name == "nt" and getattr(e, "returncode", None) in (3221225781, 3221225786):
+                logger.error(
+                    "COLMAP crashed on Windows (code=%s). If COLMAP_EXE points to colmap.exe, set it to COLMAP.bat instead; also ensure Microsoft Visual C++ 2015-2022 Redistributable is installed.",
+                    getattr(e, "returncode", None),
+                )
             # Detect common transient lock conditions
             if "database is locked" in stderr or "busy" in stderr:
                 logger.warning(f"SQLite busy/locked detected (attempt {attempt}/{retries}). Retrying after {delay_sec}s...")

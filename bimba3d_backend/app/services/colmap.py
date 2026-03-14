@@ -9,6 +9,29 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+COLMAP_EXE = (os.getenv("COLMAP_EXE") or "colmap").strip() or "colmap"
+
+
+def _prepare_subprocess_command(cmd: list[str]) -> tuple[list[str] | str, bool]:
+    if os.name == "nt" and cmd:
+        resolved = list(cmd)
+        exe = str(resolved[0])
+        exe_lower = exe.lower()
+        if exe_lower.endswith("colmap.exe"):
+            exe_path = Path(exe)
+            candidates = [
+                exe_path.with_name("COLMAP.bat"),
+                exe_path.parent.parent / "COLMAP.bat",
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    resolved[0] = str(candidate)
+                    break
+        if str(resolved[0]).lower().endswith((".bat", ".cmd")):
+            return subprocess.list2cmdline(resolved), True
+        return resolved, False
+    return cmd, False
+
 _PROGRESS_BAR_PATTERN = re.compile(r"\b\d{1,3}%\|.*\|\s*\d+(?:\.\d+)?[KMG]?/\d+(?:\.\d+)?[KMG]?")
 
 
@@ -211,7 +234,8 @@ def _run_cmd_with_retry(cmd: list[str], retries: int = 3, delay_sec: float = 2.0
     last_err = None
     for attempt in range(1, retries + 1):
         try:
-            res = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            run_cmd, use_shell = _prepare_subprocess_command(cmd)
+            res = subprocess.run(run_cmd, check=True, capture_output=True, text=True, shell=use_shell)
             if res.stdout:
                 logger.info(res.stdout.strip())
             if res.stderr:
@@ -220,6 +244,11 @@ def _run_cmd_with_retry(cmd: list[str], retries: int = 3, delay_sec: float = 2.0
         except subprocess.CalledProcessError as e:
             stderr = (e.stderr or "").lower()
             last_err = e
+            if os.name == "nt" and getattr(e, "returncode", None) in (3221225781, 3221225786):
+                logger.error(
+                    "COLMAP crashed on Windows (code=%s). If COLMAP_EXE points to colmap.exe, set it to COLMAP.bat instead; also ensure Microsoft Visual C++ 2015-2022 Redistributable is installed.",
+                    getattr(e, "returncode", None),
+                )
             if "database is locked" in stderr or "busy" in stderr:
                 logger.warning(f"SQLite busy/locked (attempt {attempt}/{retries}). Retrying after {delay_sec}s...")
                 time.sleep(delay_sec)
@@ -239,6 +268,10 @@ def _cleanup_sqlite_sidecars(db_path: Path):
                 logger.info(f"Removed stale SQLite sidecar: {sidecar}")
             except Exception as e:
                 logger.warning(f"Failed to remove sidecar {sidecar}: {e}")
+
+
+def _colmap_cmd(*args: str) -> list[str]:
+    return [COLMAP_EXE, *args]
 
 
 def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None):
@@ -276,13 +309,13 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None):
 
         # 1️⃣ Feature extraction
         logger.info("Running COLMAP feature extraction...")
-        feat_cmd = [
-            "colmap", "feature_extractor",
+        feat_cmd = _colmap_cmd(
+            "feature_extractor",
             "--database_path", str(db_path),
             "--image_path", str(image_dir),
             "--ImageReader.camera_model", "OPENCV",
             "--ImageReader.single_camera", "1",
-        ]
+        )
         if p.get("max_image_size"):
             feat_cmd += ["--SiftExtraction.max_image_size", str(p.get("max_image_size"))]
         else:
@@ -300,15 +333,15 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None):
         guided = p.get("guided_matching")
         matching_type = p.get("matching_type", "exhaustive")
         if matching_type == "sequential":
-            match_cmd = [
-                "colmap", "sequential_matcher",
+            match_cmd = _colmap_cmd(
+                "sequential_matcher",
                 "--database_path", str(db_path),
-            ]
+            )
         else:
-            match_cmd = [
-                "colmap", "exhaustive_matcher",
+            match_cmd = _colmap_cmd(
+                "exhaustive_matcher",
                 "--database_path", str(db_path),
-            ]
+            )
         if guided is not None:
             match_cmd += ["--SiftMatching.guided_matching", "1" if guided else "0"]
         else:
@@ -319,15 +352,15 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None):
 
         # 3️⃣ Sparse reconstruction
         logger.info("Running COLMAP sparse reconstruction (mapper)...")
-        mapper_cmd = [
-            "colmap", "mapper",
+        mapper_cmd = _colmap_cmd(
+            "mapper",
             "--database_path", str(db_path),
             "--image_path", str(image_dir),
             "--output_path", str(sparse_dir),
             "--Mapper.ba_refine_principal_point", "1",
             "--Mapper.ba_refine_focal_length", "1",
             "--Mapper.ba_refine_extra_params", "1",
-        ]
+        )
         if p.get("mapper_num_threads"):
             mapper_cmd += ["--Mapper.num_threads", str(p.get("mapper_num_threads"))]
         else:
@@ -360,7 +393,7 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None):
         return sparse_dir
         
     except FileNotFoundError as e:
-        logger.error(f"COLMAP not found. Install with: apt-get install colmap")
+        logger.error("COLMAP not found. Ensure `%s` is executable or set COLMAP_EXE to full path.", COLMAP_EXE)
         raise
     except subprocess.CalledProcessError as e:
         logger.error(f"COLMAP command failed: {e.stderr}")
