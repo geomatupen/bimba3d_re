@@ -1,33 +1,66 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run the FastAPI backend locally (with auto-reload)
-# - Creates a virtualenv (./venv) if missing
-# - Installs requirements
-# - Starts uvicorn on port 8005
+# Start backend and frontend together from the repo root.
+# Usage:
+#   ./run_local.sh
+# Optional env vars:
+#   BACKEND_DIR (default: bimba3d_backend)
+#   FRONTEND_DIR (default: bimba3d_frontend)
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="${BACKEND_DIR:-bimba3d_backend}"
+FRONTEND_DIR="${FRONTEND_DIR:-bimba3d_frontend}"
 
-PYTHON_BIN="python3"
-VENV_DIR="venv"
-PORT="8005"
+BACKEND_PATH="$ROOT_DIR/$BACKEND_DIR"
+FRONTEND_PATH="$ROOT_DIR/$FRONTEND_DIR"
 
-if [[ ! -d "$VENV_DIR" ]]; then
-  echo "[backend] Creating virtualenv in $VENV_DIR"
-  "$PYTHON_BIN" -m venv "$VENV_DIR"
+if [[ ! -x "$BACKEND_PATH/run_local.sh" ]]; then
+  echo "Backend launcher not found or not executable: $BACKEND_PATH/run_local.sh" >&2
+  exit 1
 fi
 
-source "$VENV_DIR/bin/activate"
+if [[ ! -x "$FRONTEND_PATH/run_local.sh" ]]; then
+  echo "Frontend launcher not found or not executable: $FRONTEND_PATH/run_local.sh" >&2
+  exit 1
+fi
 
-echo "[backend] Installing requirements"
-pip install --upgrade pip
-pip install -r requirements.local.txt
+BACKEND_PID=""
+FRONTEND_PID=""
 
-# Environment toggles
-export USE_DEMO_MODE=${USE_DEMO_MODE:-false}
-export USE_DOCKER_WORKER=${USE_DOCKER_WORKER:-false}
-export DATA_DIR=${DATA_DIR:-"$SCRIPT_DIR/data/projects"}
+cleanup() {
+  echo
+  echo "[root] Stopping services..."
+  if [[ -n "$BACKEND_PID" ]] && kill -0 "$BACKEND_PID" 2>/dev/null; then
+    kill "$BACKEND_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$FRONTEND_PID" ]] && kill -0 "$FRONTEND_PID" 2>/dev/null; then
+    kill "$FRONTEND_PID" 2>/dev/null || true
+  fi
+  wait || true
+}
 
-echo "[backend] Starting uvicorn on :$PORT"
-exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --reload
+trap cleanup INT TERM EXIT
+
+echo "[root] Starting backend from $BACKEND_DIR"
+(
+  cd "$BACKEND_PATH"
+  ./run_local.sh
+) &
+BACKEND_PID=$!
+
+echo "[root] Starting frontend from $FRONTEND_DIR"
+(
+  cd "$FRONTEND_PATH"
+  ./run_local.sh
+) &
+FRONTEND_PID=$!
+
+echo "[root] Backend:  http://localhost:8005"
+echo "[root] Frontend: http://localhost:5173"
+
+wait -n "$BACKEND_PID" "$FRONTEND_PID"
+EXIT_CODE=$?
+
+echo "[root] One service exited (code: $EXIT_CODE). Stopping the other..."
+exit "$EXIT_CODE"

@@ -1,0 +1,30 @@
+# Backend gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+venv/
+.venv/
+env/
+.pytest_cache/
+/.mypy_cache/
+
+# Environment files
+.env
+.env.*
+
+# Runtime data
+data/projects/
+data/**/outputs/
+data/**/status.json
+processing.log
+*.db
+*.sqlite3
+data/.cache/
+
+# Logs
+*.log
+

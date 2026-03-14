@@ -1,30 +1,49 @@
-# Backend gitignore
+# Monorepo root ignore
 
-# Python
+# OS / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# Python envs / caches
+.venv/
+venv/
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-*.pyc
-venv/
-.venv/
-env/
 .pytest_cache/
-/.mypy_cache/
+.mypy_cache/
 
-# Environment files
+# Backend runtime artifacts
+bimba3d_backend/venv/
+bimba3d_backend/env/
+bimba3d_backend/data/projects/
+bimba3d_backend/data/.cache/
+bimba3d_backend/**/outputs/
+bimba3d_backend/**/status.json
+bimba3d_backend/**/*.log
+bimba3d_backend/*.db
+bimba3d_backend/*.sqlite3
+
+# Frontend artifacts
+bimba3d_frontend/node_modules/
+bimba3d_frontend/dist/
+bimba3d_frontend/dist-ssr/
+bimba3d_frontend/.vite/
+bimba3d_frontend/.cache/
+bimba3d_frontend/*.local
+
+# Env files
 .env
 .env.*
+bimba3d_backend/.env
+bimba3d_backend/.env.*
+bimba3d_frontend/.env
+bimba3d_frontend/.env.*
 
-# Runtime data
-data/projects/
-data/**/outputs/
-data/**/status.json
-processing.log
-*.db
-*.sqlite3
-data/.cache/
-
-# Logs
-*.log
-
+# Local temporary work
+.tmp/
+tmp/
+.serena/

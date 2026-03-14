@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./bimba3d_backend
+      dockerfile: Dockerfile
+    ports:
+      - "8005:8005"
+    volumes:
+      - ./data:/app/data
+      - ./bimba3d_backend:/app
+      - /var/run/docker.sock:/var/run/docker.sock  # Allow backend to spawn workers
+    environment:
+      - USE_DEMO_MODE=false
+      - USE_DOCKER_WORKER=true
+      - DATA_DIR=/app/data/projects
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8005 --reload
+    networks:
+      - bimba3d
+    depends_on:
+      - worker
+
+  worker:
+    build:
+      context: ./bimba3d_backend
+      dockerfile: Dockerfile.worker
+    image: bimba3d-worker:latest
+    networks:
+      - bimba3d
+
+  frontend:
+    build:
+      context: ./bimba3d_frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    networks:
+      - bimba3d
+
+networks:
+  bimba3d:
+    driver: bridge
