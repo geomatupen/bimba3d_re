@@ -957,11 +957,20 @@ class Runner:
                 or current_step % progress_every == 0
             ):
                 try:
-                    progress_callback(
-                        step=current_step,
-                        max_steps=int(max_steps),
-                        loss=float(loss.item()),
-                    )
+                    try:
+                        progress_callback(
+                            step=current_step,
+                            max_steps=int(max_steps),
+                            loss=float(loss.item()),
+                        )
+                    except TypeError as type_err:
+                        if "max_steps" not in str(type_err):
+                            raise
+                        progress_callback(
+                            current_step,
+                            int(max_steps),
+                            float(loss.item()),
+                        )
                 except Exception as exc:
                     print(f"Progress callback failed at step {step}: {exc}")
 
