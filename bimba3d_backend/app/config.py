@@ -4,7 +4,11 @@ import os
 
 # Directories
 BASE_DIR = Path(__file__).parent.parent
-DATA_DIR = BASE_DIR / "data" / "projects"
+_data_dir_override = os.environ.get("BIMBA3D_DATA_DIR")
+if _data_dir_override:
+    DATA_DIR = Path(_data_dir_override).expanduser().resolve()
+else:
+    DATA_DIR = BASE_DIR / "data" / "projects"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # API

@@ -94,6 +94,11 @@ python -m pip install -r bimba3d_backend\requirements.windows.txt
 
 set "WORKER_MODE=local"
 set "FRONTEND_DIST=%CD%\bimba3d_frontend\dist"
+set "BIMBA3D_DATA_DIR=%ProgramData%\Bimba3D\data\projects"
+
+if not exist "%BIMBA3D_DATA_DIR%" (
+    mkdir "%BIMBA3D_DATA_DIR%"
+)
 
 start "" http://127.0.0.1:8005
 python -m uvicorn bimba3d_backend.app.main:app --host 127.0.0.1 --port 8005
