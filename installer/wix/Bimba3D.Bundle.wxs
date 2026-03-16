@@ -21,7 +21,7 @@
 
     <Variable Name="Bimba3DInstallDir" Type="string" Value="[ProgramFiles64Folder]Bimba3D" />
     <Variable Name="LogRoot" Type="string" Value="[ProgramDataFolder]Bimba3D\\Logs" />
-    <Variable Name="ColmapInstallDir" Type="string" Value="C:\\Program Files\\Bimba3D\\third_party\\colmap" />
+    <Variable Name="ColmapInstallDir" Type="string" Value="C:\\ProgramData\\Bimba3D\\third_party\\colmap" />
     <Variable Name="CudaInstallDir" Type="string" Value="C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.5" />
     <Variable Name="ColmapVersion" Type="string" Value="4.0.1" />
     <Variable Name="InstallBuildTools" Type="numeric" Value="0" />
@@ -98,12 +98,13 @@
           Id="ColmapInstall"
           DisplayName="COLMAP [ColmapVersion]"
           SourceFile="payloads\\install-colmap.cmd"
-          InstallArguments="&quot;[WixBundleExecutePackageCacheFolder]colmap-x64-windows-cuda.zip&quot;"
+          InstallArguments="&quot;[ColmapInstallDir]&quot; &quot;[WixBundleExecutePackageCacheFolder]colmap-x64-windows-cuda.zip&quot;"
           DetectCondition="COLMAP_BAT_EXISTS"
           PerMachine="yes"
-          Vital="no"
+                    Vital="yes"
           Compressed="yes"
                     Permanent="yes">
+                <Payload SourceFile="payloads\\install-colmap.ps1" />
                 <Payload SourceFile="payloads\\colmap-x64-windows-cuda.zip" />
             </ExePackage>
 
