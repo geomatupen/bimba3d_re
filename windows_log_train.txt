@@ -1,101 +1,57 @@
-2026-03-16 18:51:07,180 - INFO - 2026-03-16 18:51:07,180 - INFO - Initialized project log file: C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\processing.log
-2026-03-16 18:51:07,180 - INFO - Preparing resized image set (<=1600 px) for project 1fba6739-87c3-4639-b637-0c93ac588ba6
-2026-03-16 18:51:07,180 - INFO - 2026-03-16 18:51:07,180 - INFO - Preparing resized image set (<=1600 px) for project 1fba6739-87c3-4639-b637-0c93ac588ba6
-2026-03-16 18:51:07,193 - INFO - Prepared resized image set at C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\images_resized ({'total': 38, 'resized': 0, 'copied': 0, 'reused': 38, 'failed': 0, 'removed': 0})
-2026-03-16 18:51:07,193 - INFO - 2026-03-16 18:51:07,193 - INFO - Prepared resized image set at C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\images_resized ({'total': 38, 'resized': 0, 'copied': 0, 'reused': 38, 'failed': 0, 'removed': 0})
-2026-03-16 18:51:07,205 - INFO - Sparse candidate C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\sparse\0 contains 21 images and 1177 points
-2026-03-16 18:51:07,205 - INFO - 2026-03-16 18:51:07,205 - INFO - Sparse candidate C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\sparse\0 contains 21 images and 1177 points
-2026-03-16 18:51:07,208 - INFO - Recorded best sparse reconstruction 0 (21 images, 1177 points)
-2026-03-16 18:51:07,208 - INFO - Using best sparse candidate 0 (21 images, 1177 points)
-2026-03-16 18:51:07,208 - INFO - 2026-03-16 18:51:07,208 - INFO - Recorded best sparse reconstruction 0 (21 images, 1177 points)
-2026-03-16 18:51:07,208 - INFO - 2026-03-16 18:51:07,208 - INFO - Using best sparse candidate 0 (21 images, 1177 points)
-2026-03-16 18:51:13,615 - INFO - Starting gsplat training (upstream simple_trainer path)...
-2026-03-16 18:51:13,615 - INFO - 2026-03-16 18:51:13,615 - INFO - Starting gsplat training (upstream simple_trainer path)...
-2026-03-16 18:51:14,439 - WARNING - Symlink privilege missing on Windows for C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\engines\gsplat\images -> C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\images_resized; falling back to copy.
-2026-03-16 18:51:14,439 - INFO - 2026-03-16 18:51:14,439 - WARNING - Symlink privilege missing on Windows for C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\engines\gsplat\images -> C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\images_resized; falling back to copy.
-2026-03-16 18:51:14,481 - WARNING - Symlink privilege missing on Windows for C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\engines\gsplat\sparse\0 -> C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\sparse\0; falling back to copy.
-2026-03-16 18:51:14,481 - INFO - 2026-03-16 18:51:14,481 - WARNING - Symlink privilege missing on Windows for C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\engines\gsplat\sparse\0 -> C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\sparse\0; falling back to copy.
-2026-03-16 18:51:14,481 - INFO - GSPLAT logging cadence: snapshot every 100 steps (config key: log_interval); tqdm=disabled
-2026-03-16 18:51:14,481 - INFO - 2026-03-16 18:51:14,481 - INFO - GSPLAT logging cadence: snapshot every 100 steps (config key: log_interval); tqdm=disabled
-2026-03-16 18:51:16,376 - INFO - C:\Users\ROG\Documents\bimba3d\bimba3d\.venv\Lib\site-packages\torchmetrics\functional\image\lpips.py:332: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-2026-03-16 18:51:16,376 - INFO -   self.load_state_dict(torch.load(model_path, map_location="cpu"), strict=False)
-2026-03-16 18:51:35,347 - INFO - Updated preview_latest.png from eval step 300
-2026-03-16 18:51:35,347 - INFO - 2026-03-16 18:51:35,347 - INFO - Updated preview_latest.png from eval step 300
-2026-03-16 18:51:35,809 - INFO - Training complete, exporting final checkpoint...
-2026-03-16 18:51:35,809 - INFO - 2026-03-16 18:51:35,809 - INFO - Training complete, exporting final checkpoint...
-2026-03-16 18:51:37,317 - INFO - Exporting checkpoint: C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\engines\gsplat\ckpts\ckpt_299_rank0.pt
-2026-03-16 18:51:37,317 - INFO - 2026-03-16 18:51:37,317 - INFO - Exporting checkpoint: C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\engines\gsplat\ckpts\ckpt_299_rank0.pt
-2026-03-16 18:51:37,317 - INFO - C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py:1539: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-2026-03-16 18:51:37,320 - INFO -   ckpt = torch.load(checkpoint_path, map_location="cpu")
-2026-03-16 18:51:37,320 - INFO - Exporting with gsplat exporter | means (1177, 3), scales (1177, 3), quats (1177, 4), opacities (1177,), sh0 (1177, 1, 3), shN (1177, 15, 3)
-2026-03-16 18:51:37,320 - INFO - 2026-03-16 18:51:37,320 - INFO - Exporting with gsplat exporter | means (1177, 3), scales (1177, 3), quats (1177, 4), opacities (1177,), sh0 (1177, 1, 3), shN (1177, 15, 3)
-2026-03-16 18:51:37,327 - INFO - 2026-03-16 18:51:37,327 - INFO - \u2713 Exported .splat -> C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\engines\gsplat\splats.splat (37664 bytes)
-2026-03-16 18:51:37,327 - INFO - --- Logging error ---
-2026-03-16 18:51:37,327 - INFO - Traceback (most recent call last):
-2026-03-16 18:51:37,327 - INFO -   File "C:\Anaconda\Lib\logging\__init__.py", line 1163, in emit
-2026-03-16 18:51:37,327 - INFO -     stream.write(msg + self.terminator)
-2026-03-16 18:51:37,327 - INFO -   File "C:\Anaconda\Lib\encodings\cp1252.py", line 19, in encode
-2026-03-16 18:51:37,327 - INFO -     return codecs.charmap_encode(input,self.errors,encoding_table)[0]
-2026-03-16 18:51:37,327 - INFO -            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-2026-03-16 18:51:37,327 - INFO - UnicodeEncodeError: 'charmap' codec can't encode character '\u2713' in position 33: character maps to <undefined>
-2026-03-16 18:51:37,327 - INFO - Call stack:
-2026-03-16 18:51:37,327 - INFO -   File "<frozen runpy>", line 198, in _run_module_as_main
-2026-03-16 18:51:37,327 - INFO -   File "<frozen runpy>", line 88, in _run_code
-2026-03-16 18:51:37,327 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py", line 3133, in <module>
-2026-03-16 18:51:37,327 - INFO -     main()
-2026-03-16 18:51:37,327 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py", line 2989, in main
-2026-03-16 18:51:37,327 - INFO -     stop_reason = _run_selected_training_engine(
-2026-03-16 18:51:37,327 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py", line 2864, in _run_selected_training_engine
-2026-03-16 18:51:37,327 - INFO -     return run_selected_engine(
-2026-03-16 18:51:37,327 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\engines\registry.py", line 33, in run_selected_engine
-2026-03-16 18:51:37,327 - INFO -     return runner(
-2026-03-16 18:51:37,332 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\engines\gsplat_engine.py", line 522, in run_training
-2026-03-16 18:51:37,332 - INFO -     export_with_gsplat(latest, engine_output_dir)
-2026-03-16 18:51:37,332 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py", line 1608, in _export_with_gsplat
-2026-03-16 18:51:37,332 - INFO -     logger.info("\u2713 Exported .splat -> %s (%d bytes)", splat_path, splat_path.stat().st_size)
-2026-03-16 18:51:37,332 - INFO - Message: '\u2713 Exported .splat -> %s (%d bytes)'
-2026-03-16 18:51:37,332 - INFO - Arguments: (WindowsPath('C:/Users/ROG/Documents/bimba3d/bimba3d/bimba3d_backend/data/projects/1fba6739-87c3-4639-b637-0c93ac588ba6/outputs/engines/gsplat/splats.splat'), 37664)
-2026-03-16 18:51:37,333 - INFO - 2026-03-16 18:51:37,332 - INFO - \u2713 Exported .ply -> C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\engines\gsplat\splats.ply (279247 bytes)
-2026-03-16 18:51:37,333 - INFO - --- Logging error ---
-2026-03-16 18:51:37,333 - INFO - Traceback (most recent call last):
-2026-03-16 18:51:37,333 - INFO -   File "C:\Anaconda\Lib\logging\__init__.py", line 1163, in emit
-2026-03-16 18:51:37,333 - INFO -     stream.write(msg + self.terminator)
-2026-03-16 18:51:37,333 - INFO -   File "C:\Anaconda\Lib\encodings\cp1252.py", line 19, in encode
-2026-03-16 18:51:37,333 - INFO -     return codecs.charmap_encode(input,self.errors,encoding_table)[0]
-2026-03-16 18:51:37,335 - INFO -            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-2026-03-16 18:51:37,335 - INFO - UnicodeEncodeError: 'charmap' codec can't encode character '\u2713' in position 33: character maps to <undefined>
-2026-03-16 18:51:37,335 - INFO - Call stack:
-2026-03-16 18:51:37,335 - INFO -   File "<frozen runpy>", line 198, in _run_module_as_main
-2026-03-16 18:51:37,335 - INFO -   File "<frozen runpy>", line 88, in _run_code
-2026-03-16 18:51:37,335 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py", line 3133, in <module>
-2026-03-16 18:51:37,335 - INFO -     main()
-2026-03-16 18:51:37,336 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py", line 2989, in main
-2026-03-16 18:51:37,336 - INFO -     stop_reason = _run_selected_training_engine(
-2026-03-16 18:51:37,336 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py", line 2864, in _run_selected_training_engine
-2026-03-16 18:51:37,336 - INFO -     return run_selected_engine(
-2026-03-16 18:51:37,336 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\engines\registry.py", line 33, in run_selected_engine
-2026-03-16 18:51:37,336 - INFO -     return runner(
-2026-03-16 18:51:37,336 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\engines\gsplat_engine.py", line 522, in run_training
-2026-03-16 18:51:37,337 - INFO -     export_with_gsplat(latest, engine_output_dir)
-2026-03-16 18:51:37,337 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py", line 1622, in _export_with_gsplat
-2026-03-16 18:51:37,337 - INFO -     logger.info("\u2713 Exported .ply -> %s (%d bytes)", ply_path, ply_path.stat().st_size)
-2026-03-16 18:51:37,337 - INFO - Message: '\u2713 Exported .ply -> %s (%d bytes)'
-2026-03-16 18:51:37,337 - INFO - Arguments: (WindowsPath('C:/Users/ROG/Documents/bimba3d/bimba3d/bimba3d_backend/data/projects/1fba6739-87c3-4639-b637-0c93ac588ba6/outputs/engines/gsplat/splats.ply'), 279247)
-2026-03-16 18:51:37,337 - INFO - Updated preview_latest.png from eval step 300
-2026-03-16 18:51:37,337 - INFO - 2026-03-16 18:51:37,337 - INFO - Updated preview_latest.png from eval step 300
-2026-03-16 18:51:37,343 - INFO - Training completed
-2026-03-16 18:51:37,343 - INFO - Pipeline completed successfully
-2026-03-16 18:51:37,343 - INFO - 2026-03-16 18:51:37,343 - INFO - Training completed
-2026-03-16 18:51:37,343 - INFO - 2026-03-16 18:51:37,343 - INFO - Pipeline completed successfully
-2026-03-16 18:51:37,346 - INFO - [Parser] 21 images, taken by 1 cameras.
-2026-03-16 18:51:37,346 - INFO - Warning: COLMAP Camera is not PINHOLE. Images have distortion.
-2026-03-16 18:51:37,346 - INFO - Scene scale: 1.4697615565391635
-2026-03-16 18:51:37,346 - INFO - Model initialized. Number of GS: 1177
-2026-03-16 18:51:37,346 - INFO - Progress callback failed at step 0: run_training.<locals>.progress_callback() got an unexpected keyword argument 'max_steps'
-2026-03-16 18:51:37,346 - INFO - Progress callback failed at step 99: run_training.<locals>.progress_callback() got an unexpected keyword argument 'max_steps'
-2026-03-16 18:51:37,346 - INFO - Progress callback failed at step 199: run_training.<locals>.progress_callback() got an unexpected keyword argument 'max_steps'
-2026-03-16 18:51:37,346 - INFO - Progress callback failed at step 299: run_training.<locals>.progress_callback() got an unexpected keyword argument 'max_steps'
-2026-03-16 18:51:37,346 - INFO - Step:  299 {'mem': 0.20635509490966797, 'ellipse_time': 6.640040874481201, 'num_GS': 1177}
-2026-03-16 18:51:37,346 - INFO - Running evaluation...
-2026-03-16 18:51:37,346 - INFO - PSNR: 13.163, SSIM: 0.4774, LPIPS: 0.843 Time: 0.003s/image Number of GS: 1177
-2026-03-16 18:51:38,277 - INFO - Local worker finished with status completed for project 1fba6739-87c3-4639-b637-0c93ac588ba6
+2026-03-16 18:54:42,855 - INFO - 2026-03-16 18:54:42,855 - INFO - Initialized project log file: C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\processing.log
+2026-03-16 18:54:42,855 - INFO - Preparing resized image set (<=1600 px) for project 1fba6739-87c3-4639-b637-0c93ac588ba6
+2026-03-16 18:54:42,855 - INFO - 2026-03-16 18:54:42,855 - INFO - Preparing resized image set (<=1600 px) for project 1fba6739-87c3-4639-b637-0c93ac588ba6
+2026-03-16 18:54:42,869 - INFO - Prepared resized image set at C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\images_resized ({'total': 38, 'resized': 0, 'copied': 0, 'reused': 38, 'failed': 0, 'removed': 0})
+2026-03-16 18:54:42,869 - INFO - 2026-03-16 18:54:42,869 - INFO - Prepared resized image set at C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\images_resized ({'total': 38, 'resized': 0, 'copied': 0, 'reused': 38, 'failed': 0, 'removed': 0})
+2026-03-16 18:54:42,879 - INFO - Sparse candidate C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\sparse\0 contains 21 images and 1177 points
+2026-03-16 18:54:42,879 - INFO - 2026-03-16 18:54:42,879 - INFO - Sparse candidate C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\data\projects\1fba6739-87c3-4639-b637-0c93ac588ba6\outputs\sparse\0 contains 21 images and 1177 points
+2026-03-16 18:54:42,881 - INFO - Recorded best sparse reconstruction 0 (21 images, 1177 points)
+2026-03-16 18:54:42,881 - INFO - Using best sparse candidate 0 (21 images, 1177 points)
+2026-03-16 18:54:42,881 - INFO - 2026-03-16 18:54:42,881 - INFO - Recorded best sparse reconstruction 0 (21 images, 1177 points)
+2026-03-16 18:54:42,881 - INFO - 2026-03-16 18:54:42,881 - INFO - Using best sparse candidate 0 (21 images, 1177 points)
+2026-03-16 18:54:42,940 - INFO - Traceback (most recent call last):
+2026-03-16 18:54:42,940 - INFO -   File "<frozen importlib._bootstrap_external>", line 1485, in _path_importer_cache
+2026-03-16 18:54:42,940 - INFO - KeyError: 'C:\\Users\\ROG\\Documents\\bimba3d\\bimba3d\\.venv\\Lib\\site-packages\\torch\\_strobelight'
+2026-03-16 18:54:42,945 - INFO - During handling of the above exception, another exception occurred:
+2026-03-16 18:54:42,945 - INFO - Traceback (most recent call last):
+2026-03-16 18:54:42,945 - INFO -   File "<frozen runpy>", line 198, in _run_module_as_main
+2026-03-16 18:54:42,945 - INFO -   File "<frozen runpy>", line 88, in _run_code
+2026-03-16 18:54:42,945 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py", line 3139, in <module>
+2026-03-16 18:54:42,945 - INFO -     main()
+2026-03-16 18:54:42,945 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py", line 2995, in main
+2026-03-16 18:54:42,945 - INFO -     stop_reason = _run_selected_training_engine(
+2026-03-16 18:54:42,945 - INFO -                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-03-16 18:54:42,945 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\entrypoint.py", line 2870, in _run_selected_training_engine
+2026-03-16 18:54:42,945 - INFO -     return run_selected_engine(
+2026-03-16 18:54:42,945 - INFO -            ^^^^^^^^^^^^^^^^^^^^
+2026-03-16 18:54:42,945 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\engines\registry.py", line 33, in run_selected_engine
+2026-03-16 18:54:42,945 - INFO -     return runner(
+2026-03-16 18:54:42,945 - INFO -            ^^^^^^^
+2026-03-16 18:54:42,947 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\engines\gsplat_engine.py", line 18, in run_training
+2026-03-16 18:54:42,947 - INFO -     from ..gsplat_upstream.simple_trainer import Config, DefaultStrategy, Runner
+2026-03-16 18:54:42,947 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\gsplat_upstream\simple_trainer.py", line 12, in <module>
+2026-03-16 18:54:42,947 - INFO -     import torch
+2026-03-16 18:54:42,947 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\.venv\Lib\site-packages\torch\__init__.py", line 56, in <module>
+2026-03-16 18:54:42,947 - INFO -     from torch._utils_internal import (
+2026-03-16 18:54:42,949 - INFO -   File "C:\Users\ROG\Documents\bimba3d\bimba3d\.venv\Lib\site-packages\torch\_utils_internal.py", line 10, in <module>
+2026-03-16 18:54:42,949 - INFO -     from torch._strobelight.compile_time_profiler import StrobelightCompileTimeProfiler
+2026-03-16 18:54:42,949 - INFO -   File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+2026-03-16 18:54:42,949 - INFO -   File "<frozen importlib._bootstrap>", line 1322, in _find_and_load_unlocked
+2026-03-16 18:54:42,949 - INFO -   File "<frozen importlib._bootstrap>", line 1262, in _find_spec
+2026-03-16 18:54:42,950 - INFO -   File "<frozen importlib._bootstrap_external>", line 1528, in find_spec
+2026-03-16 18:54:42,950 - INFO -   File "<frozen importlib._bootstrap_external>", line 1500, in _get_spec
+2026-03-16 18:54:42,950 - INFO -   File "<frozen importlib._bootstrap_external>", line 1487, in _path_importer_cache
+2026-03-16 18:54:42,950 - INFO -   File "<frozen importlib._bootstrap_external>", line 1463, in _path_hooks
+2026-03-16 18:54:42,950 - INFO -   File "<frozen importlib._bootstrap_external>", line 1687, in path_hook_for_FileFinder
+2026-03-16 18:54:42,951 - INFO -   File "<frozen importlib._bootstrap_external>", line 168, in _path_isdir
+2026-03-16 18:54:42,951 - INFO -   File "<frozen importlib._bootstrap_external>", line 153, in _path_is_mode_type
+2026-03-16 18:54:42,951 - INFO -   File "<frozen importlib._bootstrap_external>", line 147, in _path_stat
+2026-03-16 18:54:42,951 - INFO - KeyboardInterrupt
+2026-03-16 18:54:42,976 - ERROR - Local worker failed: returncode=3221225786
+2026-03-16 18:54:42,976 - ERROR - Local worker failed for project 1fba6739-87c3-4639-b637-0c93ac588ba6: Command '['C:\\Users\\ROG\\Documents\\bimba3d\\bimba3d\\.venv\\Scripts\\python.exe', '-m', 'bimba3d_backend.worker.entrypoint', '1fba6739-87c3-4639-b637-0c93ac588ba6', '--data-dir', 'C:\\Users\\ROG\\Documents\\bimba3d\\bimba3d\\bimba3d_backend\\data\\projects', '--params', '{"mode": "baseline", "engine": "gsplat", "stage": "train_only", "resume": false, "max_steps": 300, "log_interval": 100, "eval_interval": 1000, "save_interval": 2500, "densify_from_iter": 500, "densify_until_iter": 15000, "densification_interval": 100, "densify_grad_threshold": 0.0002, "opacity_threshold": 0.005, "lambda_dssim": 0.2, "splat_export_interval": 2500, "png_export_interval": 1000, "colmap": {"max_image_size": 1600, "peak_threshold": 0.02, "guided_matching": true, "matching_type": "sequential", "mapper_num_threads": 4, "mapper_min_num_matches": 12, "mapper_abs_pose_min_num_inliers": 15, "mapper_init_min_num_inliers": 60, "sift_matching_min_num_inliers": 12, "run_image_registrator": true}, "images_max_size": 1600, "sparse_preference": "best", "batch_size": 1, "opacity_reset_interval": 3000, "feature_lr": 0.0025, "opacity_lr": 0.05, "scaling_lr": 0.005, "rotation_lr": 0.001, "percent_dense": 0.01, "position_lr_init": 0.00016, "position_lr_final": 1.6e-06, "position_lr_delay_mult": 0.01, "position_lr_max_steps": 30000, "worker_mode": "local"}']' returned non-zero exit status 3221225786.
+Traceback (most recent call last):
+  File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\worker\pipeline.py", line 183, in run_full_pipeline
+    colmap.run_worker_local(project_id, params)
+  File "C:\Users\ROG\Documents\bimba3d\bimba3d\bimba3d_backend\app\services\colmap.py", line 227, in run_worker_local
+    raise subprocess.CalledProcessError(rc, cmd)
+subprocess.CalledProcessError: Command '['C:\\Users\\ROG\\Documents\\bimba3d\\bimba3d\\.venv\\Scripts\\python.exe', '-m', 'bimba3d_backend.worker.entrypoint', '1fba6739-87c3-4639-b637-0c93ac588ba6', '--data-dir', 'C:\\Users\\ROG\\Documents\\bimba3d\\bimba3d\\bimba3d_backend\\data\\projects', '--params', '{"mode": "baseline", "engine": "gsplat", "stage": "train_only", "resume": false, "max_steps": 300, "log_interval": 100, "eval_interval": 1000, "save_interval": 2500, "densify_from_iter": 500, "densify_until_iter": 15000, "densification_interval": 100, "densify_grad_threshold": 0.0002, "opacity_threshold": 0.005, "lambda_dssim": 0.2, "splat_export_interval": 2500, "png_export_interval": 1000, "colmap": {"max_image_size": 1600, "peak_threshold": 0.02, "guided_matching": true, "matching_type": "sequential", "mapper_num_threads": 4, "mapper_min_num_matches": 12, "mapper_abs_pose_min_num_inliers": 15, "mapper_init_min_num_inliers": 60, "sift_matching_min_num_inliers": 12, "run_image_registrator": true}, "images_max_size": 1600, "sparse_preference": "best", "batch_size": 1, "opacity_reset_interval": 3000, "feature_lr": 0.0025, "opacity_lr": 0.05, "scaling_lr": 0.005, "rotation_lr": 0.001, "percent_dense": 0.01, "position_lr_init": 0.00016, "position_lr_final": 1.6e-06, "position_lr_delay_mult": 0.01, "position_lr_max_steps": 30000, "worker_mode": "local"}']' returned non-zero exit status 3221225786.

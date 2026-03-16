@@ -203,6 +203,9 @@ def run_worker_local(project_id: str, params: dict = None) -> None:
     logger.info("Running local worker: %s", " ".join(cmd))
     child_env = os.environ.copy()
     child_env["BIMBA3D_DOCKER_WORKER"] = "0"
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
     try:
         proc = subprocess.Popen(
@@ -212,6 +215,7 @@ def run_worker_local(project_id: str, params: dict = None) -> None:
             text=True,
             bufsize=1,
             env=child_env,
+            creationflags=creationflags,
         )
         assert proc.stdout is not None
         for line in proc.stdout:
