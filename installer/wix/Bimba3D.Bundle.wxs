@@ -106,7 +106,7 @@
           InstallArguments="-s"
           DetectCondition="CUDA_NVCC_PATH"
           PerMachine="yes"
-          Vital="yes"
+          Vital="no"
           Compressed="yes"
           Permanent="yes" />
 

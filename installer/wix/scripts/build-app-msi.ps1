@@ -100,81 +100,106 @@ if errorlevel 1 (
 
 set "RUNTIME_ROOT=%ProgramData%\Bimba3D\runtime"
 set "VENV_DIR=%RUNTIME_ROOT%\.venv"
+set "BOOTSTRAP_STATE=%RUNTIME_ROOT%\bootstrap-state.txt"
 
 if not exist "%RUNTIME_ROOT%" (
     mkdir "%RUNTIME_ROOT%"
 )
 
-if not exist "%VENV_DIR%\Scripts\python.exe" (
-    echo Creating Python virtual environment...
-    "%PYEXE%" %PYEXE_ARGS% -m venv "%VENV_DIR%"
-)
-
-set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
-if not exist "%VENV_PY%" (
-    echo Failed to locate venv python at "%VENV_PY%".
-    pause
-    exit /b 1
-)
-
 set "PYTHONNOUSERSITE=1"
 set "TORCH_INDEX=https://download.pytorch.org/whl/cu121"
 set "TORCH_VERSION=2.5.1+cu121"
+set "TORCH_CPU_VERSION=2.5.1"
 set "GSPLAT_VERSION=1.5.3"
 set "CUDA_HOME=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5"
 set "CUDA_PATH=%CUDA_HOME%"
 set "DISTUTILS_USE_SDK=1"
 set "PATH=%CUDA_PATH%\bin;%CUDA_PATH%\libnvvp;%PATH%"
+set "NEED_BOOTSTRAP=0"
+set "TORCH_FLAVOR=cu121"
 
-"%VENV_PY%" -m pip install --upgrade pip setuptools==69.5.1 wheel
-if errorlevel 1 (
-    echo Failed to install Python packaging tooling.
-    pause
-    exit /b 1
+if not exist "%VENV_DIR%\Scripts\python.exe" (
+    set "NEED_BOOTSTRAP=1"
 )
 
-"%VENV_PY%" -m pip install --index-url %TORCH_INDEX% --force-reinstall "torch==%TORCH_VERSION%"
-if errorlevel 1 (
-    echo Failed to install CUDA-enabled torch %TORCH_VERSION%.
-    pause
-    exit /b 1
+set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
+if not exist "%BOOTSTRAP_STATE%" (
+    set "NEED_BOOTSTRAP=1"
 )
 
-"%VENV_PY%" -m pip install -r bimba3d_backend\requirements.windows.txt
-if errorlevel 1 (
-    echo Failed to install backend requirements.
-    pause
-    exit /b 1
+if exist "%BOOTSTRAP_STATE%" (
+    findstr /C:"TORCH_VERSION=%TORCH_VERSION%" "%BOOTSTRAP_STATE%" >nul 2>nul
+    if errorlevel 1 set "NEED_BOOTSTRAP=1"
+    findstr /C:"GSPLAT_VERSION=%GSPLAT_VERSION%" "%BOOTSTRAP_STATE%" >nul 2>nul
+    if errorlevel 1 set "NEED_BOOTSTRAP=1"
+)
+
+if "%NEED_BOOTSTRAP%"=="0" (
+    "%VENV_PY%" -c "import fastapi,uvicorn" >nul 2>nul
+    if errorlevel 1 set "NEED_BOOTSTRAP=1"
+)
+
+if "%NEED_BOOTSTRAP%"=="1" (
+    echo Preparing runtime environment...
+
+    if not exist "%VENV_DIR%\Scripts\python.exe" (
+        echo Creating Python virtual environment...
+        "%PYEXE%" %PYEXE_ARGS% -m venv "%VENV_DIR%"
+    )
+
+    set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
+    if not exist "%VENV_PY%" (
+        echo Failed to locate venv python at "%VENV_PY%".
+        pause
+        exit /b 1
+    )
+
+    "%VENV_PY%" -m pip install --upgrade pip setuptools==69.5.1 wheel
+    if errorlevel 1 (
+        echo Failed to install Python packaging tooling.
+        pause
+        exit /b 1
+    )
+
+    "%VENV_PY%" -m pip install --index-url %TORCH_INDEX% --force-reinstall "torch==%TORCH_VERSION%"
+    if errorlevel 1 (
+        echo CUDA torch install failed. Falling back to CPU torch %TORCH_CPU_VERSION%.
+        set "TORCH_FLAVOR=cpu"
+        "%VENV_PY%" -m pip install --force-reinstall "torch==%TORCH_CPU_VERSION%"
+        if errorlevel 1 (
+            echo Failed to install torch runtime.
+            pause
+            exit /b 1
+        )
+    )
+
+    "%VENV_PY%" -m pip install -r bimba3d_backend\requirements.windows.txt
+    if errorlevel 1 (
+        echo Failed to install backend requirements.
+        pause
+        exit /b 1
+    )
+
+    if /I "%TORCH_FLAVOR%"=="cu121" (
+        "%VENV_PY%" -m pip install --force-reinstall ninja
+        if errorlevel 1 (
+            echo Warning: failed to install ninja. gsplat build may be unavailable.
+        )
+        "%VENV_PY%" -m pip install --force-reinstall --no-binary=gsplat "gsplat==%GSPLAT_VERSION%" --no-build-isolation -v
+        if errorlevel 1 (
+            echo Warning: failed to build/install gsplat %GSPLAT_VERSION%. Processing will use non-gsplat paths.
+        )
+    )
+
+    > "%BOOTSTRAP_STATE%" echo TORCH_VERSION=%TORCH_VERSION%
+    >> "%BOOTSTRAP_STATE%" echo TORCH_FLAVOR=%TORCH_FLAVOR%
+    >> "%BOOTSTRAP_STATE%" echo GSPLAT_VERSION=%GSPLAT_VERSION%
 )
 
 "%VENV_PY%" -c "import torch; import gsplat.cuda._wrapper as w; ok=torch.cuda.is_available() and (getattr(w,'_C',None) is not None or hasattr(w,'_make_lazy_cuda_obj')); raise SystemExit(0 if ok else 1)" >nul 2>nul
 if errorlevel 1 (
-    echo CUDA-enabled torch/gsplat not ready. Reinstalling pinned training dependencies...
-    "%VENV_PY%" -m pip install --index-url %TORCH_INDEX% --force-reinstall "torch==%TORCH_VERSION%"
-    if errorlevel 1 (
-        echo Failed to reinstall CUDA-enabled torch %TORCH_VERSION%.
-        pause
-        exit /b 1
-    )
-    "%VENV_PY%" -m pip install --force-reinstall ninja
-    if errorlevel 1 (
-        echo Failed to install ninja.
-        pause
-        exit /b 1
-    )
-    "%VENV_PY%" -m pip install --force-reinstall --no-binary=gsplat "gsplat==%GSPLAT_VERSION%" --no-build-isolation -v
-    if errorlevel 1 (
-        echo Failed to build/install gsplat %GSPLAT_VERSION%.
-        pause
-        exit /b 1
-    )
-    "%VENV_PY%" -c "import torch; import gsplat.cuda._wrapper as w; ok=torch.cuda.is_available() and (getattr(w,'_C',None) is not None or hasattr(w,'_make_lazy_cuda_obj')); raise SystemExit(0 if ok else 1)"
-    if errorlevel 1 (
-        echo CUDA is still unavailable in runtime venv after reinstall.
-        echo Please verify NVIDIA driver + CUDA Toolkit + Visual Studio Build Tools installation.
-        pause
-        exit /b 1
-    )
+    echo Warning: CUDA-enabled gsplat runtime is not ready on this machine.
+    echo Processing features requiring CUDA/gsplat may be unavailable until CUDA tooling is installed.
 )
 
 set "WORKER_MODE=local"
@@ -200,7 +225,7 @@ $readmePath = Join-Path $StagingDir "README.txt"
 
 Push-Location (Split-Path -Parent $WxsPath)
 try {
-    & wix build "$(Split-Path -Leaf $WxsPath)" -o $OutputMsi
+    & wix build "$(Split-Path -Leaf $WxsPath)" -ext WixToolset.Util.wixext -o $OutputMsi
     if ($LASTEXITCODE -ne 0) {
         throw "wix build failed with exit code $LASTEXITCODE"
     }

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+  xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package
       Name="Bimba3D"
       Manufacturer="Bimba3D"
@@ -10,6 +11,7 @@
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of Bimba3D is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Property Id="BIMBA3D_RUNTIME_ROOT" Value="C:\ProgramData\Bimba3D\runtime" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Bimba3D" />
@@ -34,9 +36,15 @@
       <RegistryValue Root="HKCU" Key="Software\Bimba3D" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
     </Component>
 
+    <Component Id="cmpCleanupRuntimeVenv" Directory="INSTALLFOLDER" Guid="*">
+      <util:RemoveFolderEx Id="RemoveRuntimeVenvOnUninstall" Property="BIMBA3D_RUNTIME_ROOT" On="uninstall" />
+      <RegistryValue Root="HKLM" Key="Software\Bimba3D" Name="CleanupRuntimeVenv" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
     <Feature Id="MainFeature" Title="Bimba3D" Level="1">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="cmpStartMenuShortcut" />
+      <ComponentRef Id="cmpCleanupRuntimeVenv" />
     </Feature>
   </Package>
 </Wix>
