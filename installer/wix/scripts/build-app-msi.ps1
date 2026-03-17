@@ -83,14 +83,19 @@ if errorlevel 1 (
   set "PYEXE=py -3"
 )
 
-if not exist ".venv\Scripts\python.exe" (
-  echo Creating Python virtual environment...
-  %PYEXE% -m venv .venv
+set "RUNTIME_ROOT=%ProgramData%\Bimba3D\runtime"
+set "VENV_DIR=%RUNTIME_ROOT%\.venv"
+
+if not exist "%RUNTIME_ROOT%" (
+    mkdir "%RUNTIME_ROOT%"
 )
 
-call .venv\Scripts\activate
+if not exist "%VENV_DIR%\Scripts\python.exe" (
+    echo Creating Python virtual environment...
+    %PYEXE% -m venv "%VENV_DIR%"
+)
 
-set "VENV_PY=%CD%\.venv\Scripts\python.exe"
+set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 if not exist "%VENV_PY%" (
     echo Failed to locate venv python at "%VENV_PY%".
     pause
