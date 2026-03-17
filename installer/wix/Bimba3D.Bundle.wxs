@@ -15,7 +15,7 @@
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication
           Theme="hyperlinkLicense"
-          LicenseUrl="https://github.com/colmap/colmap/blob/main/COPYING.txt"
+            LicenseUrl="https://github.com/geomatupen/bimba3d/blob/main/installer/wix/EULA.md"
           SuppressOptionsUI="yes" />
     </BootstrapperApplication>
 
@@ -26,6 +26,7 @@
     <Variable Name="PythonInstallDir" Type="string" Value="C:\\Program Files\\Python312" />
     <Variable Name="ColmapVersion" Type="string" Value="4.0.1" />
     <Variable Name="InstallBuildTools" Type="numeric" Value="0" />
+    <Variable Name="InstallCudaToolkit" Type="numeric" Value="0" />
 
     <util:RegistrySearch
         Id="SearchVCRedistInstalled"
@@ -123,6 +124,7 @@
           SourceFile="payloads\\cuda_installer.exe"
           InstallArguments="-s"
           DetectCondition="CUDA_NVCC_PATH OR CUDA_V128_DIR OR CUDA_V127_DIR OR CUDA_V126_DIR OR CUDA_V125_DIR OR CUDA_V124_DIR OR CUDA_V123_DIR OR CUDA_V122_DIR OR CUDA_V121_DIR OR CUDA_V120_DIR"
+          InstallCondition="InstallCudaToolkit = 1"
           PerMachine="yes"
           Vital="no"
           Compressed="yes"

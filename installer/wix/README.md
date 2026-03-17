@@ -4,6 +4,8 @@ This folder contains a starter template for a one-click Windows chainer installe
 
 ## Files
 - `Bimba3D.Bundle.wxs` - Burn bundle template with package chain placeholders.
+- `EULA.md` - Bimba3D installer EULA text.
+- `THIRD_PARTY_NOTICES.md` - third-party license and EULA references used by installer flow.
 - `payloads/payload-manifest.json` - versioned URLs + SHA256 pins.
 - `payloads/install-colmap.cmd` - extracts COLMAP zip and sets `COLMAP_EXE`.
 - `scripts/download-payloads.ps1` - downloads payloads from manifest.
@@ -14,13 +16,21 @@ This folder contains a starter template for a one-click Windows chainer installe
 - `scripts/release.ps1` - one-command wrapper for validate/build/sign.
 
 ## What to customize
-1. Replace `LicenseUrl` with your own EULA page.
+1. Keep `LicenseUrl` pointed to your own EULA page/file and maintain the third-party notices file.
 2. Set real SHA256 values in `payloads/payload-manifest.json`.
 3. `Bimba3D.msi` URL is preconfigured for GitHub Releases latest asset (`geomatupen/bimba3d`).
   - Keep it as-is if your release asset name is exactly `Bimba3D.msi`.
   - Change only if you use a different file name or repo.
 4. Decide whether `InstallBuildTools` should be 0 (runtime only) or 1 (include compile toolchain).
+5. Decide whether `InstallCudaToolkit` should be 0 (default opt-in) or 1 (auto-install if missing).
 5. Add code signing to final `Bimba3D-Setup.exe`.
+
+Default compliance behavior in this repo:
+- `VC++ Runtime` auto-installs if missing.
+- `Build Tools` is opt-in (`InstallBuildTools=0` by default).
+- `CUDA Toolkit` is opt-in (`InstallCudaToolkit=0` by default).
+- Bundle license link points to project EULA: `installer/wix/EULA.md`.
+- Third-party obligations are summarized in: `installer/wix/THIRD_PARTY_NOTICES.md`.
 
 ## Suggested build tooling
 - Install WiX v4 (`wix.exe`).
@@ -44,6 +54,15 @@ PFX signing example:
   - `powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -DownloadPayloads -UpdateShaFromLocalFiles -CertificateThumbprint <THUMBPRINT>`
 - Local-only build (no signing):
   - `powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -UpdateShaFromLocalFiles -SkipSigning`
+
+## Compliance launcher (interactive consent)
+- Use this launcher to explicitly ask users before Build Tools / CUDA install and pass flags to Burn:
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\start-compliant-install.ps1 -InstallerPath .\Bimba3D-Setup.exe`
+- Launcher prints links to:
+  - Bimba3D EULA
+  - Third-party notices
+  - Build Tools terms
+  - CUDA EULA
 
 ## What to replace in payload-manifest.json
 1. `sha256` values:
