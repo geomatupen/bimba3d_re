@@ -371,6 +371,12 @@ if (-not $productCode) {
 }
 
 $args = @("/x", $productCode, "/passive", "DELETE_PROJECTS=$deleteProjects")
+[System.Windows.Forms.MessageBox]::Show(
+    "Uninstalling Bimba3D...`n`nThis may take several minutes, especially if runtime or project files are large.",
+    "Uninstall Bimba3D",
+    [System.Windows.Forms.MessageBoxButtons]::OK,
+    [System.Windows.Forms.MessageBoxIcon]::Information
+) | Out-Null
 Start-Process -FilePath "msiexec.exe" -ArgumentList $args -Wait
 exit $LASTEXITCODE
 "@ | Set-Content -Path $uninstallPs1Path -Encoding UTF8

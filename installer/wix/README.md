@@ -63,6 +63,8 @@ PFX signing example:
   - Third-party notices
   - Build Tools terms
   - CUDA EULA
+- Launcher warns that both Build Tools + CUDA are required for gsplat training.
+- If user skips either dependency, launcher shows a red warning and asks for explicit confirmation before continuing.
 
 ## What to replace in payload-manifest.json
 1. `sha256` values:
