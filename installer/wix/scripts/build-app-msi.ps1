@@ -89,8 +89,26 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 call .venv\Scripts\activate
-python -m pip install --upgrade pip
-python -m pip install -r bimba3d_backend\requirements.windows.txt
+
+set "VENV_PY=%CD%\.venv\Scripts\python.exe"
+if not exist "%VENV_PY%" (
+    echo Failed to locate venv python at "%VENV_PY%".
+    pause
+    exit /b 1
+)
+
+set "PYTHONNOUSERSITE=1"
+
+"%VENV_PY%" -m pip install --upgrade pip setuptools wheel
+"%VENV_PY%" -m pip install -r bimba3d_backend\requirements.windows.txt
+
+"%VENV_PY%" -c "import torch; import gsplat.cuda._wrapper as w; ok=torch.cuda.is_available() and (getattr(w,'_C',None) is not None or hasattr(w,'_make_lazy_cuda_obj')); raise SystemExit(0 if ok else 1)" >nul 2>nul
+if errorlevel 1 (
+    echo CUDA-enabled torch/gsplat not ready. Installing training dependencies...
+    "%VENV_PY%" -m pip install --index-url https://download.pytorch.org/whl/cu121 torch
+    "%VENV_PY%" -m pip install ninja
+    "%VENV_PY%" -m pip install --no-binary=gsplat gsplat --no-build-isolation -v
+)
 
 set "WORKER_MODE=local"
 set "FRONTEND_DIST=%CD%\bimba3d_frontend\dist"
@@ -101,7 +119,7 @@ if not exist "%BIMBA3D_DATA_DIR%" (
 )
 
 start "" http://127.0.0.1:8005
-python -m uvicorn bimba3d_backend.app.main:app --host 127.0.0.1 --port 8005
+"%VENV_PY%" -m uvicorn bimba3d_backend.app.main:app --host 127.0.0.1 --port 8005
 "@ | Set-Content -Path $launcherPath -Encoding ASCII
 
 $readmePath = Join-Path $StagingDir "README.txt"
