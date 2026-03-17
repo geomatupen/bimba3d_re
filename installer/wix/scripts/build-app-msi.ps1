@@ -118,6 +118,8 @@ if not defined CUDA_HOME for %%V in (12.8 12.7 12.6 12.5 12.4 12.3 12.2 12.1 12.
 )
 if not defined CUDA_HOME set "CUDA_HOME=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5"
 set "CUDA_PATH=%CUDA_HOME%"
+set "HAS_CUDA_TOOLKIT=0"
+if exist "%CUDA_HOME%\bin\nvcc.exe" set "HAS_CUDA_TOOLKIT=1"
 set "DISTUTILS_USE_SDK=1"
 set "PATH=%CUDA_PATH%\bin;%CUDA_PATH%\libnvvp;%PATH%"
 set "NEED_BOOTSTRAP=0"
@@ -137,11 +139,19 @@ if exist "%BOOTSTRAP_STATE%" (
     if errorlevel 1 set "NEED_BOOTSTRAP=1"
     findstr /C:"GSPLAT_VERSION=%GSPLAT_VERSION%" "%BOOTSTRAP_STATE%" >nul 2>nul
     if errorlevel 1 set "NEED_BOOTSTRAP=1"
+    if "%HAS_CUDA_TOOLKIT%"=="1" (
+        findstr /C:"TORCH_FLAVOR=cpu" "%BOOTSTRAP_STATE%" >nul 2>nul
+        if not errorlevel 1 set "NEED_BOOTSTRAP=1"
+    )
 )
 
 if "%NEED_BOOTSTRAP%"=="0" (
     "%VENV_PY%" -c "import fastapi,uvicorn" >nul 2>nul
     if errorlevel 1 set "NEED_BOOTSTRAP=1"
+    if "%HAS_CUDA_TOOLKIT%"=="1" (
+        "%VENV_PY%" -c "import torch; import gsplat.cuda._wrapper as w; ok=torch.cuda.is_available() and (getattr(w,'_C',None) is not None or hasattr(w,'_make_lazy_cuda_obj')); raise SystemExit(0 if ok else 1)" >nul 2>nul
+        if errorlevel 1 set "NEED_BOOTSTRAP=1"
+    )
 )
 
 if "%NEED_BOOTSTRAP%"=="1" (
@@ -168,13 +178,16 @@ if "%NEED_BOOTSTRAP%"=="1" (
 
     "%VENV_PY%" -m pip install --index-url %TORCH_INDEX% --force-reinstall "torch==%TORCH_VERSION%"
     if errorlevel 1 (
-        echo CUDA torch install failed. Falling back to CPU torch %TORCH_CPU_VERSION%.
+        echo CUDA torch install failed.
         set "TORCH_FLAVOR=cpu"
         "%VENV_PY%" -m pip install --force-reinstall "torch==%TORCH_CPU_VERSION%"
         if errorlevel 1 (
             echo Failed to install torch runtime.
             pause
             exit /b 1
+        )
+        if "%HAS_CUDA_TOOLKIT%"=="1" (
+            echo Warning: CUDA toolkit is present but CUDA torch install failed. gsplat training will fail until CUDA torch is repaired.
         )
     )
 
@@ -238,7 +251,7 @@ if "%NEED_BOOTSTRAP%"=="1" (
         )
         "%VENV_PY%" -m pip install --force-reinstall --no-binary=gsplat "gsplat==%GSPLAT_VERSION%" --no-build-isolation -v
         if errorlevel 1 (
-            echo Warning: failed to build/install gsplat %GSPLAT_VERSION%. Processing will use non-gsplat paths.
+            echo Warning: failed to build/install gsplat %GSPLAT_VERSION%. gsplat training will fail until CUDA/toolchain is repaired.
         )
     )
 

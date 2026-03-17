@@ -397,8 +397,12 @@ def run_training(
             _log_training_snapshot(step, max_steps_local, loss, progress_fraction, elapsed, eta)
             last_snapshot_step["value"] = step
 
+    torch_version = None
+    torch_cuda_version = None
     try:
         import torch
+        torch_version = getattr(torch, "__version__", None)
+        torch_cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
         cuda_ok = torch.cuda.is_available()
     except Exception:
         cuda_ok = False
@@ -545,7 +549,16 @@ def run_training(
     cfg.checkpoint_callback = checkpoint_callback
 
     if device == "cpu":
-        raise RuntimeError("Upstream simple_trainer currently requires CUDA in this worker path")
+        cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH") or "<unset>"
+        nvcc_path = shutil.which("nvcc") or "<not-found>"
+        cl_path = shutil.which("cl") or "<not-found>"
+        msg = (
+            "Upstream simple_trainer requires CUDA in this worker path. "
+            f"torch={torch_version or '<unknown>'}, torch.version.cuda={torch_cuda_version or '<none>'}, "
+            f"torch.cuda.is_available={cuda_ok}, CUDA_HOME/CUDA_PATH={cuda_home}, nvcc={nvcc_path}, cl={cl_path}."
+        )
+        update_status(project_dir, "failed", progress=55, stage="training", message=msg, error=msg)
+        raise RuntimeError(msg)
 
     _load_msvc_build_env(logger)
 
