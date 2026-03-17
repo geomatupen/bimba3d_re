@@ -17,3 +17,4 @@ pyyaml
 torchmetrics
 tensorboard
 tyro
+rich
