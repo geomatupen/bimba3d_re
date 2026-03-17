@@ -72,6 +72,7 @@ setlocal
 cd /d "%~dp0"
 
 set "PYEXE="
+set "PYEXE_ARGS="
 if exist "C:\Program Files\Python312\python.exe" (
   set "PYEXE=C:\Program Files\Python312\python.exe"
 ) else (
@@ -83,13 +84,14 @@ if exist "C:\Program Files\Python312\python.exe" (
         pause
         exit /b 1
      )
-     set "PYEXE=py -3"
+      set "PYEXE=py"
+      set "PYEXE_ARGS=-3"
   ) else (
      set "PYEXE=python"
   )
 )
 
-%PYEXE% -c "import sys; raise SystemExit(0 if sys.maxsize > 2**32 else 1)" >nul 2>nul
+"%PYEXE%" %PYEXE_ARGS% -c "import sys; raise SystemExit(0 if sys.maxsize > 2**32 else 1)" >nul 2>nul
 if errorlevel 1 (
     echo Python interpreter is not 64-bit. Please install/use x64 Python and try again.
     pause
@@ -105,7 +107,7 @@ if not exist "%RUNTIME_ROOT%" (
 
 if not exist "%VENV_DIR%\Scripts\python.exe" (
     echo Creating Python virtual environment...
-    %PYEXE% -m venv "%VENV_DIR%"
+    "%PYEXE%" %PYEXE_ARGS% -m venv "%VENV_DIR%"
 )
 
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
