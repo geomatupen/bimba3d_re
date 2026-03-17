@@ -176,6 +176,13 @@ if "%NEED_BOOTSTRAP%"=="1" (
         exit /b 1
     )
 
+    "%VENV_PY%" -m pip install -r bimba3d_backend\requirements.windows.txt
+    if errorlevel 1 (
+        echo Failed to install backend requirements.
+        pause
+        exit /b 1
+    )
+
     "%VENV_PY%" -m pip install --index-url %TORCH_INDEX% --force-reinstall "torch==%TORCH_VERSION%"
     if errorlevel 1 (
         echo CUDA torch install failed.
@@ -189,13 +196,16 @@ if "%NEED_BOOTSTRAP%"=="1" (
         if "%HAS_CUDA_TOOLKIT%"=="1" (
             echo Warning: CUDA toolkit is present but CUDA torch install failed. gsplat training will fail until CUDA torch is repaired.
         )
-    )
-
-    "%VENV_PY%" -m pip install -r bimba3d_backend\requirements.windows.txt
-    if errorlevel 1 (
-        echo Failed to install backend requirements.
-        pause
-        exit /b 1
+    ) else (
+        "%VENV_PY%" -c "import torch; raise SystemExit(0 if getattr(torch.version,'cuda',None) else 1)" >nul 2>nul
+        if errorlevel 1 (
+            set "TORCH_FLAVOR=cpu"
+            if "%HAS_CUDA_TOOLKIT%"=="1" (
+                echo Warning: torch installed but reports CPU-only build. gsplat training will fail until CUDA torch is repaired.
+            )
+        ) else (
+            set "TORCH_FLAVOR=cu121"
+        )
     )
 
     if /I "%TORCH_FLAVOR%"=="cu121" (
