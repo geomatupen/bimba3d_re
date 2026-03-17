@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -32,6 +33,8 @@ COLMAP_EXE = (os.getenv("COLMAP_EXE") or "colmap").strip() or "colmap"
 ENGINE_SUBDIR = "engines"
 BEST_SPARSE_META = ".best_sparse_selection.json"
 SPARSE_IMAGE_MEMBERSHIP_META = ".sparse_image_membership.json"
+
+_UNRECOGNIZED_OPTION_RE = re.compile(r"unrecogni[sz]ed option '([^']+)'", re.IGNORECASE)
 
 
 def _resolve_colmap_executable() -> str:
@@ -554,6 +557,59 @@ def _run_cmd_with_retry(cmd: list[str], retries: int = 3, delay_sec: float = 2.0
     # Exhausted retries
     logger.error(f"Command failed after retries: {cmd}\nERR: {last_err}")
     raise last_err
+
+
+def _remove_cli_option(cmd: list[str], option: str) -> list[str]:
+    """Return a copy of cmd without the given option and its value (if any)."""
+    updated: list[str] = []
+    idx = 0
+    removed = False
+    while idx < len(cmd):
+        token = cmd[idx]
+        if token == option:
+            removed = True
+            idx += 1
+            if idx < len(cmd) and not str(cmd[idx]).startswith("--"):
+                idx += 1
+            continue
+        updated.append(token)
+        idx += 1
+    return updated if removed else cmd
+
+
+def _run_colmap_cmd_with_option_fallback(cmd: list[str], stage_name: str) -> None:
+    """Run COLMAP command and drop unsupported options when a build lacks them."""
+    current_cmd = list(cmd)
+    removed_options: list[str] = []
+    for _ in range(6):
+        try:
+            _run_cmd_with_retry(current_cmd)
+            if removed_options:
+                logger.warning(
+                    "%s succeeded after removing unsupported options: %s",
+                    stage_name,
+                    ", ".join(removed_options),
+                )
+            return
+        except subprocess.CalledProcessError as exc:
+            stderr_text = exc.stderr or ""
+            match = _UNRECOGNIZED_OPTION_RE.search(stderr_text)
+            if not match:
+                raise
+            bad_option = match.group(1).strip()
+            if not bad_option or bad_option in removed_options:
+                raise
+            next_cmd = _remove_cli_option(current_cmd, bad_option)
+            if next_cmd == current_cmd:
+                raise
+            removed_options.append(bad_option)
+            logger.warning(
+                "%s: COLMAP build does not support %s; retrying without it.",
+                stage_name,
+                bad_option,
+            )
+            current_cmd = next_cmd
+    raise RuntimeError(f"{stage_name} failed due to repeated unsupported COLMAP options.")
 
 
 def _cleanup_sqlite_sidecars(db_path: Path):
@@ -1309,7 +1365,7 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
     if p.get("max_num_features") is not None:
         feat_cmd += ["--SiftExtraction.max_num_features", str(p.get("max_num_features"))]
     try:
-        _run_cmd_with_retry(feat_cmd)
+        _run_colmap_cmd_with_option_fallback(feat_cmd, "COLMAP feature_extractor")
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or "").lower()
         logger.error(f"COLMAP feature_extractor failed: {e.stderr}")
@@ -1349,7 +1405,7 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
         # Compatibility: many COLMAP builds expose this under TwoViewGeometry, not SiftMatching.
         match_cmd += ["--TwoViewGeometry.min_num_inliers", str(p.get("sift_matching_min_num_inliers"))]
     try:
-        _run_cmd_with_retry(match_cmd)
+        _run_colmap_cmd_with_option_fallback(match_cmd, "COLMAP matcher")
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or "").lower()
         logger.error(f"COLMAP matcher failed: {e.stderr}")
