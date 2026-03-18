@@ -33,6 +33,8 @@ $required = @(
     "$PSScriptRoot\..\payloads\vc_redist.x64.exe",
     "$PSScriptRoot\..\payloads\colmap-x64-windows-cuda.zip",
     "$PSScriptRoot\..\payloads\install-colmap.cmd",
+    "$PSScriptRoot\..\payloads\run-runtime-bootstrap.cmd",
+    "$PSScriptRoot\..\payloads\runtime-bootstrap.ps1",
     "$PSScriptRoot\..\payloads\Bimba3D.msi"
 )
 

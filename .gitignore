@@ -49,9 +49,6 @@ tmp/
 .serena/
 
 
-# scripts (root only)
-/scripts/
-
 # Installer artifacts
 installer/wix/Bimba3D-Setup.exe
 installer/wix/*.wixpdb
@@ -71,3 +68,4 @@ installer/wix/payloads/*.part
 # Local stray files
 /40.8.0
 /No
+windows_log_train.txt

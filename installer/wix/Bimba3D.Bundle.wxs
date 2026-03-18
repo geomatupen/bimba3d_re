@@ -4,7 +4,7 @@
     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
   <Bundle
-      Name="Bimba3D Setup"
+      Name="Bimba3D"
       Version="1.0.0.0"
       Manufacturer="Bimba3D"
       UpgradeCode="2CBDBF2C-F413-4E26-969A-788991D4A82B"
@@ -19,7 +19,7 @@
                         LogoFile="assets\Bimba3D-setup-small-logo.png"
                         LogoSideFile="assets\Bimba3D-setup-side-logo.png"
             LicenseUrl="https://github.com/geomatupen/bimba3d/blob/main/installer/wix/EULA.md"
-          SuppressOptionsUI="yes" />
+                    SuppressOptionsUI="no" />
     </BootstrapperApplication>
 
     <Variable Name="Bimba3DInstallDir" Type="string" Value="[ProgramFiles64Folder]Bimba3D" />
@@ -156,6 +156,62 @@
           InstallCondition="VersionNT64"
           Vital="yes"
           Compressed="yes" />
+
+            <ExePackage
+                    Id="Bimba3DRuntimePrepare"
+                  CacheId="Bimba3DRuntimePrepare"
+                    DisplayName="Bimba3D Runtime: Create Python environment"
+                    SourceFile="payloads\\run-runtime-bootstrap.cmd"
+                                        InstallArguments="prepare"
+                    InstallCondition="VersionNT64 AND NOT WixBundleInstalled"
+                    PerMachine="yes"
+                    Vital="yes"
+                    Compressed="yes"
+                    Permanent="yes">
+                <Payload SourceFile="payloads\\runtime-bootstrap.ps1" />
+            </ExePackage>
+
+            <ExePackage
+                    Id="Bimba3DRuntimeTorch"
+                  CacheId="Bimba3DRuntimeTorch"
+                    DisplayName="Bimba3D Runtime: Install torch"
+                    SourceFile="payloads\\run-runtime-bootstrap.cmd"
+                                        InstallArguments="torch"
+                    InstallCondition="VersionNT64 AND NOT WixBundleInstalled"
+                    PerMachine="yes"
+                    Vital="yes"
+                    Compressed="yes"
+                    Permanent="yes">
+                <Payload SourceFile="payloads\\runtime-bootstrap.ps1" />
+            </ExePackage>
+
+            <ExePackage
+                    Id="Bimba3DRuntimeGsplat"
+                  CacheId="Bimba3DRuntimeGsplat"
+                    DisplayName="Bimba3D Runtime: Build gsplat"
+                    SourceFile="payloads\\run-runtime-bootstrap.cmd"
+                                        InstallArguments="gsplat"
+                    InstallCondition="VersionNT64 AND NOT WixBundleInstalled"
+                    PerMachine="yes"
+                    Vital="yes"
+                    Compressed="yes"
+                    Permanent="yes">
+                <Payload SourceFile="payloads\\runtime-bootstrap.ps1" />
+            </ExePackage>
+
+            <ExePackage
+                    Id="Bimba3DRuntimeRequirements"
+                  CacheId="Bimba3DRuntimeRequirements"
+                    DisplayName="Bimba3D Runtime: Install backend packages"
+                    SourceFile="payloads\\run-runtime-bootstrap.cmd"
+                                        InstallArguments="requirements"
+                    InstallCondition="VersionNT64 AND NOT WixBundleInstalled"
+                    PerMachine="yes"
+                    Vital="yes"
+                    Compressed="yes"
+                    Permanent="yes">
+                <Payload SourceFile="payloads\\runtime-bootstrap.ps1" />
+            </ExePackage>
 
     </Chain>
 

@@ -64,7 +64,7 @@ Copy-Item -Path (Join-Path $backendRoot "requirements.windows.txt") -Destination
 Copy-Item -Path (Join-Path $backendRoot "requirements.txt") -Destination $stagingBackend -Force
 Copy-Item -Path $frontendDist -Destination $stagingFrontendRoot -Recurse -Force
 
-$launcherPath = Join-Path $StagingDir "start_bimba3d.bat"
+$bootstrapPath = Join-Path $StagingDir "bootstrap_runtime.bat"
 @"
 @echo off
 setlocal
@@ -286,6 +286,30 @@ set "BIMBA3D_DATA_DIR=%ProgramData%\Bimba3D\data\projects"
 if not exist "%BIMBA3D_DATA_DIR%" (
     mkdir "%BIMBA3D_DATA_DIR%"
 )
+"@ | Set-Content -Path $bootstrapPath -Encoding ASCII
+
+$launcherPath = Join-Path $StagingDir "start_bimba3d.bat"
+@"
+@echo off
+setlocal
+
+cd /d "%~dp0"
+
+set "VENV_PY=%ProgramData%\Bimba3D\runtime\.venv\Scripts\python.exe"
+if not exist "%VENV_PY%" (
+    echo Bimba3D runtime is not initialized.
+    echo Run the installer repair or reinstall Bimba3D.
+    pause
+    exit /b 1
+)
+
+set "WORKER_MODE=local"
+set "FRONTEND_DIST=%CD%\bimba3d_frontend\dist"
+set "BIMBA3D_DATA_DIR=%ProgramData%\Bimba3D\data\projects"
+
+if not exist "%BIMBA3D_DATA_DIR%" (
+    mkdir "%BIMBA3D_DATA_DIR%"
+)
 
 start "" http://127.0.0.1:8005
 "%VENV_PY%" -m uvicorn bimba3d_backend.app.main:app --host 127.0.0.1 --port 8005
@@ -393,7 +417,8 @@ $readmePath = Join-Path $StagingDir "README.txt"
     "Generated: $(Get-Date -Format o)"
     ""
     "Start the app using start_bimba3d.bat"
-    "The launcher creates a local .venv on first run and installs Python dependencies."
+    "Runtime bootstrap executes during bundle installation in staged steps (venv/torch/gsplat/requirements)."
+    "If installation fails, check Burn/MSI logs for runtime bootstrap output."
     "Use uninstall_bimba3d.cmd to uninstall with optional project-data deletion."
 ) | Set-Content -Path $readmePath -Encoding UTF8
 
