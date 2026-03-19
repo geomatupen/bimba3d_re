@@ -1,0 +1,31 @@
+# VCS and editor
+.git
+.gitignore
+.vscode
+.idea
+
+# Python/Node artifacts
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.venv
+venv
+node_modules
+
+# Project runtime/build outputs
+data
+bimba3d_backend/data
+**/*.splat
+**/*.ply
+**/*.pt
+**/*.ckpt
+**/*.npz
+**/*.npy
+
+# Frontend build artifacts
+bimba3d_frontend/dist
+
+# OS junk
+.DS_Store
+Thumbs.db

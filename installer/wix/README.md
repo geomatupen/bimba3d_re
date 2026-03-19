@@ -7,6 +7,8 @@ This folder contains a starter template for a one-click Windows chainer installe
 - `EULA.md` - Bimba3D installer EULA text.
 - `THIRD_PARTY_NOTICES.md` - third-party license and EULA references used by installer flow.
 - `payloads/payload-manifest.json` - versioned URLs + SHA256 pins.
+- `../../compatibility-matrix.json` - single source of truth for CUDA/VS/Torch/COLMAP/gsplat compatibility.
+- `payloads/compatibility-resolver.ps1` - shared resolver used by prerequisite, COLMAP, and runtime bootstrap scripts.
 - `payloads/install-colmap.cmd` - extracts COLMAP zip and sets `COLMAP_EXE`.
 - `scripts/download-payloads.ps1` - downloads payloads from manifest.
 - `scripts/update-manifest-sha256.ps1` - computes SHA256 from local files and can update manifest.
@@ -21,14 +23,13 @@ This folder contains a starter template for a one-click Windows chainer installe
 3. `Bimba3D.msi` URL is preconfigured for GitHub Releases latest asset (`geomatupen/bimba3d`).
   - Keep it as-is if your release asset name is exactly `Bimba3D.msi`.
   - Change only if you use a different file name or repo.
-4. Decide whether `InstallBuildTools` should be 0 (runtime only) or 1 (include compile toolchain).
-5. Decide whether `InstallCudaToolkit` should be 0 (default opt-in) or 1 (auto-install if missing).
-5. Add code signing to final `Bimba3D-Setup.exe`.
+4. Add code signing to final `Bimba3D-Setup.exe`.
 
 Default compliance behavior in this repo:
 - `VC++ Runtime` auto-installs if missing.
-- `Build Tools` is opt-in (`InstallBuildTools=0` by default).
-- `CUDA Toolkit` is opt-in (`InstallCudaToolkit=0` by default).
+- `Build Tools` is not bundled; setup opens official Microsoft links if missing and waits for retry.
+- `CUDA Toolkit` is not bundled; setup opens the official NVIDIA CUDA 12.5 network installer (recommended) and an all-versions page if missing, then waits for retry.
+- Runtime chooses Torch/COLMAP/gsplat behavior using the compatibility matrix (default stack when default prereqs match, compatible fallback when they do not).
 - Bundle license link points to project EULA: `installer/wix/EULA.md`.
 - Third-party obligations are summarized in: `installer/wix/THIRD_PARTY_NOTICES.md`.
 
@@ -55,16 +56,15 @@ PFX signing example:
 - Local-only build (no signing):
   - `powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -UpdateShaFromLocalFiles -SkipSigning`
 
-## Compliance launcher (interactive consent)
-- Use this launcher to explicitly ask users before Build Tools / CUDA install and pass flags to Burn:
+## Compliance launcher
+- Use this launcher to show terms links before setup starts:
   - `powershell -ExecutionPolicy Bypass -File .\scripts\start-compliant-install.ps1 -InstallerPath .\Bimba3D-Setup.exe`
 - Launcher prints links to:
   - Bimba3D EULA
   - Third-party notices
   - Build Tools terms
   - CUDA EULA
-- Launcher warns that both Build Tools + CUDA are required for gsplat training.
-- If user skips either dependency, launcher shows a red warning and asks for explicit confirmation before continuing.
+- During setup, a prerequisite gate checks Build Tools + CUDA and opens official download pages if missing.
 
 ## What to replace in payload-manifest.json
 1. `sha256` values:
@@ -75,7 +75,7 @@ PFX signing example:
   - Already set to: `https://github.com/geomatupen/bimba3d/releases/latest/download/Bimba3D.msi`
   - If hosting MSI elsewhere (or using a different asset name), set that direct HTTPS URL.
    - If not hosting and using local file only, set `"url": "LOCAL_FILE"` and place `Bimba3D.msi` in `payloads\`.
-3. Keep vendor URLs for VS/VC++/CUDA/COLMAP unless you mirror internally.
+3. Keep vendor URLs for Python/VC++/COLMAP unless you mirror internally.
 
 No login is required to calculate SHA256. Login is only needed if your MSI is stored in a private artifact repository.
 

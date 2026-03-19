@@ -14,7 +14,11 @@ Use that as the single source of truth to avoid duplicated instructions.
   - Includes FastAPI + training/runtime Python deps (`torch`, `torchvision`, `gsplat`, `torchmetrics`, etc.).
 - `requirements.docker-worker.txt`
   - Docker worker Python deps reference.
-  - In Docker builds, `torch`/`torchvision` and `gsplat` are installed separately in `Dockerfile.worker` with pinned CUDA-compatible wheels.
+  - In Docker builds, `torch`/`torchvision`/`torchaudio` and `gsplat` are installed separately in `Dockerfile.worker` using compatibility resolution from `compatibility-matrix.json`.
+- `../compatibility-matrix.json`
+  - Matrix for CUDA/Torch/COLMAP/gsplat compatibility used by Docker worker build resolver.
+- `scripts/resolve_compatibility_profile.py`
+  - Resolves build profile from detected CUDA and emits shell exports consumed by `Dockerfile.worker`.
 - `requirements.txt`
   - Backward-compatible alias pointing to `requirements.local.txt`.
 

@@ -32,8 +32,20 @@ if ($LASTEXITCODE -ne 0) {
 $required = @(
     "$PSScriptRoot\..\payloads\vc_redist.x64.exe",
     "$PSScriptRoot\..\payloads\colmap-x64-windows-cuda.zip",
+    "$PSScriptRoot\..\payloads\colmap-x64-windows-nocuda.zip",
     "$PSScriptRoot\..\payloads\install-colmap.cmd",
-    "$PSScriptRoot\..\payloads\run-runtime-bootstrap.cmd",
+    "$PSScriptRoot\..\payloads\compatibility-resolver-prereq.ps1",
+    "$PSScriptRoot\..\payloads\compatibility-resolver-colmap.ps1",
+    "$PSScriptRoot\..\payloads\compatibility-resolver-runtime.ps1",
+    "$PSScriptRoot\..\payloads\compatibility-matrix-prereq.json",
+    "$PSScriptRoot\..\payloads\compatibility-matrix-colmap.json",
+    "$PSScriptRoot\..\payloads\compatibility-matrix-runtime.json",
+    "$PSScriptRoot\..\payloads\run-prereq-check.cmd",
+    "$PSScriptRoot\..\payloads\prereq-check.ps1",
+    "$PSScriptRoot\..\payloads\run-runtime-bootstrap-prepare.cmd",
+    "$PSScriptRoot\..\payloads\run-runtime-bootstrap-torch.cmd",
+    "$PSScriptRoot\..\payloads\run-runtime-bootstrap-gsplat.cmd",
+    "$PSScriptRoot\..\payloads\run-runtime-bootstrap-requirements.cmd",
     "$PSScriptRoot\..\payloads\runtime-bootstrap.ps1",
     "$PSScriptRoot\..\payloads\Bimba3D.msi"
 )

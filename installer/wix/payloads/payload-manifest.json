@@ -9,28 +9,22 @@
                          "sha256":  "71bd44e6b0e91c17558963557e4cdb80b483de9b0a0a9717f06cf896f95ab598"
                      },
                      {
-                         "id":  "vs_buildtools_2022",
-                         "file":  "vs_BuildTools.exe",
-                         "url":  "https://aka.ms/vs/17/release/vs_BuildTools.exe",
-                         "sha256":  "f6ea321fa31185faa9892f90bf2fb179af67e4982dea349027f120cddb79ddb8"
-                     },
-                     {
                          "id":  "vc_redist_x64",
                          "file":  "vc_redist.x64.exe",
                          "url":  "https://aka.ms/vc14/vc_redist.x64.exe",
                          "sha256":  "8995548dfffcde7c49987029c764355612ba6850ee09a7b6f0fddc85bdc5c280"
                      },
                      {
-                         "id":  "cuda_toolkit_12_5_windows",
-                         "file":  "cuda_installer.exe",
-                         "url":  "https://developer.download.nvidia.com/compute/cuda/12.5.0/network_installers/cuda_12.5.0_windows_network.exe",
-                         "sha256":  "e64e6a3b946093dfca4416ad7b1c54b71fd59dcab62631efc87424e69f27d00a"
-                     },
-                     {
                          "id":  "colmap_4_0_1_windows_cuda",
                          "file":  "colmap-x64-windows-cuda.zip",
                          "url":  "https://github.com/colmap/colmap/releases/download/4.0.1/colmap-x64-windows-cuda.zip",
                          "sha256":  "7bd08fb380d7399ecdd113e69cb83c341cd4b3c2eb0c19db644f44589f232bca"
+                     },
+                     {
+                         "id":  "colmap_4_0_1_windows_nocuda",
+                         "file":  "colmap-x64-windows-nocuda.zip",
+                         "url":  "https://github.com/colmap/colmap/releases/download/4.0.1/colmap-x64-windows-nocuda.zip",
+                         "sha256":  "97e5a6b0ed996ad71485d83d2b881b7856f0aa342f4eeda088a1f75a189cd7df"
                      },
                      {
                          "id":  "bimba3d_app_msi",

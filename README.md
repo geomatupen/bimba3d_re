@@ -39,6 +39,9 @@ python -c "import torch, gsplat.cuda._wrapper as w; print(torch.__version__, tor
 
 Expected: `2.5.1+cu121 12.1 True True` (or equivalent CUDA-enabled values).
 
+Compatibility profile probe:
+- `python .\bimba3d_backend\scripts\resolve_compatibility_profile.py --matrix .\compatibility-matrix.json --format json`
+
 If `nvcc --version` is not recognized, install CUDA Toolkit (12.x) from NVIDIA and ensure CUDA `bin` is on PATH (for example `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin`).
 
 ## 1) Install

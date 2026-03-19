@@ -28,8 +28,6 @@
     <Variable Name="CudaInstallDir" Type="string" Value="C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.5" />
     <Variable Name="PythonInstallDir" Type="string" Value="C:\\Program Files\\Python312" />
     <Variable Name="ColmapVersion" Type="string" Value="4.0.1" />
-    <Variable Name="InstallBuildTools" Type="numeric" Value="0" />
-    <Variable Name="InstallCudaToolkit" Type="numeric" Value="0" />
 
     <util:RegistrySearch
         Id="SearchVCRedistInstalled"
@@ -83,18 +81,21 @@
         Result="exists" />
 
     <Chain>
-      <!-- Optional Build Tools install: only if InstallBuildTools=1 -->
       <ExePackage
-          Id="VsBuildTools2022"
-          DisplayName="Microsoft Visual Studio Build Tools 2022"
-          SourceFile="payloads\\vs_BuildTools.exe"
-          InstallArguments="--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-          DetectCondition="VSBT_17_PATH OR VS2022_SXS_PATH"
-          InstallCondition="InstallBuildTools = 1 AND NOT RebootPending"
+          Id="Bimba3DPrereqCheck"
+          CacheId="Bimba3DPrereqCheck"
+          DisplayName="Bimba3D Prerequisite Check (Build Tools + CUDA)"
+          SourceFile="payloads\\run-prereq-check.cmd"
+          DetectCondition="(VSBT_17_PATH OR VS2022_SXS_PATH) AND (CUDA_NVCC_PATH OR CUDA_V128_DIR OR CUDA_V127_DIR OR CUDA_V126_DIR OR CUDA_V125_DIR OR CUDA_V124_DIR OR CUDA_V123_DIR OR CUDA_V122_DIR OR CUDA_V121_DIR OR CUDA_V120_DIR)"
+          InstallCondition="VersionNT64 AND NOT WixBundleInstalled"
           PerMachine="yes"
-          Vital="no"
+          Vital="yes"
           Compressed="yes"
-          Permanent="yes" />
+          Permanent="yes">
+        <Payload SourceFile="payloads\\prereq-check.ps1" />
+        <Payload SourceFile="payloads\\compatibility-resolver-prereq.ps1" />
+        <Payload SourceFile="payloads\\compatibility-matrix-prereq.json" />
+      </ExePackage>
 
       <ExePackage
           Id="Python312X64"
@@ -120,32 +121,22 @@
           Compressed="yes"
           Permanent="yes" />
 
-      <!-- CUDA Toolkit (or replace with runtime-only package strategy) -->
-      <ExePackage
-          Id="CudaToolkit"
-          DisplayName="NVIDIA CUDA Toolkit 12.5"
-          SourceFile="payloads\\cuda_installer.exe"
-          InstallArguments="-s"
-          DetectCondition="CUDA_NVCC_PATH OR CUDA_V128_DIR OR CUDA_V127_DIR OR CUDA_V126_DIR OR CUDA_V125_DIR OR CUDA_V124_DIR OR CUDA_V123_DIR OR CUDA_V122_DIR OR CUDA_V121_DIR OR CUDA_V120_DIR"
-          InstallCondition="InstallCudaToolkit = 1"
-          PerMachine="yes"
-          Vital="no"
-          Compressed="yes"
-          Permanent="yes" />
-
       <!-- COLMAP zip extracted by helper package/script -->
       <ExePackage
           Id="ColmapInstall"
           DisplayName="COLMAP [ColmapVersion]"
           SourceFile="payloads\\install-colmap.cmd"
-          InstallArguments="&quot;[ColmapInstallDir]&quot; &quot;[WixBundleExecutePackageCacheFolder]colmap-x64-windows-cuda.zip&quot;"
+          InstallArguments="&quot;[ColmapInstallDir]&quot; &quot;[WixBundleExecutePackageCacheFolder]colmap-x64-windows-cuda.zip&quot; &quot;[WixBundleExecutePackageCacheFolder]colmap-x64-windows-nocuda.zip&quot; &quot;[WixBundleLog_ColmapInstall]&quot;"
           DetectCondition="COLMAP_BAT_EXISTS"
           PerMachine="yes"
                     Vital="yes"
           Compressed="yes"
                     Permanent="yes">
                 <Payload SourceFile="payloads\\install-colmap.ps1" />
+                  <Payload SourceFile="payloads\\compatibility-resolver-colmap.ps1" />
+                  <Payload SourceFile="payloads\\compatibility-matrix-colmap.json" />
                 <Payload SourceFile="payloads\\colmap-x64-windows-cuda.zip" />
+                <Payload SourceFile="payloads\\colmap-x64-windows-nocuda.zip" />
             </ExePackage>
 
       <!-- Bimba3D app payload -->
@@ -161,57 +152,49 @@
                     Id="Bimba3DRuntimePrepare"
                   CacheId="Bimba3DRuntimePrepare"
                     DisplayName="Bimba3D Runtime: Create Python environment"
-                    SourceFile="payloads\\run-runtime-bootstrap.cmd"
-                                        InstallArguments="prepare"
+                    SourceFile="payloads\\run-runtime-bootstrap-prepare.cmd"
                     InstallCondition="VersionNT64 AND NOT WixBundleInstalled"
                     PerMachine="yes"
                     Vital="yes"
                     Compressed="yes"
                     Permanent="yes">
                 <Payload SourceFile="payloads\\runtime-bootstrap.ps1" />
+                  <Payload SourceFile="payloads\\compatibility-resolver-runtime.ps1" />
+                  <Payload SourceFile="payloads\\compatibility-matrix-runtime.json" />
             </ExePackage>
 
             <ExePackage
                     Id="Bimba3DRuntimeTorch"
                   CacheId="Bimba3DRuntimeTorch"
                     DisplayName="Bimba3D Runtime: Install torch"
-                    SourceFile="payloads\\run-runtime-bootstrap.cmd"
-                                        InstallArguments="torch"
+                    SourceFile="payloads\\run-runtime-bootstrap-torch.cmd"
                     InstallCondition="VersionNT64 AND NOT WixBundleInstalled"
                     PerMachine="yes"
                     Vital="yes"
                     Compressed="yes"
-                    Permanent="yes">
-                <Payload SourceFile="payloads\\runtime-bootstrap.ps1" />
-            </ExePackage>
+                    Permanent="yes" />
 
             <ExePackage
                     Id="Bimba3DRuntimeGsplat"
                   CacheId="Bimba3DRuntimeGsplat"
                     DisplayName="Bimba3D Runtime: Build gsplat"
-                    SourceFile="payloads\\run-runtime-bootstrap.cmd"
-                                        InstallArguments="gsplat"
+                    SourceFile="payloads\\run-runtime-bootstrap-gsplat.cmd"
                     InstallCondition="VersionNT64 AND NOT WixBundleInstalled"
                     PerMachine="yes"
                     Vital="yes"
                     Compressed="yes"
-                    Permanent="yes">
-                <Payload SourceFile="payloads\\runtime-bootstrap.ps1" />
-            </ExePackage>
+                    Permanent="yes" />
 
             <ExePackage
                     Id="Bimba3DRuntimeRequirements"
                   CacheId="Bimba3DRuntimeRequirements"
                     DisplayName="Bimba3D Runtime: Install backend packages"
-                    SourceFile="payloads\\run-runtime-bootstrap.cmd"
-                                        InstallArguments="requirements"
+                    SourceFile="payloads\\run-runtime-bootstrap-requirements.cmd"
                     InstallCondition="VersionNT64 AND NOT WixBundleInstalled"
                     PerMachine="yes"
                     Vital="yes"
                     Compressed="yes"
-                    Permanent="yes">
-                <Payload SourceFile="payloads\\runtime-bootstrap.ps1" />
-            </ExePackage>
+                    Permanent="yes" />
 
     </Chain>
 

@@ -4,8 +4,11 @@ set -e
 echo "🚀 Building Gaussian Splatting Worker Docker Image..."
 echo ""
 
-# Build the worker image from within backend directory
-docker build -f Dockerfile.worker -t bimba3d-worker:latest .
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Build the worker image using repo root context (shared compatibility matrix)
+docker build -f "$REPO_ROOT/bimba3d_backend/Dockerfile.worker" -t bimba3d-worker:latest "$REPO_ROOT"
 
 echo ""
 echo "✅ Build complete!"

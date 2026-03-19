@@ -4,6 +4,9 @@ FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
+COPY compatibility-matrix.json /tmp/compatibility-matrix.json
+COPY bimba3d_backend/scripts/resolve_compatibility_profile.py /tmp/resolve_compatibility_profile.py
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
@@ -33,9 +36,11 @@ RUN apt-get update && apt-get install -y \
 
 # Install COLMAP
 WORKDIR /tmp
+RUN python3 /tmp/resolve_compatibility_profile.py --matrix /tmp/compatibility-matrix.json --format shell > /tmp/compat.env
 RUN git clone https://github.com/colmap/colmap.git && \
+    . /tmp/compat.env && \
     cd colmap && \
-    git checkout 3.9.1 && \
+    git checkout ${COLMAP_VERSION} && \
     mkdir build && \
     cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=60\;70\;75\;80\;86 && \
@@ -47,21 +52,25 @@ RUN git clone https://github.com/colmap/colmap.git && \
 
 
 # Install Python packages (retry on transient network failures)
-# Use PyTorch wheels built for CUDA 12.1 (cu121) to match the base image runtime
+# Use compatibility resolver output to pick the right torch track for detected CUDA.
 RUN set -euo \
+ && . /tmp/compat.env \
  && for i in 1 2 3; do \
             pip3 install --no-cache-dir --timeout 120 \
-                --index-url https://download.pytorch.org/whl/cu121 \
-                torch==2.1.0+cu121 \
-                torchvision==0.16.0+cu121 \
+        --index-url ${TORCH_INDEX_URL} \
+        torch==${TORCH_VERSION} \
+        torchvision==${TORCHVISION_VERSION} \
+        torchaudio==${TORCHAUDIO_VERSION} \
                 "numpy<2" \
                 pillow \
                 tqdm \
                 packaging && break || sleep 5; \
         done
 
-# Install gsplat from PyPI (rendering ops + exporter)
-RUN pip3 install --no-cache-dir gsplat
+# Install gsplat from PyPI only when the resolved profile supports it.
+RUN set -euo \
+ && . /tmp/compat.env \
+ && if [ "${INSTALL_GSPLAT}" = "1" ]; then pip3 install --no-cache-dir gsplat==${GSPLAT_VERSION}; else echo "Skipping gsplat install for profile ${TORCH_TRACK}"; fi
 
 # Install additional runtime deps required by vendored upstream simple_trainer path
 # (avoid reinstalling torch/gsplat from generic requirements to keep CUDA wheel pinning intact)
@@ -89,7 +98,7 @@ RUN pip3 install --no-cache-dir --force-reinstall "numpy<2"
 WORKDIR /workspace
 
 # Copy worker code (trainer + entrypoint + utilities)
-COPY worker/ /workspace/worker/
+COPY bimba3d_backend/worker/ /workspace/worker/
 
 # Set entrypoint to run the worker entrypoint as a module (robust to import errors)
 ENTRYPOINT ["python3", "-m", "worker.entrypoint"]

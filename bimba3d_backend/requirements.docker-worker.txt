@@ -1,7 +1,7 @@
 # Python dependencies for the Docker worker runtime.
 # NOTE:
-# - torch/torchvision are installed in Dockerfile.worker with CUDA-pinned wheels.
-# - gsplat is installed separately in Dockerfile.worker.
+# - torch/torchvision/torchaudio are installed in Dockerfile.worker via compatibility matrix profile.
+# - gsplat is installed conditionally in Dockerfile.worker via compatibility profile.
 
 numpy<2
 pillow

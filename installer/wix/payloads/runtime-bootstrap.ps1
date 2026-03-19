@@ -15,14 +15,57 @@ $bootstrapState = Join-Path $runtimeRoot "bootstrap-state.txt"
 $torchFlavorFile = Join-Path $runtimeRoot "torch-flavor.txt"
 $backendRequirements = Join-Path $InstallDir "bimba3d_backend\requirements.windows.txt"
 
-$torchIndex = "https://download.pytorch.org/whl/cu121"
-$torchVersion = "2.5.1+cu121"
-$torchCpuVersion = "2.5.1"
-$gsplatVersion = "1.5.3"
+$resolverPath = Join-Path $PSScriptRoot 'compatibility-resolver.ps1'
+if (-not (Test-Path $resolverPath)) {
+    $resolverCandidate = Get-ChildItem -Path $PSScriptRoot -Filter 'compatibility-resolver*.ps1' -File -ErrorAction SilentlyContinue |
+        Sort-Object -Property Name |
+        Select-Object -First 1
+    if ($resolverCandidate) {
+        $resolverPath = $resolverCandidate.FullName
+    }
+}
+if (-not (Test-Path $resolverPath)) {
+    throw "Compatibility resolver not found in $PSScriptRoot"
+}
+
+. $resolverPath
+$matrixPath = Join-Path $PSScriptRoot 'compatibility-matrix.json'
+$compat = Resolve-Bimba3DCompatibility -MatrixPath $matrixPath
+
+$torchTrack = [string]$compat.torchTrack
+$torchIndex = [string]$compat.torchIndexUrl
+$torchVersion = [string]$compat.torchVersion
+$torchvisionVersion = [string]$compat.torchvisionVersion
+$torchaudioVersion = [string]$compat.torchaudioVersion
+$torchCpuVersion = [string]$compat.torchCpuVersion
+$torchvisionCpuVersion = [string]$compat.torchvisionCpuVersion
+$torchaudioCpuVersion = [string]$compat.torchaudioCpuVersion
+$gsplatVersion = [string]$compat.gsplatVersion
+$gsplatSupportedTracks = @($compat.gsplatSupportedTorchTracks)
 
 function Ensure-RuntimeRoot {
     if (-not (Test-Path $runtimeRoot)) {
         New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+    }
+
+    Ensure-RuntimeWritable -TargetPath $runtimeRoot
+}
+
+function Ensure-RuntimeWritable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetPath
+    )
+
+    if (-not (Test-Path $TargetPath)) {
+        return
+    }
+
+    try {
+        & icacls $TargetPath /grant "*S-1-5-32-545:(OI)(CI)M" /T /C | Out-Null
+    }
+    catch {
+        Write-Warning "Unable to update ACLs for runtime path '$TargetPath': $($_.Exception.Message)"
     }
 }
 
@@ -53,6 +96,10 @@ function Resolve-PythonExecutable {
 function Ensure-Venv {
     Ensure-RuntimeRoot
 
+    if (Test-Path $venvDir) {
+        Ensure-RuntimeWritable -TargetPath $venvDir
+    }
+
     if (-not (Test-Path $venvPy)) {
         Write-Host "Creating Python virtual environment..."
         $python = Resolve-PythonExecutable
@@ -65,6 +112,8 @@ function Ensure-Venv {
     if (-not (Test-Path $venvPy)) {
         throw "Venv python not found at $venvPy"
     }
+
+    Ensure-RuntimeWritable -TargetPath $venvDir
 }
 
 function Install-PipTooling {
@@ -75,41 +124,35 @@ function Install-PipTooling {
     }
 }
 
-function Detect-CudaToolkit {
-    if ($env:CUDA_PATH -and (Test-Path (Join-Path $env:CUDA_PATH "bin\nvcc.exe"))) {
-        return $true
+function Install-CpuTorch {
+    Write-Host "Installing CPU torch fallback..."
+    & $venvPy -m pip install --force-reinstall "torch==$torchCpuVersion" "torchvision==$torchvisionCpuVersion" "torchaudio==$torchaudioCpuVersion"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install CPU torch fallback runtime."
     }
-
-    $versions = "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1", "12.0"
-    foreach ($version in $versions) {
-        $cudaDir = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$version"
-        if (Test-Path (Join-Path $cudaDir "bin\nvcc.exe")) {
-            return $true
-        }
-    }
-
-    return $false
 }
 
 function Install-Torch {
     Ensure-Venv
 
-    $torchFlavor = "cu121"
-    Write-Host "Installing CUDA torch..."
-    & $venvPy -m pip install --index-url $torchIndex --force-reinstall "torch==$torchVersion"
+    $torchFlavor = $torchTrack
+    Write-Host "Detected compatibility profile: CUDA=$($compat.detectedCudaVersion) VS=$($compat.detectedVsMajor) Track=$torchTrack DefaultStack=$($compat.useDefaultStack)"
+    Write-Host "Installing CUDA torch stack..."
+    & $venvPy -m pip install --index-url $torchIndex --force-reinstall "torch==$torchVersion" "torchvision==$torchvisionVersion" "torchaudio==$torchaudioVersion"
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "CUDA torch install failed, falling back to CPU torch."
         $torchFlavor = "cpu"
-        & $venvPy -m pip install --force-reinstall "torch==$torchCpuVersion"
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to install torch runtime."
-        }
+        Install-CpuTorch
     }
     else {
-        & $venvPy -c "import torch; raise SystemExit(0 if getattr(torch.version,'cuda',None) else 1)"
+        $torchProbeOutput = (& $venvPy -c "import torch; import traceback; import sys; print(getattr(torch.version,'cuda',None) or 'none'); raise SystemExit(0 if getattr(torch.version,'cuda',None) else 1)" 2>&1 | Out-String).Trim()
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Torch installed but reports CPU-only build."
+            Write-Warning "CUDA torch installed but import/CUDA probe failed; falling back to CPU torch."
+            if ($torchProbeOutput) {
+                Write-Warning "Torch CUDA probe output: $torchProbeOutput"
+            }
             $torchFlavor = "cpu"
+            Install-CpuTorch
         }
     }
 
@@ -124,8 +167,13 @@ function Install-Gsplat {
         $torchFlavor = (Get-Content $torchFlavorFile -Raw).Trim()
     }
 
-    if ($torchFlavor -ne "cu121") {
+    if ($torchFlavor -eq "cpu") {
         Write-Warning "Skipping gsplat build because CUDA torch is not active."
+        return
+    }
+
+    if ($gsplatSupportedTracks.Count -gt 0 -and ($gsplatSupportedTracks -notcontains $torchFlavor)) {
+        Write-Warning "Skipping gsplat build because torch track '$torchFlavor' is outside supported tracks: $($gsplatSupportedTracks -join ', ')."
         return
     }
 
@@ -163,9 +211,14 @@ function Install-Requirements {
 
     @(
         "TORCH_VERSION=$torchVersion"
+        "TORCHVISION_VERSION=$torchvisionVersion"
+        "TORCHAUDIO_VERSION=$torchaudioVersion"
         "TORCH_FLAVOR=$torchFlavor"
         "TORCH_INSTALLED=$torchInstalled"
         "GSPLAT_VERSION=$gsplatVersion"
+        "CUDA_DETECTED=$($compat.detectedCudaVersion)"
+        "VS_DETECTED=$($compat.detectedVsMajor)"
+        "DEFAULT_STACK=$($compat.useDefaultStack)"
     ) | Set-Content -Path $bootstrapState -Encoding ASCII
 
     $dataDir = Join-Path $env:ProgramData "Bimba3D\data\projects"

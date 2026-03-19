@@ -23,8 +23,8 @@ services:
 
   worker:
     build:
-      context: ./bimba3d_backend
-      dockerfile: Dockerfile.worker
+      context: .
+      dockerfile: bimba3d_backend/Dockerfile.worker
     image: bimba3d-worker:latest
     networks:
       - bimba3d

@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "defaults": {
+    "vsMajor": 17,
+    "vsRecommendedInstallerUrl": "https://aka.ms/vs/17/release/vs_BuildTools.exe",
+    "cudaMin": "11.0",
+    "cudaPreferred": "12.5",
+    "cudaRecommendedInstallerUrl": "https://developer.download.nvidia.com/compute/cuda/12.5.0/network_installers/cuda_12.5.0_windows_network.exe",
+    "torchTrack": "cu121",
+    "torchVersion": "2.5.1+cu121",
+    "torchvisionVersion": "0.20.1+cu121",
+    "torchaudioVersion": "2.5.1+cu121",
+    "torchIndexUrl": "https://download.pytorch.org/whl/cu121",
+    "torchCpuVersion": "2.5.1",
+    "torchvisionCpuVersion": "0.20.1",
+    "torchaudioCpuVersion": "2.5.1",
+    "gsplatVersion": "1.5.3",
+    "colmapVersion": "4.0.1"
+  },
+  "vsProfiles": [
+    {
+      "name": "cuda-11.x",
+      "minCuda": "11.0",
+      "maxCuda": "11.9",
+      "vsMajor": 16,
+      "vsRecommendedInstallerUrl": "https://aka.ms/vs/16/release/vs_buildtools.exe"
+    },
+    {
+      "name": "cuda-12.0+",
+      "minCuda": "12.0",
+      "vsMajor": 17,
+      "vsRecommendedInstallerUrl": "https://aka.ms/vs/17/release/vs_BuildTools.exe"
+    }
+  ],
+  "torchProfiles": [
+    {
+      "name": "cuda-12.1+",
+      "minCuda": "12.1",
+      "track": "cu121",
+      "indexUrl": "https://download.pytorch.org/whl/cu121",
+      "torchVersion": "2.5.1+cu121",
+      "torchvisionVersion": "0.20.1+cu121",
+      "torchaudioVersion": "2.5.1+cu121"
+    },
+    {
+      "name": "cuda-11.8-to-12.0",
+      "minCuda": "11.8",
+      "maxCuda": "12.0",
+      "track": "cu118",
+      "indexUrl": "https://download.pytorch.org/whl/cu118",
+      "torchVersion": "2.5.1+cu118",
+      "torchvisionVersion": "0.20.1+cu118",
+      "torchaudioVersion": "2.5.1+cu118"
+    }
+  ],
+  "gsplat": {
+    "version": "1.5.3",
+    "supportedTorchTracks": [
+      "cu121",
+      "cu118"
+    ]
+  },
+  "colmap": {
+    "cuda": {
+      "version": "4.0.1",
+      "assetName": "colmap-x64-windows-cuda.zip",
+      "url": "https://github.com/colmap/colmap/releases/download/4.0.1/colmap-x64-windows-cuda.zip"
+    },
+    "nocuda": {
+      "version": "4.0.1",
+      "assetName": "colmap-x64-windows-nocuda.zip",
+      "url": "https://github.com/colmap/colmap/releases/download/4.0.1/colmap-x64-windows-nocuda.zip"
+    }
+  },
+  "colmapProfiles": [
+    {
+      "name": "cuda-11.x",
+      "minCuda": "11.0",
+      "maxCuda": "11.9",
+      "cuda": {
+        "version": "3.13.0",
+        "assetName": "colmap-x64-windows-cuda.zip",
+        "url": "https://github.com/colmap/colmap/releases/download/3.13.0/colmap-x64-windows-cuda.zip"
+      },
+      "nocuda": {
+        "version": "3.13.0",
+        "assetName": "colmap-x64-windows-nocuda.zip",
+        "url": "https://github.com/colmap/colmap/releases/download/3.13.0/colmap-x64-windows-nocuda.zip"
+      }
+    },
+    {
+      "name": "cuda-12.0+",
+      "minCuda": "12.0",
+      "maxCuda": "12.9",
+      "cuda": {
+        "version": "4.0.2",
+        "assetName": "colmap-x64-windows-cuda.zip",
+        "url": "https://github.com/colmap/colmap/releases/download/4.0.2/colmap-x64-windows-cuda.zip"
+      },
+      "nocuda": {
+        "version": "4.0.2",
+        "assetName": "colmap-x64-windows-nocuda.zip",
+        "url": "https://github.com/colmap/colmap/releases/download/4.0.2/colmap-x64-windows-nocuda.zip"
+      }
+    },
+    {
+      "name": "cuda-13.0+",
+      "minCuda": "13.0",
+      "cuda": {
+        "version": "4.0.2",
+        "assetName": "colmap-x64-windows-cuda.zip",
+        "url": "https://github.com/colmap/colmap/releases/download/4.0.2/colmap-x64-windows-cuda.zip"
+      },
+      "nocuda": {
+        "version": "4.0.2",
+        "assetName": "colmap-x64-windows-nocuda.zip",
+        "url": "https://github.com/colmap/colmap/releases/download/4.0.2/colmap-x64-windows-nocuda.zip"
+      }
+    }
+  ]
+}

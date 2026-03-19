@@ -2938,16 +2938,29 @@ def _run_selected_training_engine(
             raise
 
         project_dir = Path(output_dir).parent
+        root_error = str(exc) if exc else "unknown error"
         if os.name == "nt":
-            guidance = (
-                "CUDA is not available for gsplat training on this Windows machine. "
-                "Install compatible x64 components and retry. "
-                "Required: NVIDIA driver + CUDA Toolkit x64 (recommended 12.5 for this build) + Visual Studio 2022 Build Tools x64 with C++ workload. "
-                "Before reinstalling gsplat, run: call \"C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvarsall.bat\" amd64 . "
-                "CUDA compatibility/downloads: https://developer.nvidia.com/cuda-downloads . "
-                "Visual Studio Build Tools: https://visualstudio.microsoft.com/visual-cpp-build-tools/ . "
-                "Do not use x86 installers."
-            )
+            if "WinError 193" in root_error or "not a valid Win32 application" in root_error:
+                guidance = (
+                    "CUDA runtime binary mismatch detected for gsplat training on Windows. "
+                    "PyTorch CUDA DLL load failed with WinError 193 (wrong-architecture dependency). "
+                    "Ensure all CUDA/VS/NVIDIA components are x64 only, remove any x86 CUDA/VS toolchain from PATH, "
+                    "and reinstall CUDA-enabled torch/gsplat in the runtime venv. "
+                    "Recommended stack: NVIDIA driver + CUDA Toolkit x64 12.5 + VS 2022 Build Tools x64 C++ workload. "
+                    "Before reinstalling gsplat, run: call \"C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvarsall.bat\" amd64 . "
+                    "CUDA downloads: https://developer.nvidia.com/cuda-downloads . "
+                    "Visual Studio Build Tools: https://visualstudio.microsoft.com/visual-cpp-build-tools/ ."
+                )
+            else:
+                guidance = (
+                    "CUDA is not available for gsplat training on this Windows machine. "
+                    "Install compatible x64 components and retry. "
+                    "Required: NVIDIA driver + CUDA Toolkit x64 (recommended 12.5 for this build) + Visual Studio 2022 Build Tools x64 with C++ workload. "
+                    "Before reinstalling gsplat, run: call \"C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvarsall.bat\" amd64 . "
+                    "CUDA compatibility/downloads: https://developer.nvidia.com/cuda-downloads . "
+                    "Visual Studio Build Tools: https://visualstudio.microsoft.com/visual-cpp-build-tools/ . "
+                    "Do not use x86 installers."
+                )
         else:
             guidance = (
                 "CUDA is not available for gsplat training on this machine. "
@@ -2961,11 +2974,11 @@ def _run_selected_training_engine(
             progress=55,
             stage="training",
             stage_progress=5,
-            message=guidance,
-            error=f"gsplat training requires CUDA + VS Build Tools x64. Root error: {exc}",
+            message=f"{guidance} Root error: {root_error}",
+            error=f"gsplat training requires CUDA + VS Build Tools x64. Root error: {root_error}",
             engine="gsplat",
         )
-        raise RuntimeError(guidance) from exc
+        raise RuntimeError(f"{guidance} Root error: {root_error}") from exc
 
 
 def main():
