@@ -20,6 +20,7 @@ class ProjectListItem(BaseModel):
     created_at: Optional[str] = None
     has_outputs: bool = False
     visibility: Literal["private", "public"] = "private"
+    is_owner: bool = False
 
 
 class CreateProjectRequest(BaseModel):

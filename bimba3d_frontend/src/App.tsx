@@ -3,6 +3,7 @@ import Dashboard from "./pages/Dashboard";
 import CreateProject from "./pages/CreateProject";
 import ProjectDetail from "./pages/ProjectDetail";
 import Comparison from "./pages/Comparison";
+import PublicResult from "./pages/PublicResult";
 import { HMRStatusBanner } from "./HMRStatusBanner";
 
 function App() {
@@ -13,6 +14,7 @@ function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/create" element={<CreateProject />} />
         <Route path="/project/:id" element={<ProjectDetail />} />
+        <Route path="/result/:id" element={<PublicResult />} />
         <Route path="/comparison/:id" element={<Comparison />} />
       </Routes>
     </>

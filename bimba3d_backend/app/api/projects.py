@@ -377,6 +377,7 @@ def list_projects(current_user: dict | None = Depends(get_current_user_optional)
                     created_at=project_status.get("created_at"),
                     has_outputs=has_outputs,
                     visibility=(project_status.get("visibility") or "private"),
+                    is_owner=True,
                 )
             )
 
@@ -393,6 +394,7 @@ def list_projects(current_user: dict | None = Depends(get_current_user_optional)
             for item in projects:
                 record = visibility_map.get(item.project_id)
                 if record:
+                    item.is_owner = bool(user_id and record.owner_user_id == user_id)
                     item.visibility = record.visibility if record.visibility in {"private", "public"} else "private"
                     if item.name is None and record.name:
                         item.name = record.name
@@ -2134,7 +2136,7 @@ def _build_public_project_payload(project_id: str) -> dict | None:
         "category": category,
         "created_at": created_at,
         "visibility": "public",
-        "splat_url": f"/projects/{project_id}/download/splats",
+        "result_page_url": f"/result/{project_id}",
         "thumbnail_url": thumbnail_url,
     }
 

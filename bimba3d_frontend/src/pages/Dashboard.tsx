@@ -19,6 +19,7 @@ import {
 } from "react";
 import { api } from "../api/client";
 import UserMenu from "../components/UserMenu";
+import { useAuth } from "../context/AuthContext";
 
 interface Project {
   project_id: string;
@@ -31,9 +32,11 @@ interface Project {
   created_at: string | null;
   has_outputs: boolean;
   visibility?: "private" | "public";
+  is_owner?: boolean;
 }
 
 export default function Dashboard() {
+  const { user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -180,6 +183,11 @@ export default function Dashboard() {
   const requestVisibilityChange = (project: Project, nextVisibility: "private" | "public", e?: MouseEvent) => {
     if (e) e.stopPropagation();
     setVisibilityConfirm({ project, nextVisibility });
+  };
+
+  const openProject = (project: Project) => {
+    const canOpenProcessingPage = Boolean(user) && Boolean(project.is_owner);
+    navigate(canOpenProcessingPage ? `/project/${project.project_id}` : `/result/${project.project_id}`);
   };
 
   const performVisibilityChange = async () => {
@@ -335,7 +343,7 @@ export default function Dashboard() {
                 <div
                   key={project.project_id}
                   className="group relative block rounded-xl border border-slate-300 bg-white hover:shadow-lg transition-all duration-300 shadow-sm overflow-hidden hover:border-blue-400 cursor-pointer"
-                  onClick={() => navigate(`/project/${project.project_id}`)}
+                  onClick={() => openProject(project)}
                 >
                   <div className="flex items-center gap-4 p-4">
                     {/* Thumbnail/Icon */}
@@ -587,7 +595,7 @@ export default function Dashboard() {
                 <h3 className="text-lg font-semibold text-slate-900">Change project visibility?</h3>
                 <p className="text-sm text-slate-500">
                   {visibilityConfirm.nextVisibility === "public"
-                    ? "This project will appear in public project APIs with its splat file URL."
+                    ? "This project will appear in public project APIs with its result page URL."
                     : "This project will be hidden from public project APIs."}
                 </p>
               </div>

@@ -203,6 +203,28 @@ cd bimba3d_backend
 Current initial revision:
 - `20260320_000001` (users, refresh_tokens, project_records)
 
+## Public result API contract
+
+Public project endpoints now expose a result page URL for website embedding/routing instead of direct splat URLs.
+
+- `GET /projects/public`
+- `GET /projects/public/{project_id}`
+
+Response fields include:
+- `project_id`
+- `name`
+- `description`
+- `video_url`
+- `category`
+- `created_at`
+- `visibility` (`public`)
+- `thumbnail_url`
+- `result_page_url` (example: `/result/<project_id>`)
+
+Viewer routing behavior in frontend:
+- Logged-in owner opening own project -> full processing page: `/project/:id`
+- Logged-out user or non-owner opening a public project -> result-only page: `/result/:id`
+
 ## Windows checklist (local mode)
 1. Install Python + Node.js.
 2. Create venv and install Python deps from `requirements.windows.txt` for Windows CUDA local mode.
