@@ -419,6 +419,8 @@ async def upload_images(project_id: str, images: list[UploadFile] = File(...)):
         images_dir.mkdir(parents=True, exist_ok=True)
         thumbnails_dir.mkdir(parents=True, exist_ok=True)
         uploaded_count = 0
+        invalid_files: list[str] = []
+        allowed_ext_text = ", ".join(sorted(ALLOWED_IMAGE_EXTENSIONS))
         gps_records: dict[str, dict] = {}
         gps_file = images_dir / "locations.json"
         if gps_file.exists():
@@ -432,6 +434,7 @@ async def upload_images(project_id: str, images: list[UploadFile] = File(...)):
             file_ext = Path(img.filename).suffix.lower()
             if file_ext not in ALLOWED_IMAGE_EXTENSIONS:
                 logger.warning(f"Skipped invalid image: {img.filename}")
+                invalid_files.append(img.filename)
                 continue
             
             # Read and save file
@@ -465,7 +468,16 @@ async def upload_images(project_id: str, images: list[UploadFile] = File(...)):
             logger.info(f"Uploaded image: {img.filename} to {project_id}")
         
         if uploaded_count == 0:
-            raise HTTPException(status_code=400, detail="No valid images uploaded")
+            invalid_list = ", ".join(invalid_files[:10])
+            if len(invalid_files) > 10:
+                invalid_list = f"{invalid_list}, ..."
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No valid images uploaded. Allowed formats: {allowed_ext_text}. "
+                    f"Invalid files: {invalid_list}"
+                ),
+            )
         
         # Persist GPS metadata if any
         try:
@@ -2110,11 +2122,14 @@ async def upload_comparison_images(
         images_dir.mkdir(parents=True, exist_ok=True)
         
         uploaded_count = 0
+        invalid_files: list[str] = []
+        allowed_ext_text = ", ".join(sorted(ALLOWED_IMAGE_EXTENSIONS))
         for img in images:
             # Validate file extension
             file_ext = Path(img.filename).suffix.lower()
             if file_ext not in ALLOWED_IMAGE_EXTENSIONS:
                 logger.warning(f"Skipped invalid image: {img.filename}")
+                invalid_files.append(img.filename)
                 continue
             
             content = await img.read()
@@ -2125,7 +2140,16 @@ async def upload_comparison_images(
             logger.info(f"Uploaded comparison image: {img.filename}")
         
         if uploaded_count == 0:
-            raise HTTPException(status_code=400, detail="No valid images uploaded")
+            invalid_list = ", ".join(invalid_files[:10])
+            if len(invalid_files) > 10:
+                invalid_list = f"{invalid_list}, ..."
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No valid images uploaded. Allowed formats: {allowed_ext_text}. "
+                    f"Invalid files: {invalid_list}"
+                ),
+            )
         
         return {"status": "uploaded", "count": uploaded_count}
     except HTTPException:

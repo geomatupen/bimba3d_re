@@ -2,6 +2,21 @@ import { useCallback, useState } from "react";
 import { Upload, X, FileImage, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 
+const ALLOWED_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".bmp", ".tiff"];
+
+function getFileExtension(filename: string): string {
+  const idx = filename.lastIndexOf(".");
+  if (idx === -1) return "";
+  return filename.slice(idx).toLowerCase();
+}
+
+function formatUploadError(err: unknown): string {
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (err instanceof Error) return err.message;
+  return "Upload failed";
+}
+
 interface UploadModalProps {
   projectId: string;
   isOpen: boolean;
@@ -20,7 +35,23 @@ export default function UploadModal({ projectId, isOpen, onClose, onUploaded }: 
     e.stopPropagation();
     setDragging(false);
     const dropped = Array.from(e.dataTransfer.files || []);
-    if (dropped.length) setFiles((prev) => [...prev, ...dropped]);
+    if (!dropped.length) return;
+
+    const invalid = dropped.filter((file) => !ALLOWED_IMAGE_EXTENSIONS.includes(getFileExtension(file.name)));
+    const valid = dropped.filter((file) => ALLOWED_IMAGE_EXTENSIONS.includes(getFileExtension(file.name)));
+
+    if (invalid.length) {
+      const names = invalid.slice(0, 5).map((file) => file.name).join(", ");
+      const suffix = invalid.length > 5 ? ", ..." : "";
+      setError(
+        `Unsupported file type. Allowed: ${ALLOWED_IMAGE_EXTENSIONS.join(", ")}. Invalid: ${names}${suffix}`
+      );
+    }
+
+    if (valid.length) {
+      setError(null);
+      setFiles((prev) => [...prev, ...valid]);
+    }
   }, []);
 
   const onDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -37,7 +68,23 @@ export default function UploadModal({ projectId, isOpen, onClose, onUploaded }: 
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(e.target.files || []);
-    if (selected.length) setFiles((prev) => [...prev, ...selected]);
+    if (!selected.length) return;
+
+    const invalid = selected.filter((file) => !ALLOWED_IMAGE_EXTENSIONS.includes(getFileExtension(file.name)));
+    const valid = selected.filter((file) => ALLOWED_IMAGE_EXTENSIONS.includes(getFileExtension(file.name)));
+
+    if (invalid.length) {
+      const names = invalid.slice(0, 5).map((file) => file.name).join(", ");
+      const suffix = invalid.length > 5 ? ", ..." : "";
+      setError(
+        `Unsupported file type. Allowed: ${ALLOWED_IMAGE_EXTENSIONS.join(", ")}. Invalid: ${names}${suffix}`
+      );
+    }
+
+    if (valid.length) {
+      setError(null);
+      setFiles((prev) => [...prev, ...valid]);
+    }
   };
 
   const removeFile = (idx: number) => {
@@ -56,7 +103,7 @@ export default function UploadModal({ projectId, isOpen, onClose, onUploaded }: 
       setFiles([]);
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
+      setError(formatUploadError(err));
     } finally {
       setUploading(false);
     }
@@ -99,10 +146,19 @@ export default function UploadModal({ projectId, isOpen, onClose, onUploaded }: 
               <p className="text-sm text-slate-600 mb-3">
                 Drag & drop images here, or click to browse
               </p>
+              <p className="text-xs text-slate-500 mb-3">
+                Allowed formats: {ALLOWED_IMAGE_EXTENSIONS.join(", ")}
+              </p>
               <label className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg cursor-pointer transition-colors">
                 <Upload className="w-4 h-4" />
                 Select Images
-                <input type="file" multiple accept="image/*" className="hidden" onChange={handleFileChange} />
+                <input
+                  type="file"
+                  multiple
+                  accept={ALLOWED_IMAGE_EXTENSIONS.join(",")}
+                  className="hidden"
+                  onChange={handleFileChange}
+                />
               </label>
             </div>
 
