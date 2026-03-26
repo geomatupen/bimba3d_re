@@ -1,13 +1,51 @@
 import { useState } from "react";
+import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, FolderPlus } from "lucide-react";
 import { api } from "../api/client";
 
+interface StorageRoot {
+  id: string;
+  path: string;
+  label: string;
+  is_default: boolean;
+  writable: boolean;
+}
+
 export default function CreateProject() {
   const [name, setName] = useState("");
+  const [roots, setRoots] = useState<StorageRoot[]>([]);
+  const [selectedRootId, setSelectedRootId] = useState("default");
+  const [customPath, setCustomPath] = useState("");
+  const [loadingRoots, setLoadingRoots] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let active = true;
+    const loadRoots = async () => {
+      try {
+        const res = await api.get("/projects/storage-roots");
+        const list = Array.isArray(res.data) ? (res.data as StorageRoot[]) : [];
+        if (!active) return;
+        setRoots(list);
+        const firstWritable = list.find((root) => root.is_default && root.writable) || list.find((root) => root.writable);
+        if (firstWritable) {
+          setSelectedRootId(firstWritable.id);
+        }
+      } catch {
+        if (!active) return;
+        setRoots([]);
+      } finally {
+        if (active) setLoadingRoots(false);
+      }
+    };
+    loadRoots();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -16,19 +54,38 @@ export default function CreateProject() {
       return;
     }
 
+    if (selectedRootId === "custom" && !customPath.trim()) {
+      setError("Custom project location is required");
+      return;
+    }
+
     setCreating(true);
     setError(null);
 
     try {
-      const res = await api.post("/projects", { name: name.trim() });
+      const payload: Record<string, string> = { name: name.trim() };
+      if (selectedRootId === "custom") {
+        payload.storage_path = customPath.trim();
+      } else {
+        payload.storage_root_id = selectedRootId;
+      }
+
+      const res = await api.post("/projects", payload);
       const projectId = res.data.project_id;
       navigate(`/project/${projectId}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create project");
+      const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      if (typeof detail === "string" && detail.trim()) {
+        setError(detail);
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to create project");
+      }
     } finally {
       setCreating(false);
     }
   };
+
+  const selectedRoot = roots.find((root) => root.id === selectedRootId);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-50">
@@ -71,6 +128,41 @@ export default function CreateProject() {
               </p>
             </div>
 
+            <div>
+              <label htmlFor="storage-root" className="block text-sm font-semibold text-slate-700 mb-2 uppercase tracking-wide">
+                Project Location
+              </label>
+              <select
+                id="storage-root"
+                value={selectedRootId}
+                onChange={(e) => setSelectedRootId(e.target.value)}
+                className="w-full px-5 py-4 border-2 border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-slate-900 font-medium"
+                disabled={creating || loadingRoots}
+              >
+                {roots.map((root) => (
+                  <option key={root.id} value={root.id} disabled={!root.writable}>
+                    {root.label} — {root.path}{root.writable ? "" : " (read-only/unavailable)"}
+                  </option>
+                ))}
+                <option value="custom">Custom absolute path...</option>
+              </select>
+
+              {selectedRootId === "custom" ? (
+                <input
+                  type="text"
+                  value={customPath}
+                  onChange={(e) => setCustomPath(e.target.value)}
+                  placeholder={"Windows: D:\\BimbaProjects or WSL: /mnt/d/BimbaProjects"}
+                  className="mt-3 w-full px-5 py-4 border-2 border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-slate-900 font-medium placeholder:text-slate-400"
+                  disabled={creating}
+                />
+              ) : (
+                <p className="text-sm text-slate-500 mt-2 break-all">
+                  {selectedRoot ? `Selected root: ${selectedRoot.path}` : "Using default project location"}
+                </p>
+              )}
+            </div>
+
             {error && (
               <div className="bg-red-50 border-2 border-red-200 text-red-800 px-5 py-4 rounded-xl font-medium">
                 {error}
@@ -88,7 +180,7 @@ export default function CreateProject() {
               </button>
               <button
                 type="submit"
-                disabled={creating || !name.trim()}
+                disabled={creating || !name.trim() || (selectedRootId === "custom" && !customPath.trim())}
                 className="flex-1 px-6 py-4 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-slate-300 disabled:to-slate-400 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl hover:scale-105"
               >
                 {creating ? "Creating..." : "Create Project"}

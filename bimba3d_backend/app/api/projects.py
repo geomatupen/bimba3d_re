@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from bimba3d_backend.app.config import DATA_DIR, ALLOWED_IMAGE_EXTENSIONS
 from bimba3d_backend.app.models.project import (
     ProjectResponse,
+    StorageRootResponse,
     StatusResponse,
     ProcessParams,
     ProjectListItem,
@@ -383,7 +384,14 @@ def list_projects():
 def create_project(payload: CreateProjectRequest | None = Body(None)):
     """Create a new project with optional human-friendly name."""
     try:
-        project_id, project_dir = storage.create_project()
+        storage_root_id = payload.storage_root_id if payload else None
+        storage_path = payload.storage_path if payload else None
+        try:
+            project_root = storage.resolve_storage_root(storage_root_id=storage_root_id, storage_path=storage_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        project_id, project_dir = storage.create_project(base_dir=project_root)
         provided_name = (payload.name.strip() if payload and payload.name else None)
 
         # Initialize status file with name
@@ -399,6 +407,17 @@ def create_project(payload: CreateProjectRequest | None = Body(None)):
     except Exception as e:
         logger.error(f"Error creating project: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to create project")
+
+
+@router.get("/storage-roots", response_model=list[StorageRootResponse])
+def get_storage_roots():
+    """List available storage roots for project creation."""
+    try:
+        roots = storage.list_storage_roots()
+        return [StorageRootResponse(**entry) for entry in roots]
+    except Exception as e:
+        logger.error(f"Error listing storage roots: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list storage roots")
 
 
 @router.post("/{project_id}/images")

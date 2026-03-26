@@ -434,11 +434,12 @@ def run_training(
             os.symlink(str(resolved_target), str(link_path), target_is_directory=True)
             return
         except OSError as exc:
-            is_win_symlink_priv_error = os.name == "nt" and getattr(exc, "winerror", None) == 1314
-            if not is_win_symlink_priv_error:
+            if os.name != "nt":
                 raise
+            win_error = getattr(exc, "winerror", None)
             logger.warning(
-                "Symlink privilege missing on Windows for %s -> %s; falling back to copy.",
+                "Windows symlink failed (%s) for %s -> %s; falling back to copy.",
+                win_error,
                 link_path,
                 resolved_target,
             )

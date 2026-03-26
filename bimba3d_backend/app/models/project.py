@@ -19,6 +19,16 @@ class ProjectListItem(BaseModel):
 
 class CreateProjectRequest(BaseModel):
     name: Optional[str] = None
+    storage_root_id: Optional[str] = None
+    storage_path: Optional[str] = None
+
+
+class StorageRootResponse(BaseModel):
+    id: str
+    path: str
+    label: str
+    is_default: bool = False
+    writable: bool = False
 
 
 class UpdateProjectRequest(BaseModel):
