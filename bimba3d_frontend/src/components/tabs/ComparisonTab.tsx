@@ -456,11 +456,8 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
   const updateSecondSwipeFromClientX = (clientX: number) => {
     const rect = swipeAreaRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0) return;
-    const px = ((clientX - rect.left) / rect.width) * 100;
-    const x = Math.max(swipePercent, Math.min(100, px));
-    const denom = 100 - swipePercent;
-    const ratio = denom <= 1e-6 ? 1 : (x - swipePercent) / denom;
-    setBottomSwipePercent(Math.max(0, Math.min(100, ratio * 100)));
+    const raw = ((clientX - rect.left) / rect.width) * 100;
+    setBottomSwipePercent(Math.max(0, Math.min(100, raw)));
   };
 
   const options = projects.map((project) => ({
@@ -577,7 +574,10 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
   const rightTuneEndStep = typeof rightSummary?.tuning?.end_step === "number" ? rightSummary.tuning.end_step : null;
   const leftTuneEndValue = leftTuneEndStep === null ? null : nearestPointValue(leftGraphPoints, leftTuneEndStep);
   const rightTuneEndValue = rightTuneEndStep === null ? null : nearestPointValue(rightGraphPoints, rightTuneEndStep);
-  const secondSwipeXPercent = swipePercent + ((100 - swipePercent) * bottomSwipePercent) / 100;
+  const secondSwipeXPercent = bottomSwipePercent;
+  const topLayerLabel = leftSummary?.name || "Left";
+  const middleLayerLabel = rightSummary?.name || "Right";
+  const groundTruthLayerLabel = "Ground truth";
 
   return (
     <div className="space-y-4">
@@ -1029,7 +1029,7 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
                   />
                   {!showGroundTruthCompare && (
                     <div className="absolute bottom-2 right-2 px-2 py-1 rounded bg-slate-900/75 text-white text-[11px] font-semibold whitespace-nowrap z-20">
-                      Right: {rightSummary.name || "Right"}
+                      {middleLayerLabel}
                     </div>
                   )}
                   {showGroundTruthCompare && (
@@ -1039,10 +1039,11 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
                           src={fixedGroundTruthPreview || leftSelectedPreview}
                           alt="Ground truth base layer"
                           className="block w-full h-full object-cover"
+                          style={{ transform: "translateX(50%)" }}
                           draggable={false}
                         />
-                        <div className="absolute bottom-2 left-2 px-2 py-1 rounded bg-slate-900/75 text-white text-[11px] font-semibold whitespace-nowrap">
-                          Ground truth
+                        <div className="absolute bottom-2 right-2 px-2 py-1 rounded bg-slate-900/75 text-white text-[11px] font-semibold whitespace-nowrap">
+                          {groundTruthLayerLabel}
                         </div>
                       </div>
                       <div
@@ -1056,7 +1057,7 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
                           draggable={false}
                         />
                         <div className="absolute bottom-2 right-2 px-2 py-1 rounded bg-slate-900/75 text-white text-[11px] font-semibold whitespace-nowrap">
-                          Right: {rightSummary.name || "Right"}
+                          {middleLayerLabel}
                         </div>
                       </div>
                     </>
@@ -1088,7 +1089,7 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
                   >
                     <img src={leftSelectedPreview} alt={`Left project at step ${selectedEvalStep ?? ""}`} className="block w-full h-auto" draggable={false} />
                     <div className="absolute bottom-2 left-2 px-2 py-1 rounded bg-sky-950/75 text-white text-[11px] font-semibold whitespace-nowrap">
-                      Left: {leftSummary.name || "Left"}
+                      {topLayerLabel}
                     </div>
                   </div>
 
@@ -1147,7 +1148,7 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
 
                 <div className="space-y-1">
                   <div className="flex items-center justify-between text-xs text-slate-600">
-                    <span>Swipe to compare</span>
+                    <span>Swipe: {topLayerLabel}</span>
                     <span>{Math.round(swipePercent)}%</span>
                   </div>
                   <input
@@ -1167,7 +1168,7 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
                 {showGroundTruthCompare && (
                   <div className="space-y-1 pt-2 border-t border-slate-200">
                     <div className="flex items-center justify-between text-xs text-slate-600">
-                      <span>Swipe middle layer</span>
+                      <span>Swipe: {middleLayerLabel}</span>
                       <span>{Math.round(bottomSwipePercent)}%</span>
                     </div>
                     <input
