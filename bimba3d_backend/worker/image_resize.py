@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 from typing import Optional, Tuple
 
+
 from PIL import Image, ImageOps, UnidentifiedImageError
+import piexif
 
 try:
     from bimba3d_backend.app.config import ALLOWED_IMAGE_EXTENSIONS as _ALLOWED_EXTENSIONS
@@ -66,8 +68,13 @@ def prepare_training_images(source_dir: Path, project_dir: Path, max_size: int) 
 
     stats = {"total": 0, "resized": 0, "copied": 0, "reused": 0, "failed": 0, "removed": 0}
     processed_names = set()
+    stop_flag = project_dir / "stop_requested"
 
     for src_path in sorted(source_dir.iterdir()):
+        # Check for stop request before processing each image
+        if stop_flag.exists():
+            logger.warning("Stop requested detected during image resizing. Exiting early.")
+            return resized_dir, stats
         if not src_path.is_file():
             continue
         if src_path.suffix.lower() not in _SUPPORTED_SUFFIXES:
@@ -108,7 +115,28 @@ def prepare_training_images(source_dir: Path, project_dir: Path, max_size: int) 
                     resized = resized.convert("RGB")
 
                 tmp_path = dst_path.with_suffix(dst_path.suffix + ".tmp")
-                resized.save(tmp_path, fmt, **save_kwargs)
+                # --- EXIF handling ---
+                exif_bytes = None
+                if fmt in {"JPEG", "JPG"} and "exif" in img.info:
+                    try:
+                        exif_dict = piexif.load(img.info["exif"])
+                        # Update width/height in EXIF if present
+                        exif_dict["Exif"][piexif.ExifIFD.PixelXDimension] = new_size[0]
+                        exif_dict["Exif"][piexif.ExifIFD.PixelYDimension] = new_size[1]
+                        # Optionally update resolution if present
+                        if piexif.ImageIFD.XResolution in exif_dict["0th"]:
+                            exif_dict["0th"][piexif.ImageIFD.XResolution] = (new_size[0], 1)
+                        if piexif.ImageIFD.YResolution in exif_dict["0th"]:
+                            exif_dict["0th"][piexif.ImageIFD.YResolution] = (new_size[1], 1)
+                        exif_bytes = piexif.dump(exif_dict)
+                    except Exception as ex:
+                        logger.warning(f"Could not update EXIF for {src_path.name}: {ex}")
+                        exif_bytes = img.info.get("exif")
+                # Save with EXIF if available
+                if exif_bytes:
+                    resized.save(tmp_path, fmt, exif=exif_bytes, **save_kwargs)
+                else:
+                    resized.save(tmp_path, fmt, **save_kwargs)
                 tmp_path.replace(dst_path)
                 stats["resized"] += 1
         except (UnidentifiedImageError, OSError) as exc:

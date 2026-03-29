@@ -115,6 +115,21 @@ def gpu_health():
         }
 
 
+@app.on_event("shutdown")
+def signal_all_workers_to_stop():
+    """On backend shutdown, signal all running workers to stop by creating stop_requested files."""
+    logging.info("Backend shutdown: signaling all workers to stop.")
+    for proj_dir in DATA_DIR.iterdir():
+        try:
+            if not proj_dir.is_dir():
+                continue
+            stop_flag = proj_dir / "stop_requested"
+            stop_flag.write_text("stop requested by backend shutdown")
+            logging.info(f"Created stop_requested for {proj_dir}")
+        except Exception as e:
+            logging.warning(f"Failed to create stop_requested for {proj_dir}: {e}")
+
+
 DEFAULT_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "bimba3d_frontend" / "dist"
 FRONTEND_DIST = Path(os.getenv("FRONTEND_DIST", str(DEFAULT_FRONTEND_DIST))).resolve()
 if FRONTEND_DIST.exists():

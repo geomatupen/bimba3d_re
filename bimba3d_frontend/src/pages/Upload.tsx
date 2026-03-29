@@ -3,6 +3,20 @@ import { useNavigate } from "react-router-dom";
 import { Upload as UploadIcon, Cpu, AlertTriangle, ArrowLeft, Play, CheckCircle2 } from "lucide-react";
 import { api } from "../api/client";
 
+const COLMAP_CAMERA_MODELS = [
+  "SIMPLE_PINHOLE",
+  "PINHOLE",
+  "SIMPLE_RADIAL",
+  "RADIAL",
+  "OPENCV",
+  "OPENCV_FISHEYE",
+  "FULL_OPENCV",
+  "FOV",
+  "SIMPLE_RADIAL_FISHEYE",
+  "RADIAL_FISHEYE",
+  "THIN_PRISM_FISHEYE",
+] as const;
+
 export default function Upload() {
   const [files, setFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
@@ -29,6 +43,9 @@ export default function Upload() {
   const [colmapMaxImageSize, setColmapMaxImageSize] = useState<number | undefined>(1600);
   const [colmapPeakThreshold, setColmapPeakThreshold] = useState<number | undefined>(0.01);
   const [colmapGuidedMatching, setColmapGuidedMatching] = useState(true);
+  const [colmapCameraModel, setColmapCameraModel] = useState<string>("OPENCV");
+  const [colmapSingleCamera, setColmapSingleCamera] = useState(true);
+  const [colmapCameraParams, setColmapCameraParams] = useState("");
   const [colmapMatchingType, setColmapMatchingType] = useState<"exhaustive" | "sequential">("exhaustive");
   const [colmapMapperThreads, setColmapMapperThreads] = useState<number | undefined>(2);
   // Gaussian Splatting init limit
@@ -98,6 +115,9 @@ export default function Upload() {
         max_image_size: colmapMaxImageSize,
         peak_threshold: colmapPeakThreshold,
         guided_matching: colmapGuidedMatching,
+        camera_model: colmapCameraModel,
+        single_camera: colmapSingleCamera,
+        camera_params: colmapCameraParams.trim() ? colmapCameraParams.trim() : undefined,
         matching_type: colmapMatchingType,
         mapper_num_threads: colmapMapperThreads,
       },
@@ -441,6 +461,48 @@ export default function Upload() {
                         />
                         <span className="text-sm text-slate-700">Enable guided matching (slower but more accurate)</span>
                       </label>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-slate-700">Camera Model</label>
+                      <select
+                        value={colmapCameraModel}
+                        onChange={(e) => setColmapCameraModel(e.target.value)}
+                        disabled={loading}
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      >
+                        {COLMAP_CAMERA_MODELS.map((model) => (
+                          <option key={model} value={model}>{model}</option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-slate-500">Default is OPENCV for most DJI RGB captures.</p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-slate-700">Single Camera</label>
+                      <label className="flex items-center gap-3 text-sm text-slate-800 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={colmapSingleCamera}
+                          onChange={(e) => setColmapSingleCamera(e.target.checked)}
+                          disabled={loading}
+                          className="h-4 w-4 text-blue-600 rounded border-slate-300"
+                        />
+                        <span className="text-sm text-slate-700">Use one shared intrinsics set for all images</span>
+                      </label>
+                    </div>
+
+                    <div className="space-y-2 md:col-span-2 lg:col-span-3">
+                      <label className="text-sm font-medium text-slate-700">Camera Params (optional)</label>
+                      <input
+                        type="text"
+                        value={colmapCameraParams}
+                        onChange={(e) => setColmapCameraParams(e.target.value)}
+                        disabled={loading}
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="Example OPENCV: fx,fy,cx,cy,k1,k2,p1,p2"
+                      />
+                      <p className="text-xs text-slate-500">Leave empty to let COLMAP estimate intrinsics/extras.</p>
                     </div>
 
                     <div className="space-y-2">

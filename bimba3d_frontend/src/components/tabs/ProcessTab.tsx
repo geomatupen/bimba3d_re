@@ -73,6 +73,20 @@ const formatEngineLabel = (name: string) =>
     .replace(/_/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
 
+const COLMAP_CAMERA_MODELS = [
+  "SIMPLE_PINHOLE",
+  "PINHOLE",
+  "SIMPLE_RADIAL",
+  "RADIAL",
+  "OPENCV",
+  "OPENCV_FISHEYE",
+  "FULL_OPENCV",
+  "FOV",
+  "SIMPLE_RADIAL_FISHEYE",
+  "RADIAL_FISHEYE",
+  "THIN_PRISM_FISHEYE",
+] as const;
+
 const getDefaultProcessConfig = () => ({
   mode: "baseline" as "baseline" | "modified",
   tune_end_step: 200,
@@ -91,6 +105,9 @@ const getDefaultProcessConfig = () => ({
     max_image_size: 1600,
     peak_threshold: 0.02,
     guided_matching: true,
+    camera_model: "OPENCV",
+    single_camera: true,
+    camera_params: "",
     matching_type: "sequential",
     mapper_num_threads: 4,
     mapper_min_num_matches: 12,
@@ -211,6 +228,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [colmapMaxImageSize, setColmapMaxImageSize] = useState<number | undefined>(cfg.colmap?.max_image_size ?? 1600);
   const [colmapPeakThreshold, setColmapPeakThreshold] = useState<number | undefined>(cfg.colmap?.peak_threshold ?? undefined);
   const [colmapGuidedMatching, setColmapGuidedMatching] = useState<boolean>(cfg.colmap?.guided_matching ?? true);
+  const [colmapCameraModel, setColmapCameraModel] = useState<string>(cfg.colmap?.camera_model ?? "OPENCV");
+  const [colmapSingleCamera, setColmapSingleCamera] = useState<boolean>(cfg.colmap?.single_camera ?? true);
+  const [colmapCameraParams, setColmapCameraParams] = useState<string>(cfg.colmap?.camera_params ?? "");
   const [colmapMatchingType, setColmapMatchingType] = useState<string>(cfg.colmap?.matching_type ?? "sequential");
   const [colmapMapperThreads, setColmapMapperThreads] = useState<number | undefined>(cfg.colmap?.mapper_num_threads ?? undefined);
   const [colmapMapperMinNumMatches, setColmapMapperMinNumMatches] = useState<number | undefined>(cfg.colmap?.mapper_min_num_matches ?? 12);
@@ -258,6 +278,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     max_image_size: 'Optional cap on COLMAP feature-extraction resolution. Helps keep SIFT affordable on ultra-high-res uploads without touching the originals.',
     peak_threshold: 'SIFT detection threshold. Higher values reduce number of keypoints, speeding up processing.',
     guided_matching: 'Enable guided matching to improve accuracy using estimated geometry (may be slower).',
+    camera_model: 'COLMAP camera model used during feature extraction. For most DJI RGB captures, OPENCV is a good default.',
+    single_camera: 'When enabled, all images share one camera intrinsics set. Disable if intrinsics vary across frames/sensors.',
+    camera_params: 'Optional explicit camera params string for the selected model (comma-separated in COLMAP order). Leave blank to estimate from EXIF/data.',
     matching_type: 'Matching strategy: exhaustive compares all pairs; sequential is faster for ordered captures.',
     mapper_num_threads: 'Number of CPU threads the COLMAP mapper can use (increase to speed up bundle adjustment).',
     mapper_min_num_matches: 'Lower values let mapper try weaker image pairs. This can increase registered images on hard captures, but may also add outliers.',
@@ -338,6 +361,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     setColmapMaxImageSize(defaults.colmap.max_image_size);
     setColmapPeakThreshold(defaults.colmap.peak_threshold);
     setColmapGuidedMatching(defaults.colmap.guided_matching);
+    setColmapCameraModel(defaults.colmap.camera_model);
+    setColmapSingleCamera(defaults.colmap.single_camera);
+    setColmapCameraParams(defaults.colmap.camera_params);
     setColmapMatchingType(defaults.colmap.matching_type);
     setColmapMapperThreads(defaults.colmap.mapper_num_threads);
     setColmapMapperMinNumMatches(defaults.colmap.mapper_min_num_matches);
@@ -397,6 +423,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         max_image_size: colmapMaxImageSize,
         peak_threshold: colmapPeakThreshold,
         guided_matching: colmapGuidedMatching,
+        camera_model: colmapCameraModel,
+        single_camera: colmapSingleCamera,
+        camera_params: colmapCameraParams,
         matching_type: colmapMatchingType,
         mapper_num_threads: colmapMapperThreads,
         mapper_min_num_matches: colmapMapperMinNumMatches,
@@ -407,7 +436,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       }
     };
     localStorage.setItem(`processConfig_${projectId}`, JSON.stringify(config));
-  }, [mode, tuneEndStep, tuneInterval, tuneScope, engine, maxSteps, logInterval, splatInterval, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, imagesResizeEnabled, imagesMaxSize, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, projectId, colmapMaxImageSize, colmapPeakThreshold, colmapGuidedMatching, colmapMatchingType, colmapMapperThreads, colmapMapperMinNumMatches, colmapMapperAbsPoseMinNumInliers, colmapMapperInitMinNumInliers, colmapSiftMatchingMinNumInliers, colmapRunImageRegistrator, litegsTargetPrimitives, litegsAlphaShrink]);
+  }, [mode, tuneEndStep, tuneInterval, tuneScope, engine, maxSteps, logInterval, splatInterval, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, imagesResizeEnabled, imagesMaxSize, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, projectId, colmapMaxImageSize, colmapPeakThreshold, colmapGuidedMatching, colmapCameraModel, colmapSingleCamera, colmapCameraParams, colmapMatchingType, colmapMapperThreads, colmapMapperMinNumMatches, colmapMapperAbsPoseMinNumInliers, colmapMapperInitMinNumInliers, colmapSiftMatchingMinNumInliers, colmapRunImageRegistrator, litegsTargetPrimitives, litegsAlphaShrink]);
 
   useEffect(() => {
     const checkGpu = async () => {
@@ -1454,6 +1483,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           ...(imagesResizeEnabled && imagesMaxSize ? { max_image_size: imagesMaxSize } : {}),
           peak_threshold: colmapPeakThreshold,
           guided_matching: colmapGuidedMatching,
+          camera_model: colmapCameraModel,
+          single_camera: colmapSingleCamera,
+          camera_params: colmapCameraParams?.trim() ? colmapCameraParams.trim() : undefined,
           matching_type: colmapMatchingType,
           mapper_num_threads: colmapMapperThreads,
           mapper_min_num_matches: colmapMapperMinNumMatches,
@@ -1519,6 +1551,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           ...(imagesResizeEnabled && imagesMaxSize ? { max_image_size: imagesMaxSize } : {}),
           peak_threshold: colmapPeakThreshold,
           guided_matching: colmapGuidedMatching,
+          camera_model: colmapCameraModel,
+          single_camera: colmapSingleCamera,
+          camera_params: colmapCameraParams?.trim() ? colmapCameraParams.trim() : undefined,
           matching_type: colmapMatchingType,
           mapper_num_threads: colmapMapperThreads,
           mapper_min_num_matches: colmapMapperMinNumMatches,
@@ -2733,6 +2768,43 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                             <input type="checkbox" className="w-4 h-4" checked={colmapGuidedMatching} onChange={e => setColmapGuidedMatching(e.target.checked)} />
                             <span className="text-sm text-slate-700">Enable guided matching</span>
                           </label>
+                        </div>
+
+                        <div>
+                          <label className="flex items-center justify-between text-xs font-semibold text-slate-600 mb-1">
+                            <span>Camera Model</span>
+                            <button onClick={() => setSelectedInfoKey("camera_model")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                          </label>
+                          <select value={colmapCameraModel} onChange={e => setColmapCameraModel(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-lg">
+                            {COLMAP_CAMERA_MODELS.map((model) => (
+                              <option key={model} value={model}>{model}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="flex items-center justify-between text-xs font-semibold text-slate-600 mb-1">
+                            <span>Single Camera</span>
+                            <button onClick={() => setSelectedInfoKey("single_camera")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                          </label>
+                          <label className="inline-flex items-center gap-2">
+                            <input type="checkbox" className="w-4 h-4" checked={colmapSingleCamera} onChange={e => setColmapSingleCamera(e.target.checked)} />
+                            <span className="text-sm text-slate-700">All images share one intrinsics set</span>
+                          </label>
+                        </div>
+
+                        <div className="col-span-2">
+                          <label className="flex items-center justify-between text-xs font-semibold text-slate-600 mb-1">
+                            <span>Camera Params (optional)</span>
+                            <button onClick={() => setSelectedInfoKey("camera_params")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                          </label>
+                          <input
+                            type="text"
+                            value={colmapCameraParams}
+                            onChange={(e) => setColmapCameraParams(e.target.value)}
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                            placeholder="Example for OPENCV: fx,fy,cx,cy,k1,k2,p1,p2"
+                          />
                         </div>
 
                         <div>

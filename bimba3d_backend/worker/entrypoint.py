@@ -36,6 +36,43 @@ SPARSE_IMAGE_MEMBERSHIP_META = ".sparse_image_membership.json"
 
 _UNRECOGNIZED_OPTION_RE = re.compile(r"unrecogni[sz]ed option '([^']+)'", re.IGNORECASE)
 
+_COLMAP_CAMERA_MODELS = {
+    "SIMPLE_PINHOLE",
+    "PINHOLE",
+    "SIMPLE_RADIAL",
+    "RADIAL",
+    "OPENCV",
+    "OPENCV_FISHEYE",
+    "FULL_OPENCV",
+    "FOV",
+    "SIMPLE_RADIAL_FISHEYE",
+    "RADIAL_FISHEYE",
+    "THIN_PRISM_FISHEYE",
+}
+
+
+def _parse_boolish(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _resolve_colmap_camera_model(value: object) -> str:
+    candidate = str(value or "OPENCV").strip().upper()
+    if candidate in _COLMAP_CAMERA_MODELS:
+        return candidate
+    logger.warning("Unsupported COLMAP camera_model '%s'; falling back to OPENCV", value)
+    return "OPENCV"
+
 
 def _resolve_colmap_executable() -> str:
     candidate = COLMAP_EXE
@@ -1388,13 +1425,29 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
         except Exception:
             pass
         sys.exit(0)
+    # Patch: Always pass explicit camera intrinsics if available
+    camera_model = _resolve_colmap_camera_model(p.get("camera_model"))
+    single_camera = _parse_boolish(p.get("single_camera"), True)
+
     feat_cmd = [
         colmap_exec, "feature_extractor",
         "--database_path", str(database_path),
         "--image_path", str(image_dir),
-        "--ImageReader.single_camera", "1",
-        "--ImageReader.camera_model", "OPENCV",
+        "--ImageReader.single_camera", "1" if single_camera else "0",
+        "--ImageReader.camera_model", camera_model,
     ]
+    # If explicit camera params/intrinsics are provided in params, pass them to COLMAP.
+    camera_params = p.get("camera_params")
+    if isinstance(camera_params, str) and camera_params.strip():
+        feat_cmd += ["--ImageReader.camera_params", camera_params.strip()]
+    # Backward-compatible path for intrinsic dicts.
+    cam_intrinsics = p.get("camera_intrinsics") or params.get("camera_intrinsics") if params else None
+    # camera_intrinsics should be a dict: {"fx":..., "fy":..., "cx":..., "cy":...}
+    if (not (isinstance(camera_params, str) and camera_params.strip())) and cam_intrinsics and all(k in cam_intrinsics for k in ("fx", "fy", "cx", "cy")):
+        feat_cmd += [
+            "--ImageReader.camera_params",
+            f"{cam_intrinsics['fx']},{cam_intrinsics['fy']},{cam_intrinsics['cx']},{cam_intrinsics['cy']}"
+        ]
     if p.get("max_image_size"):
         feat_cmd += ["--FeatureExtraction.max_image_size", str(p.get("max_image_size"))]
     else:
@@ -1466,6 +1519,54 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
     if stop_flag.exists():
         update_status(output_dir.parent, "stopped", progress=0, stop_requested=True, stage="colmap", message="⏸️ Processing stopped by user before sparse reconstruction.", stopped_stage="colmap")
         sys.exit(0)
+
+    def _run_mapper_streaming(cmd: list[str]) -> None:
+        """Run COLMAP mapper while streaming output to processing.log."""
+        popen_cmd, popen_shell = _prepare_subprocess_command(cmd)
+        proc = subprocess.Popen(
+            popen_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            shell=popen_shell,
+        )
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                try:
+                    logger.info(line.rstrip())
+                except Exception:
+                    pass
+                if stop_flag.exists():
+                    logger.info("Stop requested during COLMAP mapper; terminating process")
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    update_status(output_dir.parent, "stopped", progress=0, stop_requested=True, stage="colmap", message="⏸️ Processing stopped by user during sparse reconstruction.", stopped_stage="colmap")
+                    try:
+                        proc.wait(timeout=10)
+                    except Exception:
+                        pass
+                    try:
+                        stop_flag.unlink()
+                    except Exception:
+                        pass
+                    sys.exit(0)
+            rc = proc.wait()
+            if rc != 0:
+                raise subprocess.CalledProcessError(rc, proc.args)
+        finally:
+            try:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+            except Exception:
+                pass
+
     try:
         mapper_cmd = [
             colmap_exec, "mapper",
@@ -1491,60 +1592,7 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None) ->
             mapper_cmd += ["--Mapper.init_min_num_inliers", str(p.get("mapper_init_min_num_inliers"))]
         if p.get("mapper_filter_max_reproj_error") is not None:
             mapper_cmd += ["--Mapper.filter_max_reproj_error", str(p.get("mapper_filter_max_reproj_error"))]
-        # Do not capture stdout/stderr into pipes here; allow the child to inherit the
-        # container's stdout/stderr so COLMAP can stream directly to Docker logs.
-        # Capturing into pipes without continuously reading can lead to pipe buffer
-        # deadlocks where COLMAP appears to hang while producing output.
-        # Stream COLMAP mapper output into the application logger so it is
-        # persisted to the project's processing.log and visible via frontend.
-        # Use a pipe and continuously read to avoid deadlocks.
-        popen_cmd, popen_shell = _prepare_subprocess_command(mapper_cmd)
-        proc = subprocess.Popen(
-            popen_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            shell=popen_shell,
-        )
-        try:
-            assert proc.stdout is not None
-            # Read lines as they arrive and log them (will be written to file handler)
-            for line in proc.stdout:
-                try:
-                    logger.info(line.rstrip())
-                except Exception:
-                    pass
-                # If a stop has been requested externally, terminate mapper
-                if stop_flag.exists():
-                    logger.info("Stop requested during COLMAP mapper; terminating process")
-                    try:
-                        proc.terminate()
-                    except Exception:
-                        try:
-                            proc.kill()
-                        except Exception:
-                            pass
-                    update_status(output_dir.parent, "stopped", progress=0, stop_requested=True, stage="colmap", message="⏸️ Processing stopped by user during sparse reconstruction.", stopped_stage="colmap")
-                    try:
-                        proc.wait(timeout=10)
-                    except Exception:
-                        pass
-                    try:
-                        stop_flag.unlink()
-                    except Exception:
-                        pass
-                    sys.exit(0)
-            # After stdout is exhausted, wait for process exit and check return code
-            rc = proc.wait()
-            if rc != 0:
-                raise subprocess.CalledProcessError(rc, proc.args)
-        finally:
-            try:
-                if proc.stdout is not None:
-                    proc.stdout.close()
-            except Exception:
-                pass
+        _run_mapper_streaming(mapper_cmd)
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or "").lower()
         logger.error(f"COLMAP mapper failed: {e}")

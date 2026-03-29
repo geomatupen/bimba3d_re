@@ -9,6 +9,43 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+_COLMAP_CAMERA_MODELS = {
+    "SIMPLE_PINHOLE",
+    "PINHOLE",
+    "SIMPLE_RADIAL",
+    "RADIAL",
+    "OPENCV",
+    "OPENCV_FISHEYE",
+    "FULL_OPENCV",
+    "FOV",
+    "SIMPLE_RADIAL_FISHEYE",
+    "RADIAL_FISHEYE",
+    "THIN_PRISM_FISHEYE",
+}
+
+
+def _parse_boolish(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _resolve_colmap_camera_model(value: object) -> str:
+    candidate = str(value or "OPENCV").strip().upper()
+    if candidate in _COLMAP_CAMERA_MODELS:
+        return candidate
+    logger.warning("Unsupported COLMAP camera_model '%s'; falling back to OPENCV", value)
+    return "OPENCV"
+
 COLMAP_EXE = (os.getenv("COLMAP_EXE") or "colmap").strip() or "colmap"
 
 
@@ -310,6 +347,8 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None):
     try:
         # Allow optional tuning via params.colmap
         p = params.get("colmap", {}) if isinstance(params, dict) else {}
+        camera_model = _resolve_colmap_camera_model(p.get("camera_model"))
+        single_camera = _parse_boolish(p.get("single_camera"), True)
 
         # 1️⃣ Feature extraction
         logger.info("Running COLMAP feature extraction...")
@@ -317,9 +356,12 @@ def run_colmap(image_dir: Path, output_dir: Path, params: dict | None = None):
             "feature_extractor",
             "--database_path", str(db_path),
             "--image_path", str(image_dir),
-            "--ImageReader.camera_model", "OPENCV",
-            "--ImageReader.single_camera", "1",
+            "--ImageReader.camera_model", camera_model,
+            "--ImageReader.single_camera", "1" if single_camera else "0",
         )
+        camera_params = p.get("camera_params")
+        if isinstance(camera_params, str) and camera_params.strip():
+            feat_cmd += ["--ImageReader.camera_params", camera_params.strip()]
         if p.get("max_image_size"):
             feat_cmd += ["--SiftExtraction.max_image_size", str(p.get("max_image_size"))]
         else:
