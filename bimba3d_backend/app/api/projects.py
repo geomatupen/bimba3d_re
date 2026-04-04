@@ -887,6 +887,7 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
 
         # Persist run configuration for reproducibility (requested + resolved params).
         try:
+            run_timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             run_config_payload = {
                 "project_id": project_id,
                 "run_id": run_id,
@@ -1444,10 +1445,8 @@ def get_files(project_id: str, run_id: str | None = Query(None)):
             if "images" not in output_files and "images" in shared_files:
                 output_files["images"] = shared_files["images"]
 
-            # COLMAP sparse is shared and should be available for the base session.
-            project_status = status.get_status(project_id)
-            base_session_id = project_status.get("base_session_id") if isinstance(project_status, dict) else None
-            if requested_run_id == base_session_id and "sparse" not in output_files and "sparse" in shared_files:
+            # COLMAP sparse is shared across sessions; expose it for all run views.
+            if "sparse" not in output_files and "sparse" in shared_files:
                 output_files["sparse"] = shared_files["sparse"]
         return {"project_id": project_id, "files": output_files}
     

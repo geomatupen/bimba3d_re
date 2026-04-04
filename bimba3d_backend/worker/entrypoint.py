@@ -65,6 +65,19 @@ def _parse_boolish(value: object, default: bool) -> bool:
     return default
 
 
+def _resolve_stop_source(stop_flag_path: Path) -> str:
+    """Return stop source label based on stop flag content."""
+    if not stop_flag_path.exists():
+        return "none"
+    try:
+        payload = stop_flag_path.read_text(encoding="utf-8").strip().lower()
+    except Exception:
+        payload = ""
+    if "backend" in payload and "shutdown" in payload:
+        return "backend"
+    return "user"
+
+
 def _resolve_colmap_camera_model(value: object) -> str:
     candidate = str(value or "OPENCV").strip().upper()
     if candidate in _COLMAP_CAMERA_MODELS:
@@ -2014,7 +2027,11 @@ def main():
             # Try to infer stopped_stage and stopped_step
             stopped_stage = "training"
             stopped_step = stop_reason if isinstance(stop_reason, int) else None
-            final_message = f"⏸️ Processing stopped by user at step {stop_reason}."
+            stop_source = _resolve_stop_source(Path(project_dir) / "stop_requested")
+            if stop_source == "backend":
+                final_message = f"⏸️ Processing stopped by backend shutdown at step {stop_reason}."
+            else:
+                final_message = f"⏸️ Processing stopped by user at step {stop_reason}."
             # Read last known progress/percentage to preserve accurate overall progress
             status_path = Path(project_dir) / "status.json"
             last_progress = None
@@ -2036,20 +2053,21 @@ def main():
                 progress_to_write = int(last_progress) if last_progress is not None else 0
 
             update_status(project_dir, final_status, progress=progress_to_write, stop_requested=True, stage=stopped_stage, message=final_message, stopped_stage=stopped_stage, stopped_step=stopped_step, stopped_percentage=last_percentage)
-            logger.info(f"Pipeline stopped by user at step {stop_reason}")
+            logger.info("Pipeline stopped by %s at step %s", stop_source, stop_reason)
         else:
-            # Always check status.json for stop_requested before setting completed
+            # Check actual stop marker file before setting completed.
+            # status.json.stop_requested can be stale (e.g., backend restart/reload)
+            # while a local worker still finishes successfully.
+            stop_flag_path = Path(project_dir) / "stop_requested"
             status_path = Path(project_dir) / "status.json"
-            stop_requested_flag = False
-            if status_path.exists():
-                try:
-                    with open(status_path) as f:
-                        stop_requested_flag = json.load(f).get("stop_requested", False)
-                except Exception:
-                    stop_requested_flag = False
+            stop_requested_flag = stop_flag_path.exists()
             if stop_requested_flag:
                 final_status = "stopped"
-                final_message = "⏸️ Processing stopped by user."
+                stop_source = _resolve_stop_source(stop_flag_path)
+                if stop_source == "backend":
+                    final_message = "⏸️ Processing stopped by backend shutdown."
+                else:
+                    final_message = "⏸️ Processing stopped by user."
                 status_path = Path(project_dir) / "status.json"
                 last_progress = None
                 last_percentage = None
@@ -2070,7 +2088,7 @@ def main():
                     progress_to_write = int(last_progress) if last_progress is not None else 0
 
                 update_status(project_dir, final_status, progress=progress_to_write, stop_requested=True, stage="training", message=final_message, stopped_percentage=last_percentage)
-                logger.info("Pipeline stopped by user (detected stop_requested)")
+                logger.info("Pipeline stopped by %s (detected stop_requested)", stop_source)
             else:
                 final_status = "completed"
                 if stage == "colmap_only":
@@ -2091,7 +2109,11 @@ def main():
             final_status = "stopped"
             stopped_stage = "training"
             stopped_step = stop_reason if isinstance(stop_reason, int) else None
-            final_message = f"⏸️ Processing stopped by user at step {stop_reason}."
+            stop_source = _resolve_stop_source(Path(project_dir) / "stop_requested")
+            if stop_source == "backend":
+                final_message = f"⏸️ Processing stopped by backend shutdown at step {stop_reason}."
+            else:
+                final_message = f"⏸️ Processing stopped by user at step {stop_reason}."
             # Preserve last known progress/percentage
             status_path = Path(project_dir) / "status.json"
             last_progress = None
@@ -2113,7 +2135,7 @@ def main():
                 progress_to_write = int(last_progress) if last_progress is not None else 0
 
             update_status(project_dir, final_status, progress=progress_to_write, stop_requested=True, stage=stopped_stage, message=final_message, stopped_stage=stopped_stage, stopped_step=stopped_step, stopped_percentage=last_percentage)
-            logger.info(f"Pipeline stopped by user at step {stop_reason}")
+            logger.info("Pipeline stopped by %s at step %s", stop_source, stop_reason)
         else:
             update_status(project_dir, "failed", error=str(e))
         sys.exit(1)

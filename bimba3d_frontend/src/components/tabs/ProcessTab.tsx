@@ -835,12 +835,22 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         // Current stage label
         let stageName = "" as string;
         let stageKey: "docker"|"colmap"|"training"|"export"|"" = "";
+        const rawStopped = selectedRunIsActive && status.status === 'stopped';
+        if (rawStopped) {
+          stoppedPollCountRef.current += 1;
+        } else {
+          stoppedPollCountRef.current = 0;
+        }
+        // Require two consecutive stopped polls before surfacing stopped state.
+        // This avoids transient stopped -> processing flicker from polling races.
+        const confirmedStopped = rawStopped && stoppedPollCountRef.current >= 2;
+
         // If stopped, prefer worker-provided stopped_stage for accurate location.
         const effectiveStage = selectedRunIsActive
-          ? ((status.status === 'stopped' && status.stopped_stage) ? status.stopped_stage : status.stage)
+          ? ((confirmedStopped && status.stopped_stage) ? status.stopped_stage : status.stage)
           : null;
         // workerStoppedStage: the stage where the worker actually stopped (null if not stopped).
-        const workerStoppedStage = selectedRunIsActive && status.status === 'stopped' ? (status.stopped_stage || status.stage) : null;
+        const workerStoppedStage = confirmedStopped ? (status.stopped_stage || status.stage) : null;
         if (effectiveStage === "docker" || effectiveStage === "queued") { stageName = "Docker Worker (Starting)"; stageKey = "docker"; }
         else if (effectiveStage === "colmap" || effectiveStage === "colmap_only") { stageName = "COLMAP (Structure from Motion)"; stageKey = "colmap"; }
         else if (effectiveStage === "training") { stageName = "Training (Gaussian Splatting)"; stageKey = "training"; }
@@ -875,10 +885,14 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           setProcessing(false);
         }
         
+        const sessionCompleted =
+          Boolean(model) ||
+          selectedRunMeta?.session_status === "completed";
+
         // Build detailed status message
         let statusMsg: React.ReactNode = null;
         if (!selectedRunIsActive) {
-          if (model) {
+          if (sessionCompleted) {
             statusMsg = (
               <span className="inline-flex items-center gap-1 text-green-700 font-semibold">
                 <Check className="inline w-4 h-4 text-green-600" />
@@ -929,8 +943,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         console.log('Generated statusMsg:', statusMsg);
         setProcessingStatus(statusMsg);
         
-        // Detect if pipeline was stopped (status is 'stopped' or message contains 'stopped by user')
-        const stopped = selectedRunIsActive && (status.status === 'stopped' || (status.message && status.message.toLowerCase().includes('stopped by user')));
+        // Detect if pipeline is stably stopped.
+        const stopped = confirmedStopped;
         setWasStopped(stopped);
 
         // Determine stage status based on actual pipeline state.
@@ -957,7 +971,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
 
         // TRAINING: consider it complete if model outputs exist, or training reached 100% stage_progress,
         // or the worker stopped after training (stoppedStage === export) or overall completed.
-        let trainingComplete = Boolean(model) || (selectedRunIsActive && status.stage === 'training' && typeof status.stage_progress === 'number' && status.stage_progress >= 100) || workerStoppedStage === 'export' || (selectedRunIsActive && status.status === 'completed' && (status.stage === 'training' || status.stage === 'export'));
+        let trainingComplete = sessionCompleted || (selectedRunIsActive && status.stage === 'training' && typeof status.stage_progress === 'number' && status.stage_progress >= 100) || workerStoppedStage === 'export' || (selectedRunIsActive && status.status === 'completed' && (status.stage === 'training' || status.stage === 'export'));
         // If the worker stopped at training but training hadn't finished, do not mark as complete
         if (workerStoppedStage === 'training' && !(Boolean(model) || (status.stage === 'training' && typeof status.stage_progress === 'number' && status.stage_progress >= 100))) {
           trainingComplete = false;
@@ -969,7 +983,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         }
 
         // EXPORT: consider it complete if model outputs exist or overall status is completed
-        let exportComplete = Boolean(model) || (selectedRunIsActive && status.status === 'completed' && status.stage === 'export');
+        let exportComplete = sessionCompleted || (selectedRunIsActive && status.status === 'completed' && status.stage === 'export');
         // If worker stopped during export and export did not finish, do not mark as complete
         if (workerStoppedStage === 'export' && !(Boolean(model) || (status.status === 'completed' && status.stage === 'export'))) {
           exportComplete = false;
@@ -983,7 +997,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         setStageStatus(newStatus);
 
         // --- Show Completed and hide Stage Status if all are success and not stopped ---
-        const allStagesSuccess = newStatus.colmap === "success" && newStatus.training === "success" && newStatus.export === "success" && !stopped;
+        const allStagesSuccess = (newStatus.colmap === "success" && newStatus.training === "success" && newStatus.export === "success" && !stopped) || (!selectedRunIsActive && sessionCompleted);
         setPipelineDone(allStagesSuccess);
 
         // --- Fix overall status label ---
@@ -1000,7 +1014,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     // Poll every 3 seconds to update status
     const interval = setInterval(checkOutputs, 3000);
     return () => clearInterval(interval);
-  }, [projectId, show3DModel, selectedRunId]);
+  }, [projectId, show3DModel, selectedRunId, selectedRunMeta?.session_status]);
 
   // Compute map center and bounds for auto-fit
   const mapCenter = useMemo(() => {
@@ -1038,6 +1052,11 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const isMountedRef = useRef(false);
   const prevProcessingRef = useRef<boolean>(false);
   const prevSparsePresenceRef = useRef<boolean>(false);
+  const stoppedPollCountRef = useRef<number>(0);
+
+  useEffect(() => {
+    stoppedPollCountRef.current = 0;
+  }, [projectId, selectedRunId]);
 
   useEffect(() => {
     isMountedRef.current = true;
