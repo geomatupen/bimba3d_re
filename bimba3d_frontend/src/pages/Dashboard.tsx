@@ -25,6 +25,7 @@ interface Project {
   status: string;
   progress: number;
   created_at: string | null;
+  modified_at?: string | null;
   has_outputs: boolean;
   session_count?: number;
 }
@@ -39,6 +40,8 @@ export default function Dashboard() {
   const [editError, setEditError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"modified" | "created" | "name" | "sessions" | "status">("modified");
   const navigate = useNavigate();
   const [confirmProject, setConfirmProject] = useState<Project | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
@@ -75,6 +78,60 @@ export default function Dashboard() {
     const failed = projects.filter((p) => p.status === "failed").length;
     return { total, processing, completed, failed };
   }, [projects]);
+
+  const visibleProjects = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const filtered = q
+      ? projects.filter((p) => {
+          const name = (p.name || "").toLowerCase();
+          const id = (p.project_id || "").toLowerCase();
+          return name.includes(q) || id.includes(q);
+        })
+      : [...projects];
+
+    filtered.sort((a, b) => {
+      if (sortBy === "name") {
+        const aHasName = Boolean(a.name && a.name.trim());
+        const bHasName = Boolean(b.name && b.name.trim());
+        if (aHasName !== bHasName) {
+          // Keep explicitly named projects first when sorting by name.
+          return aHasName ? -1 : 1;
+        }
+        const an = (a.name || "").trim();
+        const bn = (b.name || "").trim();
+        const byName = an.localeCompare(bn, undefined, { sensitivity: "base", numeric: true });
+        if (byName !== 0) return byName;
+        return a.project_id.localeCompare(b.project_id, undefined, { sensitivity: "base", numeric: true });
+      }
+      if (sortBy === "sessions") {
+        return (b.session_count ?? 0) - (a.session_count ?? 0);
+      }
+      if (sortBy === "status") {
+        const statusRank: Record<string, number> = {
+          processing: 0,
+          stopping: 1,
+          failed: 2,
+          completed: 3,
+          done: 3,
+          stopped: 4,
+          pending: 5,
+        };
+        const ar = statusRank[(a.status || "").toLowerCase()] ?? 99;
+        const br = statusRank[(b.status || "").toLowerCase()] ?? 99;
+        if (ar !== br) return ar - br;
+        const aTs = a.modified_at ? Date.parse(a.modified_at) : 0;
+        const bTs = b.modified_at ? Date.parse(b.modified_at) : 0;
+        return bTs - aTs;
+      }
+      const aDateRaw = sortBy === "modified" ? (a.modified_at || a.created_at) : a.created_at;
+      const bDateRaw = sortBy === "modified" ? (b.modified_at || b.created_at) : b.created_at;
+      const aTs = aDateRaw ? Date.parse(aDateRaw) : 0;
+      const bTs = bDateRaw ? Date.parse(bDateRaw) : 0;
+      return bTs - aTs;
+    });
+
+    return filtered;
+  }, [projects, searchQuery, sortBy]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -277,8 +334,28 @@ export default function Dashboard() {
               <h2 className="text-lg font-bold text-slate-900">Your Projects</h2>
               <p className="text-xs text-slate-500">Auto-refreshing every 5s</p>
             </div>
+            <div className="mb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search projects by name or ID"
+                className="md:col-span-2 px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as "modified" | "created" | "name" | "sessions" | "status")}
+                className="px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="modified">Sort: Date Modified</option>
+                <option value="created">Sort: Date Created</option>
+                <option value="name">Sort: Project Name</option>
+                <option value="sessions">Sort: Sessions in Project</option>
+                <option value="status">Sort: Status</option>
+              </select>
+            </div>
             <div className="space-y-4">
-              {projects.map((project) => (
+              {visibleProjects.map((project) => (
                 <div
                   key={project.project_id}
                   className="group relative block rounded-xl border border-slate-300 bg-white hover:shadow-lg transition-all duration-300 shadow-sm overflow-hidden hover:border-blue-400 cursor-pointer"
@@ -368,6 +445,12 @@ export default function Dashboard() {
                           <span className="flex items-center gap-1.5">
                             <Clock className="w-3.5 h-3.5" />
                             Created {new Date(project.created_at).toLocaleDateString()}
+                          </span>
+                        )}
+                        {project.modified_at && (
+                          <span className="flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5" />
+                            Modified {new Date(project.modified_at).toLocaleDateString()}
                           </span>
                         )}
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 font-medium border border-slate-200">

@@ -615,6 +615,13 @@ def list_projects():
                     session_count = sum(1 for p in runs_root.iterdir() if p.is_dir())
                 except Exception:
                     session_count = 0
+            modified_at = None
+            try:
+                status_file = project_dir / "status.json"
+                mtime_source = status_file if status_file.exists() else project_dir
+                modified_at = datetime.utcfromtimestamp(mtime_source.stat().st_mtime).isoformat() + "Z"
+            except Exception:
+                modified_at = None
             projects.append(
                 ProjectListItem(
                     project_id=project_id,
@@ -622,6 +629,7 @@ def list_projects():
                     status=current_status,
                     progress=progress,
                     created_at=project_status.get("created_at"),
+                    modified_at=modified_at,
                     has_outputs=has_outputs,
                     session_count=session_count,
                 )

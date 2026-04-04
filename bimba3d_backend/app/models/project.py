@@ -14,6 +14,7 @@ class ProjectListItem(BaseModel):
     status: str
     progress: int
     created_at: Optional[str] = None
+    modified_at: Optional[str] = None
     has_outputs: bool = False
     session_count: int = 0
 
