@@ -117,7 +117,21 @@ def gpu_health():
 
 @app.on_event("shutdown")
 def signal_all_workers_to_stop():
-    """On backend shutdown, signal all running workers to stop by creating stop_requested files."""
+    """Optionally signal workers to stop on backend shutdown.
+
+    Disabled by default to avoid false stop requests during development reloads.
+    Set BIMBA3D_SIGNAL_STOP_ON_SHUTDOWN=1 to re-enable legacy behavior.
+    """
+    should_signal = os.getenv("BIMBA3D_SIGNAL_STOP_ON_SHUTDOWN", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not should_signal:
+        logging.info("Backend shutdown: skip stop signaling (BIMBA3D_SIGNAL_STOP_ON_SHUTDOWN is off).")
+        return
+
     logging.info("Backend shutdown: signaling all workers to stop.")
     for proj_dir in DATA_DIR.iterdir():
         try:

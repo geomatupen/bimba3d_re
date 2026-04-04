@@ -5,6 +5,7 @@ import json
 import time
 import re
 import os
+import stat
 import struct
 import ast
 from typing import Optional
@@ -27,6 +28,8 @@ from bimba3d_backend.app.models.project import (
     ComparisonStatus,
     SparseEditRequest,
     SparseMergeRequest,
+    RenameRunRequest,
+    CreateRunRequest,
 )
 from bimba3d_backend.app.services import status, storage, colmap, gsplat, files, sparse_edit, pointsbin
 from bimba3d_backend.app.services.worker_mode import normalize_worker_mode, resolve_worker_mode
@@ -35,6 +38,200 @@ from bimba3d_backend.worker import pipeline
 COLMAP_TO_OPENGL = (1.0, -1.0, -1.0)
 BEST_SPARSE_META = ".best_sparse_selection.json"
 SPARSE_IMAGE_MEMBERSHIP_META = ".sparse_image_membership.json"
+
+
+def _read_json_if_exists(path: Path | None):
+    if path is None or not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        logger.warning("Failed to parse JSON %s: %s", path, exc)
+        return None
+
+
+def _close_project_log_handlers(project_dir: Path) -> None:
+    """Best-effort close of file handlers writing under the project directory."""
+    project_dir_resolved = project_dir.resolve()
+
+    def _release_handlers(logger_obj: logging.Logger) -> None:
+        for handler in list(logger_obj.handlers):
+            base_filename = getattr(handler, "baseFilename", None)
+            if not isinstance(base_filename, str):
+                continue
+            try:
+                file_path = Path(base_filename).resolve()
+            except Exception:
+                continue
+            if file_path == project_dir_resolved or project_dir_resolved in file_path.parents:
+                try:
+                    logger_obj.removeHandler(handler)
+                except Exception:
+                    pass
+                try:
+                    handler.flush()
+                except Exception:
+                    pass
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+
+    # Root logger
+    _release_handlers(logging.getLogger())
+
+    # Known named loggers
+    for logger_name, logger_obj in logging.Logger.manager.loggerDict.items():
+        if isinstance(logger_obj, logging.Logger):
+            _release_handlers(logger_obj)
+
+
+def _remove_readonly_then_retry(func, path, exc_info):
+    """shutil.rmtree onerror callback: clear readonly and retry path removal."""
+    try:
+        os.chmod(path, stat.S_IWRITE)
+    except Exception:
+        pass
+    func(path)
+
+
+def _is_windows_junction(path: Path) -> bool:
+    checker = getattr(os.path, "isjunction", None)
+    if callable(checker):
+        try:
+            return bool(checker(str(path)))
+        except Exception:
+            return False
+    return False
+
+
+def _delete_path_strict(path: Path) -> None:
+    """Delete directory/symlink/junction at path if it exists."""
+    if not path.exists() and not path.is_symlink():
+        return
+
+    if path.is_file():
+        path.unlink(missing_ok=True)
+        return
+
+    if path.is_symlink():
+        path.unlink(missing_ok=True)
+        return
+
+    if _is_windows_junction(path):
+        os.rmdir(path)
+        return
+
+    shutil.rmtree(path, onerror=_remove_readonly_then_retry)
+
+
+def _clear_restart_artifacts(
+    project_dir: Path,
+    run_dir: Path,
+    *,
+    stage: str,
+    clear_project_level: bool,
+) -> None:
+    """Clear generated artifacts so restart begins from a clean state.
+
+    Cleanup is stage-aware:
+    - colmap_only: clear sparse artifacts only
+    - train_only: clear engine/training artifacts only
+    - full: clear both
+
+    Project-level outputs are touched only when restarting the base session.
+    """
+    clear_colmap = stage in {"full", "colmap_only"}
+    clear_training = stage in {"full", "train_only"}
+
+    targets = [
+        run_dir / "adaptive_ai",
+        run_dir / "processing.log",
+        run_dir / "resume_state.json",
+    ]
+
+    if clear_colmap:
+        targets.append(run_dir / "outputs" / "sparse")
+    if clear_training:
+        targets.append(run_dir / "outputs" / "engines")
+
+    if clear_project_level:
+        if clear_colmap:
+            targets.append(project_dir / "outputs" / "sparse")
+        if clear_training:
+            targets.append(project_dir / "outputs" / "engines")
+
+    for target in targets:
+        try:
+            _delete_path_strict(target)
+        except Exception as exc:
+            logger.warning("Failed to clear restart artifact %s: %s", target, exc)
+
+
+def _sanitize_run_token(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip().lower())
+    cleaned = re.sub(r"-+", "-", cleaned).strip("-_")
+    return cleaned[:80]
+
+
+def _build_default_run_name(project_label: str | None, runs_root: Path | None = None) -> str:
+    prefix = _sanitize_run_token(project_label or "project") or "project"
+    if not runs_root:
+        return f"{prefix}_session1"
+
+    next_idx = 1
+    pattern = re.compile(rf"^{re.escape(prefix)}_session(\d+)$")
+    try:
+        for child in runs_root.iterdir():
+            if not child.is_dir():
+                continue
+            match = pattern.match(child.name)
+            if not match:
+                continue
+            next_idx = max(next_idx, int(match.group(1)) + 1)
+    except Exception:
+        pass
+
+    return f"{prefix}_session{next_idx}"
+
+
+def _rewrite_auto_run_name_prefix(
+    run_name_requested: str,
+    project_id: str,
+    project_label: str | None,
+) -> str:
+    """If request looks like auto id-based name, switch to project-name prefix."""
+    requested = (run_name_requested or "").strip()
+    if not requested:
+        return requested
+
+    project_id_prefix = _sanitize_run_token(project_id) or "project"
+    preferred_prefix = _sanitize_run_token(project_label or project_id) or project_id_prefix
+    if preferred_prefix == project_id_prefix:
+        return requested
+
+    # Match auto-generated shapes like:
+    # <project_id_prefix>_YYYYMMDD_HHMMSS, <project_id_prefix>_YYYYMMDD_HHMMSS_01,
+    # or <project_id_prefix>_sessionN
+    match = re.fullmatch(
+        rf"{re.escape(project_id_prefix)}_((?:\d{{8}}_\d{{6}}(?:_\d{{2}})?)|(?:session\d+))",
+        requested,
+    )
+    if not match:
+        return requested
+
+    return f"{preferred_prefix}_{match.group(1)}"
+
+
+def _resolve_unique_run_id(runs_root: Path, preferred_name: str) -> str:
+    base = _sanitize_run_token(preferred_name) or _build_default_run_name("project")
+    candidate = base
+    idx = 1
+    while (runs_root / candidate).exists():
+        candidate = f"{base}_{idx:02d}"
+        idx += 1
+    return candidate
 
 
 def _read_sparse_image_names(candidate_dir: Path) -> list[str]:
@@ -175,6 +372,47 @@ def _update_sparse_candidate_points(project_dir: Path, candidate_rel: str, point
     except Exception as exc:
         logger.debug("Failed to update sparse metadata at %s: %s", meta_path, exc)
 
+
+def _is_colmap_reconstruction_dir(candidate_dir: Path) -> bool:
+    """Return True when a directory looks like a valid COLMAP sparse reconstruction."""
+    if not candidate_dir.exists() or not candidate_dir.is_dir():
+        return False
+    has_cameras = (candidate_dir / "cameras.bin").exists() or (candidate_dir / "cameras.txt").exists()
+    has_images = (candidate_dir / "images.bin").exists() or (candidate_dir / "images.txt").exists()
+    has_points = (candidate_dir / "points3D.bin").exists() or (candidate_dir / "points3D.txt").exists()
+    return bool(has_cameras and has_images and has_points)
+
+
+def _has_colmap_sparse_outputs(sparse_root: Path) -> bool:
+    """Check whether sparse root contains at least one valid COLMAP reconstruction dir."""
+    if not sparse_root.exists() or not sparse_root.is_dir():
+        return False
+
+    if _is_colmap_reconstruction_dir(sparse_root):
+        return True
+
+    try:
+        for child in sparse_root.iterdir():
+            if child.is_dir() and _is_colmap_reconstruction_dir(child):
+                return True
+    except Exception:
+        return False
+
+    return False
+
+
+def _base_session_colmap_ready(project_dir: Path, base_session_id: str | None) -> bool:
+    """True when base session has COLMAP sparse data (shared or run-local)."""
+    if not base_session_id:
+        return False
+
+    shared_sparse_root = project_dir / "outputs" / "sparse"
+    if _has_colmap_sparse_outputs(shared_sparse_root):
+        return True
+
+    base_run_sparse_root = project_dir / "runs" / base_session_id / "outputs" / "sparse"
+    return _has_colmap_sparse_outputs(base_run_sparse_root)
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -252,6 +490,7 @@ def _find_existing_path(
     project_id: str,
     relative_path: str | Path,
     engine: str | None,
+    run_id: str | None = None,
     *,
     expect_directory: bool = False,
 ) -> tuple[Path | None, str | None, str | None, str | None]:
@@ -259,7 +498,13 @@ def _find_existing_path(
     search_order, inferred = _engine_search_order(project_id, sanitized)
     project_dir = DATA_DIR / project_id
     for candidate in search_order:
-        candidate_path = _resolve_output_path(project_dir, relative_path, candidate)
+        if run_id:
+            candidate_path = project_dir / "runs" / run_id / "outputs"
+            if candidate:
+                candidate_path = candidate_path / ENGINE_SUBDIR / candidate
+            candidate_path = candidate_path / Path(relative_path)
+        else:
+            candidate_path = _resolve_output_path(project_dir, relative_path, candidate)
         if expect_directory:
             if candidate_path.exists() and candidate_path.is_dir():
                 return candidate_path, candidate, sanitized, inferred
@@ -363,6 +608,13 @@ def list_projects():
                 or (project_dir / "outputs" / "engines" / "litegs" / "splats.ply").exists()
                 or (project_dir / "outputs" / "engines" / "litegs" / "metadata.json").exists()
             )
+            runs_root = project_dir / "runs"
+            session_count = 0
+            if runs_root.exists() and runs_root.is_dir():
+                try:
+                    session_count = sum(1 for p in runs_root.iterdir() if p.is_dir())
+                except Exception:
+                    session_count = 0
             projects.append(
                 ProjectListItem(
                     project_id=project_id,
@@ -371,6 +623,7 @@ def list_projects():
                     progress=progress,
                     created_at=project_status.get("created_at"),
                     has_outputs=has_outputs,
+                    session_count=session_count,
                 )
             )
 
@@ -582,11 +835,56 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
             raise HTTPException(status_code=400, detail=f"Invalid training engine: {engine}")
         params_payload["engine"] = engine
 
+        # Create a per-run session directory under project/runs/<run_name>.
+        project_status = status.get_status(project_id)
+        project_label = None
+        if isinstance(project_status, dict):
+            project_label = project_status.get("name") or project_status.get("project_id")
+        raw_run_name_requested = str(requested_params.get("run_name") or "").strip()
+        restart_fresh_requested = bool(requested_params.get("restart_fresh"))
+        runs_root = project_dir / "runs"
+        runs_root.mkdir(parents=True, exist_ok=True)
+        default_run_name = _build_default_run_name(project_label, runs_root)
+        if restart_fresh_requested and raw_run_name_requested and (runs_root / raw_run_name_requested).exists():
+            run_name_requested = raw_run_name_requested
+        else:
+            run_name_requested = _rewrite_auto_run_name_prefix(raw_run_name_requested, project_id, project_label)
+        requested_existing_run = runs_root / run_name_requested if run_name_requested else None
+        if restart_fresh_requested and requested_existing_run and requested_existing_run.exists() and requested_existing_run.is_dir():
+            run_id = run_name_requested
+        else:
+            run_id = _resolve_unique_run_id(runs_root, run_name_requested or default_run_name)
+        run_dir = project_dir / "runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        if restart_fresh_requested:
+            stage_for_cleanup = str(params_payload.get("stage") or "train_only")
+            base_session_id = project_status.get("base_session_id") if isinstance(project_status, dict) else None
+            is_base_run = bool(base_session_id) and run_id == str(base_session_id)
+            logger.info("Restart requested from scratch for %s/%s; clearing previous artifacts", project_id, run_id)
+            _clear_restart_artifacts(
+                project_dir,
+                run_dir,
+                stage=stage_for_cleanup,
+                clear_project_level=is_base_run,
+            )
+
+        params_payload["run_id"] = run_id
+        params_payload["run_name"] = run_id
+
+        # If no base session is defined yet, the first run becomes the base session.
+        if not project_status.get("base_session_id"):
+            try:
+                status.update_base_session_id(project_id, run_id)
+            except Exception as exc:
+                logger.warning("Failed to set base session for %s: %s", project_id, exc)
+
         # Persist run configuration for reproducibility (requested + resolved params).
         try:
-            run_timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
             run_config_payload = {
                 "project_id": project_id,
+                "run_id": run_id,
+                "run_name": run_id,
                 "saved_at": datetime.utcnow().isoformat() + "Z",
                 "requested_params": requested_params,
                 "resolved_params": params_payload,
@@ -596,8 +894,9 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
             run_configs_dir = project_dir / "run_configs"
             run_configs_dir.mkdir(parents=True, exist_ok=True)
             run_config_versioned = run_configs_dir / f"run_config_{run_timestamp}.json"
+            run_config_session = run_dir / "run_config.json"
 
-            for target_path in (run_config_latest, run_config_versioned):
+            for target_path in (run_config_latest, run_config_versioned, run_config_session):
                 tmp_path = target_path.with_suffix(target_path.suffix + ".tmp")
                 with open(tmp_path, "w", encoding="utf-8") as handle:
                     json.dump(run_config_payload, handle, indent=2)
@@ -635,6 +934,7 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
             progress=5,
             engine=engine,
             worker_mode=resolved_worker_mode,
+            current_run_id=run_id,
             stop_requested=False,
             message=f"Processing started ({resolved_worker_mode} mode).",
             error=None,
@@ -650,7 +950,7 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
         thread.start()
         
         logger.info(f"Started processing for project: {project_id}")
-        return {"status": "processing_started"}
+        return {"status": "processing_started", "run_id": run_id, "run_name": run_id}
     
     except HTTPException:
         raise
@@ -728,8 +1028,395 @@ def request_stop(project_id: str):
         raise HTTPException(status_code=500, detail="Failed to request stop")
 
 
+@router.get("/{project_id}/runs")
+def list_project_runs(project_id: str):
+    """List per-project run sessions with key metadata for UI run selection."""
+    try:
+        project_dir = DATA_DIR / project_id
+        if not project_dir.exists():
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        runs_root = project_dir / "runs"
+        project_status = status.get_status(project_id)
+        base_session_id = project_status.get("base_session_id") if isinstance(project_status, dict) else None
+        base_colmap_ready = _base_session_colmap_ready(project_dir, base_session_id)
+        can_create_session = bool(base_colmap_ready)
+        can_create_session_reason = None if can_create_session else "Complete COLMAP on the base session before creating new sessions."
+
+        if not runs_root.exists():
+            return {
+                "runs": [],
+                "base_session_id": base_session_id,
+                "base_colmap_ready": base_colmap_ready,
+                "can_create_session": can_create_session,
+                "can_create_session_reason": can_create_session_reason,
+            }
+
+        project_has_completed_outputs = any(
+            p.exists()
+            for p in (
+                project_dir / "outputs" / "engines" / "gsplat" / "splats.splat",
+                project_dir / "outputs" / "engines" / "gsplat" / "splats.ply",
+                project_dir / "outputs" / "engines" / "gsplat" / "metadata.json",
+                project_dir / "outputs" / "engines" / "litegs" / "splats.splat",
+                project_dir / "outputs" / "engines" / "litegs" / "splats.ply",
+                project_dir / "outputs" / "engines" / "litegs" / "metadata.json",
+            )
+        )
+
+        runs: list[dict] = []
+        for run_dir in sorted((p for p in runs_root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True):
+            run_id = run_dir.name
+            run_config_path = run_dir / "run_config.json"
+            run_config = _read_json_if_exists(run_config_path)
+            saved_at = run_config.get("saved_at") if isinstance(run_config, dict) else None
+            resolved = run_config.get("resolved_params") if isinstance(run_config, dict) and isinstance(run_config.get("resolved_params"), dict) else {}
+            requested = run_config.get("requested_params") if isinstance(run_config, dict) and isinstance(run_config.get("requested_params"), dict) else {}
+            has_completed_outputs = any(
+                p.exists()
+                for p in (
+                    run_dir / "outputs" / "engines" / "gsplat" / "splats.splat",
+                    run_dir / "outputs" / "engines" / "gsplat" / "splats.ply",
+                    run_dir / "outputs" / "engines" / "gsplat" / "metadata.json",
+                    run_dir / "outputs" / "engines" / "litegs" / "splats.splat",
+                    run_dir / "outputs" / "engines" / "litegs" / "splats.ply",
+                    run_dir / "outputs" / "engines" / "litegs" / "metadata.json",
+                )
+            )
+            is_base_run = run_id == base_session_id
+            is_completed = has_completed_outputs or (is_base_run and project_has_completed_outputs)
+
+            adaptive_runs_dir = run_dir / "adaptive_ai" / "runs"
+            adaptive_logs = sorted(adaptive_runs_dir.glob("*.jsonl")) if adaptive_runs_dir.exists() else []
+            adaptive_events = 0
+            for log_path in adaptive_logs:
+                try:
+                    with log_path.open("r", encoding="utf-8") as f:
+                        adaptive_events += sum(1 for _ in f)
+                except Exception:
+                    continue
+
+            runs.append(
+                {
+                    "run_id": run_id,
+                    "run_name": (
+                        (run_config.get("run_name") if isinstance(run_config, dict) else None)
+                        or (resolved.get("run_name") if isinstance(resolved, dict) else None)
+                        or (requested.get("run_name") if isinstance(requested, dict) else None)
+                        or run_id
+                    ),
+                    "saved_at": saved_at,
+                    "mode": resolved.get("mode") or requested.get("mode"),
+                    "stage": resolved.get("stage") or requested.get("stage"),
+                    "engine": resolved.get("engine") or requested.get("engine"),
+                    "max_steps": resolved.get("max_steps") or requested.get("max_steps"),
+                    "tune_scope": resolved.get("tune_scope") or requested.get("tune_scope"),
+                    "adaptive_event_count": adaptive_events,
+                    "has_run_config": run_config_path.exists(),
+                    "has_run_log": (run_dir / "processing.log").exists(),
+                    "session_status": "completed" if is_completed else "pending",
+                    "is_base": is_base_run,
+                }
+            )
+
+        # Fallback: if base session is missing/deleted, promote latest run as base.
+        if runs and (not base_session_id or not any(r["run_id"] == base_session_id for r in runs)):
+            fallback_base = runs[0]["run_id"]
+            try:
+                status.update_base_session_id(project_id, fallback_base)
+                base_session_id = fallback_base
+                for item in runs:
+                    item["is_base"] = item["run_id"] == base_session_id
+            except Exception as exc:
+                logger.warning("Failed to update fallback base session for %s: %s", project_id, exc)
+
+        base_colmap_ready = _base_session_colmap_ready(project_dir, base_session_id)
+        can_create_session = bool(base_colmap_ready)
+        can_create_session_reason = None if can_create_session else "Complete COLMAP on the base session before creating new sessions."
+
+        return {
+            "runs": runs,
+            "base_session_id": base_session_id,
+            "base_colmap_ready": base_colmap_ready,
+            "can_create_session": can_create_session,
+            "can_create_session_reason": can_create_session_reason,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error listing runs for %s: %s", project_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to list project runs")
+
+
+@router.get("/{project_id}/runs/{run_id}/config")
+def get_project_run_config(project_id: str, run_id: str):
+    """Return the persisted run_config payload for a given run session."""
+    try:
+        project_dir = DATA_DIR / project_id
+        if not project_dir.exists():
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        run_config_path = project_dir / "runs" / run_id / "run_config.json"
+        run_config = _read_json_if_exists(run_config_path)
+        if not isinstance(run_config, dict):
+            raise HTTPException(status_code=404, detail="Run config not found")
+
+        return {
+            "project_id": project_id,
+            "run_id": run_id,
+            "run_config": run_config,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error reading run config for %s/%s: %s", project_id, run_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to read run config")
+
+
+@router.post("/{project_id}/runs")
+def create_project_run(project_id: str, payload: CreateRunRequest = Body(...)):
+    """Create a new run/session directory and persist draft run config."""
+    try:
+        project_dir = DATA_DIR / project_id
+        if not project_dir.exists():
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        runs_root = project_dir / "runs"
+        runs_root.mkdir(parents=True, exist_ok=True)
+
+        project_status = status.get_status(project_id)
+        base_session_id = project_status.get("base_session_id") if isinstance(project_status, dict) else None
+        if not _base_session_colmap_ready(project_dir, base_session_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot create a new session until the base session has completed COLMAP sparse outputs.",
+            )
+
+        project_label = None
+        if isinstance(project_status, dict):
+            project_label = project_status.get("name") or project_status.get("project_id")
+
+        requested_name = str(payload.run_name or "").strip()
+        requested_name = _rewrite_auto_run_name_prefix(requested_name, project_id, project_label)
+        preferred_name = requested_name or _build_default_run_name(project_label, runs_root)
+        run_id = _resolve_unique_run_id(runs_root, preferred_name)
+
+        run_dir = runs_root / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        requested_params: dict = {"run_name": run_id, "run_id": run_id}
+        resolved_params: dict = {"run_name": run_id, "run_id": run_id}
+
+        source_run_id = str(payload.source_run_id or "").strip()
+        if source_run_id:
+            source_cfg = _read_json_if_exists(project_dir / "runs" / source_run_id / "run_config.json")
+            if not isinstance(source_cfg, dict):
+                raise HTTPException(status_code=404, detail="Source run config not found")
+
+            source_requested = source_cfg.get("requested_params")
+            source_resolved = source_cfg.get("resolved_params")
+            if isinstance(source_requested, dict):
+                requested_params.update(json.loads(json.dumps(source_requested)))
+            if isinstance(source_resolved, dict):
+                resolved_params.update(json.loads(json.dumps(source_resolved)))
+
+            requested_params["source_run_id"] = source_run_id
+            resolved_params["source_run_id"] = source_run_id
+
+        if isinstance(payload.resolved_params, dict):
+            provided_params = json.loads(json.dumps(payload.resolved_params))
+            requested_params.update(provided_params)
+            resolved_params.update(provided_params)
+
+        requested_params["run_name"] = run_id
+        requested_params["run_id"] = run_id
+        resolved_params["run_name"] = run_id
+        resolved_params["run_id"] = run_id
+
+        run_config_payload = {
+            "project_id": project_id,
+            "run_id": run_id,
+            "run_name": run_id,
+            "saved_at": datetime.utcnow().isoformat() + "Z",
+            "requested_params": requested_params,
+            "resolved_params": resolved_params,
+        }
+
+        run_cfg_path = run_dir / "run_config.json"
+        tmp = run_cfg_path.with_suffix(run_cfg_path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(run_config_payload, f, indent=2)
+        tmp.replace(run_cfg_path)
+
+        latest_cfg_path = project_dir / "run_config.json"
+        latest_tmp = latest_cfg_path.with_suffix(latest_cfg_path.suffix + ".tmp")
+        with open(latest_tmp, "w", encoding="utf-8") as f:
+            json.dump(run_config_payload, f, indent=2)
+        latest_tmp.replace(latest_cfg_path)
+
+        if not project_status.get("base_session_id"):
+            try:
+                status.update_base_session_id(project_id, run_id)
+            except Exception as exc:
+                logger.warning("Failed to set base session for %s: %s", project_id, exc)
+
+        return {
+            "status": "created",
+            "project_id": project_id,
+            "run_id": run_id,
+            "run_name": run_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error creating run for %s: %s", project_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to create session")
+
+
+@router.patch("/{project_id}/runs/{run_id}")
+def rename_project_run(project_id: str, run_id: str, payload: RenameRunRequest = Body(...)):
+    """Rename a run session directory and update its run config metadata."""
+    try:
+        project_dir = DATA_DIR / project_id
+        if not project_dir.exists():
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        runs_root = project_dir / "runs"
+        source_dir = runs_root / run_id
+        if not source_dir.exists() or not source_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        desired = _sanitize_run_token(payload.run_name or "")
+        if not desired:
+            raise HTTPException(status_code=400, detail="Run name cannot be empty")
+        if desired == run_id:
+            return {"status": "unchanged", "run_id": run_id, "run_name": run_id}
+
+        current_status = status.get_status(project_id)
+        if (
+            isinstance(current_status, dict)
+            and current_status.get("status") in {"processing", "stopping"}
+            and current_status.get("current_run_id") == run_id
+        ):
+            raise HTTPException(status_code=409, detail="Cannot rename an active run")
+
+        target_dir = runs_root / desired
+        if target_dir.exists():
+            raise HTTPException(status_code=409, detail="Run name already exists")
+
+        source_dir.rename(target_dir)
+
+        run_cfg_path = target_dir / "run_config.json"
+        run_cfg = _read_json_if_exists(run_cfg_path)
+        if isinstance(run_cfg, dict):
+            run_cfg["run_id"] = desired
+            run_cfg["run_name"] = desired
+            requested = run_cfg.get("requested_params")
+            if isinstance(requested, dict):
+                requested["run_id"] = desired
+                requested["run_name"] = desired
+            resolved = run_cfg.get("resolved_params")
+            if isinstance(resolved, dict):
+                resolved["run_id"] = desired
+                resolved["run_name"] = desired
+            tmp = run_cfg_path.with_suffix(run_cfg_path.suffix + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(run_cfg, f, indent=2)
+            tmp.replace(run_cfg_path)
+
+        # Keep project-level latest config consistent when it points to this run.
+        latest_cfg_path = project_dir / "run_config.json"
+        latest_cfg = _read_json_if_exists(latest_cfg_path)
+        if isinstance(latest_cfg, dict) and latest_cfg.get("run_id") == run_id:
+            latest_cfg["run_id"] = desired
+            latest_cfg["run_name"] = desired
+            tmp = latest_cfg_path.with_suffix(latest_cfg_path.suffix + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(latest_cfg, f, indent=2)
+            tmp.replace(latest_cfg_path)
+
+        if isinstance(current_status, dict) and current_status.get("current_run_id") == run_id:
+            status.update_status(project_id, current_status.get("status", "pending"), current_run_id=desired)
+
+        if isinstance(current_status, dict) and current_status.get("base_session_id") == run_id:
+            status.update_base_session_id(project_id, desired)
+
+        return {"status": "renamed", "run_id": desired, "run_name": desired}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error renaming run %s/%s: %s", project_id, run_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to rename run")
+
+
+@router.patch("/{project_id}/runs/{run_id}/set-base")
+def set_base_project_run(project_id: str, run_id: str):
+    """Mark the selected run as the project's base session."""
+    try:
+        project_dir = DATA_DIR / project_id
+        if not project_dir.exists():
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        run_dir = project_dir / "runs" / run_id
+        if not run_dir.exists() or not run_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        status.update_base_session_id(project_id, run_id)
+        return {"status": "ok", "base_session_id": run_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error setting base run %s/%s: %s", project_id, run_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to set base session")
+
+
+@router.delete("/{project_id}/runs/{run_id}")
+def delete_project_run(project_id: str, run_id: str):
+    """Delete a completed/inactive run session and reassign base session if needed."""
+    try:
+        project_dir = DATA_DIR / project_id
+        if not project_dir.exists():
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        runs_root = project_dir / "runs"
+        target_dir = runs_root / run_id
+        if not target_dir.exists() or not target_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        current_status = status.get_status(project_id)
+        if (
+            isinstance(current_status, dict)
+            and current_status.get("status") in {"processing", "stopping"}
+            and current_status.get("current_run_id") == run_id
+        ):
+            raise HTTPException(status_code=409, detail="Cannot delete an active run")
+
+        shutil.rmtree(target_dir, ignore_errors=False)
+
+        base_session_id = current_status.get("base_session_id") if isinstance(current_status, dict) else None
+        deleted_was_base = base_session_id == run_id
+        new_base_session_id = base_session_id
+        remaining = sorted((p for p in runs_root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True) if runs_root.exists() else []
+        if deleted_was_base:
+            new_base_session_id = remaining[0].name if remaining else None
+            status.update_base_session_id(project_id, new_base_session_id)
+
+        # Keep shared COLMAP/images artifacts on session deletion.
+        # Shared data should only be refreshed via explicit restart stage selections.
+
+        if isinstance(current_status, dict) and current_status.get("current_run_id") == run_id:
+            status.update_status(project_id, current_status.get("status", "pending"), current_run_id=None)
+
+        return {"status": "deleted", "run_id": run_id, "base_session_id": new_base_session_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error deleting run %s/%s: %s", project_id, run_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to delete run")
+
+
 @router.get("/{project_id}/files")
-def get_files(project_id: str):
+def get_files(project_id: str, run_id: str | None = Query(None)):
     """Get list of output files for a project."""
     try:
         project_dir = DATA_DIR / project_id
@@ -738,7 +1425,24 @@ def get_files(project_id: str):
         if not project_dir.exists():
             raise HTTPException(status_code=404, detail="Project not found")
         
-        output_files = files.get_output_files(project_id)
+        requested_run_id = (run_id or "").strip() or None
+        if requested_run_id:
+            run_dir = project_dir / "runs" / requested_run_id
+            if not run_dir.exists() or not run_dir.is_dir():
+                raise HTTPException(status_code=404, detail="Run not found")
+
+        output_files = files.get_output_files(project_id, run_id=requested_run_id)
+        if requested_run_id:
+            shared_files = files.get_output_files(project_id, run_id=None)
+            # Uploaded images are shared across sessions.
+            if "images" not in output_files and "images" in shared_files:
+                output_files["images"] = shared_files["images"]
+
+            # COLMAP sparse is shared and should be available for the base session.
+            project_status = status.get_status(project_id)
+            base_session_id = project_status.get("base_session_id") if isinstance(project_status, dict) else None
+            if requested_run_id == base_session_id and "sparse" not in output_files and "sparse" in shared_files:
+                output_files["sparse"] = shared_files["sparse"]
         return {"project_id": project_id, "files": output_files}
     
     except HTTPException:
@@ -749,7 +1453,12 @@ def get_files(project_id: str):
 
 
 @router.get("/{project_id}/previews/{filename}")
-def get_preview_image(project_id: str, filename: str, engine: str | None = Query(None)):
+def get_preview_image(
+    project_id: str,
+    filename: str,
+    engine: str | None = Query(None),
+    run_id: str | None = Query(None),
+):
     """Serve a specific preview PNG from outputs/previews (optionally engine-scoped)."""
     try:
         project_dir = DATA_DIR / project_id
@@ -760,6 +1469,7 @@ def get_preview_image(project_id: str, filename: str, engine: str | None = Query
             project_id,
             "previews",
             engine,
+            run_id=(run_id.strip() if run_id else None),
             expect_directory=True,
         )
         if previews_dir is None:
@@ -797,7 +1507,12 @@ def get_preview_image(project_id: str, filename: str, engine: str | None = Query
 
 
 @router.head("/{project_id}/previews/{filename}")
-def head_preview_image(project_id: str, filename: str, engine: str | None = Query(None)):
+def head_preview_image(
+    project_id: str,
+    filename: str,
+    engine: str | None = Query(None),
+    run_id: str | None = Query(None),
+):
     """HEAD probe for preview PNG (used by browsers for preflight)."""
     try:
         project_dir = DATA_DIR / project_id
@@ -808,6 +1523,7 @@ def head_preview_image(project_id: str, filename: str, engine: str | None = Quer
             project_id,
             "previews",
             engine,
+            run_id=(run_id.strip() if run_id else None),
             expect_directory=True,
         )
         if previews_dir is None:
@@ -1068,7 +1784,7 @@ def get_splat_format(project_id: str, engine: str | None = Query(None)):
 
 
 @router.get("/{project_id}/download/splats.splat")
-def download_splats_splat(project_id: str, engine: str | None = Query(None)):
+def download_splats_splat(project_id: str, engine: str | None = Query(None), run_id: str | None = Query(None)):
     """Download .splat file (optimized binary format for web rendering)."""
     try:
         project_dir = DATA_DIR / project_id
@@ -1078,6 +1794,7 @@ def download_splats_splat(project_id: str, engine: str | None = Query(None)):
             project_id,
             "splats.splat",
             engine,
+            run_id=(run_id.strip() if run_id else None),
         )
 
         if not splat_path:
@@ -1100,7 +1817,7 @@ def download_splats_splat(project_id: str, engine: str | None = Query(None)):
 
 
 @router.head("/{project_id}/download/splats.splat")
-def head_splats_splat(project_id: str, engine: str | None = Query(None)):
+def head_splats_splat(project_id: str, engine: str | None = Query(None), run_id: str | None = Query(None)):
     """HEAD probe for .splat file (used by frontend to prefer native format)."""
     project_dir = DATA_DIR / project_id
     if not project_dir.exists():
@@ -1109,6 +1826,7 @@ def head_splats_splat(project_id: str, engine: str | None = Query(None)):
         project_id,
         "splats.splat",
         engine,
+        run_id=(run_id.strip() if run_id else None),
     )
     if splat_path:
         return FileResponse(path=splat_path, filename="splats.splat", media_type="application/octet-stream")
@@ -1120,7 +1838,7 @@ def head_splats_splat(project_id: str, engine: str | None = Query(None)):
 
 
 @router.get("/{project_id}/download/splats.ply")
-def download_splats_ply(project_id: str, engine: str | None = Query(None)):
+def download_splats_ply(project_id: str, engine: str | None = Query(None), run_id: str | None = Query(None)):
     """Download PLY splats file."""
     try:
         project_dir = DATA_DIR / project_id
@@ -1130,6 +1848,7 @@ def download_splats_ply(project_id: str, engine: str | None = Query(None)):
             project_id,
             "splats.ply",
             engine,
+            run_id=(run_id.strip() if run_id else None),
         )
 
         if not ply_path:
@@ -1152,7 +1871,7 @@ def download_splats_ply(project_id: str, engine: str | None = Query(None)):
 
 
 @router.get("/{project_id}/download/splats.bin")
-def download_splats_bin(project_id: str, engine: str | None = Query(None)):
+def download_splats_bin(project_id: str, engine: str | None = Query(None), run_id: str | None = Query(None)):
     """Download binary splats file."""
     try:
         project_dir = DATA_DIR / project_id
@@ -1162,6 +1881,7 @@ def download_splats_bin(project_id: str, engine: str | None = Query(None)):
             project_id,
             "splats.bin",
             engine,
+            run_id=(run_id.strip() if run_id else None),
         )
 
         if not bin_path:
@@ -1593,7 +2313,7 @@ def edit_sparse_points(project_id: str, payload: SparseEditRequest | None = Body
 
 
 @router.get("/{project_id}/download/splats")
-def download_splats(project_id: str, engine: str | None = Query(None)):
+def download_splats(project_id: str, engine: str | None = Query(None), run_id: str | None = Query(None)):
     """Download splats file (.splat format optimized for web rendering)."""
     try:
         project_dir = DATA_DIR / project_id
@@ -1605,6 +2325,7 @@ def download_splats(project_id: str, engine: str | None = Query(None)):
             project_id,
             "splats.splat",
             engine,
+            run_id=(run_id.strip() if run_id else None),
         )
         if splat_path:
             return FileResponse(
@@ -1613,7 +2334,7 @@ def download_splats(project_id: str, engine: str | None = Query(None)):
                 media_type="application/octet-stream"
             )
 
-        ply_path, _, _, _ = _find_existing_path(project_id, "splats.ply", engine)
+        ply_path, _, _, _ = _find_existing_path(project_id, "splats.ply", engine, run_id=(run_id.strip() if run_id else None))
         if ply_path:
             return FileResponse(
                 path=ply_path,
@@ -1621,7 +2342,7 @@ def download_splats(project_id: str, engine: str | None = Query(None)):
                 media_type="application/octet-stream"
             )
 
-        bin_path, _, _, _ = _find_existing_path(project_id, "splats.bin", engine)
+        bin_path, _, _, _ = _find_existing_path(project_id, "splats.bin", engine, run_id=(run_id.strip() if run_id else None))
         if bin_path:
             return FileResponse(
                 path=bin_path,
@@ -1643,7 +2364,7 @@ def download_splats(project_id: str, engine: str | None = Query(None)):
 
 
 @router.get("/{project_id}/download/snapshots/{filename}")
-def download_snapshot(project_id: str, filename: str, engine: str | None = Query(None)):
+def download_snapshot(project_id: str, filename: str, engine: str | None = Query(None), run_id: str | None = Query(None)):
     """Download a specific intermediate splat snapshot exported during training."""
     try:
         project_dir = DATA_DIR / project_id
@@ -1653,6 +2374,7 @@ def download_snapshot(project_id: str, filename: str, engine: str | None = Query
             project_id,
             "snapshots",
             engine,
+            run_id=(run_id.strip() if run_id else None),
             expect_directory=True,
         )
         if not snapshots_dir:
@@ -1897,12 +2619,81 @@ def get_thumbnail(project_id: str, filename: str):
 def delete_project(project_id: str):
     """Delete a project and all associated files."""
     try:
-        project_dir = DATA_DIR / project_id
+        project_alias = DATA_DIR / project_id
 
-        if not project_dir.exists():
+        if not project_alias.exists() and not project_alias.is_symlink():
             raise HTTPException(status_code=404, detail="Project not found")
 
-        shutil.rmtree(project_dir)
+        # Resolve physical target (custom storage root projects are aliased under DATA_DIR).
+        try:
+            real_project_dir = project_alias.resolve(strict=True)
+        except Exception:
+            real_project_dir = project_alias
+
+        # Request any in-flight workers to stop so they don't keep writing files.
+        try:
+            stop_flag = project_alias / "stop_requested"
+            stop_flag.write_text("stop")
+        except Exception:
+            pass
+
+        try:
+            colmap.stop_project_worker_containers(project_id)
+        except Exception as exc:
+            logger.warning("Failed to stop worker containers for %s before delete: %s", project_id, exc)
+
+        if pipeline.is_local_project_active(project_id):
+            # Give local worker a short grace period to finish cleanup.
+            for _ in range(15):
+                if not pipeline.is_local_project_active(project_id):
+                    break
+                time.sleep(0.2)
+
+        # Best-effort release of any file handlers still pointing into project logs.
+        _close_project_log_handlers(project_alias)
+        if real_project_dir != project_alias:
+            _close_project_log_handlers(real_project_dir)
+
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                # Remove alias under DATA_DIR first so project disappears from listings.
+                _delete_path_strict(project_alias)
+
+                # Also remove physical target dir when alias points elsewhere.
+                if real_project_dir != project_alias:
+                    _delete_path_strict(real_project_dir)
+
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                # Retry after brief backoff for transient Windows file locks.
+                _close_project_log_handlers(project_alias)
+                if real_project_dir != project_alias:
+                    _close_project_log_handlers(real_project_dir)
+                time.sleep(0.2 * (attempt + 1))
+
+        if last_error is not None:
+            raise last_error
+
+        # Ensure stale aliases are removed if target was deleted first.
+        if project_alias.exists() or project_alias.is_symlink():
+            _delete_path_strict(project_alias)
+
+        alias_exists_after = project_alias.exists() or project_alias.is_symlink()
+        target_exists_after = False
+        if real_project_dir != project_alias:
+            target_exists_after = real_project_dir.exists() or real_project_dir.is_symlink()
+        if alias_exists_after or target_exists_after:
+            logger.error(
+                "Project deletion incomplete for %s (alias_exists=%s target_exists=%s)",
+                project_id,
+                alias_exists_after,
+                target_exists_after,
+            )
+            raise HTTPException(status_code=500, detail="Project delete incomplete")
+
         logger.info(f"Deleted project: {project_id}")
         return {"status": "deleted", "project_id": project_id}
     except HTTPException:
@@ -1978,7 +2769,11 @@ def get_metrics(project_id: str):
 
 
 @router.get("/{project_id}/experiment-summary")
-def get_experiment_summary(project_id: str, engine: str | None = Query(None)):
+def get_experiment_summary(
+    project_id: str,
+    engine: str | None = Query(None),
+    run_id: str | None = Query(None),
+):
     """Return an engine-aware summary payload for comparing two runs."""
     try:
         project_dir = DATA_DIR / project_id
@@ -1989,24 +2784,34 @@ def get_experiment_summary(project_id: str, engine: str | None = Query(None)):
         sanitized_engine = _sanitize_engine(engine) if engine is not None else None
         search_order, inferred_engine = _engine_search_order(project_id, sanitized_engine)
         selected_engine = search_order[0] if search_order else None
+        requested_run_id = (run_id or "").strip()
+        run_dir = (project_dir / "runs" / requested_run_id) if requested_run_id else None
+        if requested_run_id and (run_dir is None or not run_dir.exists()):
+            raise HTTPException(status_code=404, detail="Run not found")
 
-        def _read_json_if_exists(path: Path | None):
-            if path is None or not path.exists():
-                return None
-            try:
-                with open(path) as f:
-                    return json.load(f)
-            except Exception as exc:
-                logger.warning("Failed to parse JSON %s: %s", path, exc)
-                return None
-
-        metadata_path, resolved_engine, _, _ = _find_existing_path(project_id, "metadata.json", selected_engine)
-        eval_history_path, _, _, _ = _find_existing_path(project_id, "eval_history.json", selected_engine)
-        tuning_results_path, _, _, _ = _find_existing_path(project_id, "adaptive_tuning_results.json", selected_engine)
-        run_config_path = project_dir / "run_config.json"
+        metadata_path, resolved_engine, _, _ = _find_existing_path(
+            project_id,
+            "metadata.json",
+            selected_engine,
+            run_id=requested_run_id or None,
+        )
+        eval_history_path, _, _, _ = _find_existing_path(
+            project_id,
+            "eval_history.json",
+            selected_engine,
+            run_id=requested_run_id or None,
+        )
+        tuning_results_path, _, _, _ = _find_existing_path(
+            project_id,
+            "adaptive_tuning_results.json",
+            selected_engine,
+            run_id=requested_run_id or None,
+        )
+        run_config_path = (run_dir / "run_config.json") if run_dir else (project_dir / "run_config.json")
 
         metadata = _read_json_if_exists(metadata_path)
-        eval_history = _read_json_if_exists(eval_history_path) or []
+        eval_history_raw = _read_json_if_exists(eval_history_path)
+        eval_history = eval_history_raw if isinstance(eval_history_raw, list) else []
         tuning_results = _read_json_if_exists(tuning_results_path)
         run_config = _read_json_if_exists(run_config_path)
 
@@ -2049,7 +2854,7 @@ def get_experiment_summary(project_id: str, engine: str | None = Query(None)):
 
         # Fallback for older runs where eval_history contains step but null final_loss.
         if not eval_series:
-            processing_log = project_dir / "processing.log"
+            processing_log = (run_dir / "processing.log") if run_dir else (project_dir / "processing.log")
             if processing_log.exists():
                 try:
                     step_loss_map = {}
@@ -2059,19 +2864,21 @@ def get_experiment_summary(project_id: str, engine: str | None = Query(None)):
                     with open(processing_log, encoding="utf-8", errors="ignore") as f:
                         lines = f.readlines()
 
-                    # Parse only the latest run segment for this project to avoid mixed lines
-                    # if a log file accidentally contains entries from another project.
-                    run_markers = [
-                        idx for idx, line in enumerate(lines)
-                        if "Running local worker:" in line and f" {project_id} " in line
-                    ]
-                    start_idx = run_markers[-1] if run_markers else 0
+                    # Run-specific logs are already isolated under runs/<run_id>/processing.log.
+                    # For legacy project-level logs, keep parsing only the latest run segment.
+                    start_idx = 0
                     end_idx = len(lines)
-                    for idx in range(start_idx + 1, len(lines)):
-                        line = lines[idx]
-                        if "Running local worker:" in line and f" {project_id} " not in line:
-                            end_idx = idx
-                            break
+                    if not run_dir:
+                        run_markers = [
+                            idx for idx, line in enumerate(lines)
+                            if "Running local worker:" in line and f" {project_id} " in line
+                        ]
+                        start_idx = run_markers[-1] if run_markers else 0
+                        for idx in range(start_idx + 1, len(lines)):
+                            line = lines[idx]
+                            if "Running local worker:" in line and f" {project_id} " not in line:
+                                end_idx = idx
+                                break
 
                     for line in lines[start_idx:end_idx]:
                             match = pattern.search(line)
@@ -2198,7 +3005,7 @@ def get_experiment_summary(project_id: str, engine: str | None = Query(None)):
             "batch_size": resolved_cfg.get("batch_size"),
         }
 
-        outputs = files.get_output_files(project_id)
+        outputs = files.get_output_files(project_id, run_id=requested_run_id or None)
         preview_url = None
         if resolved_engine and isinstance(outputs.get("engines"), dict):
             engine_bundle = outputs["engines"].get(resolved_engine, {})
@@ -2207,6 +3014,8 @@ def get_experiment_summary(project_id: str, engine: str | None = Query(None)):
 
         return {
             "project_id": project_id,
+            "run_id": requested_run_id or None,
+            "run_name": run_config.get("run_name") if isinstance(run_config, dict) else (requested_run_id or None),
             "name": status_info.get("name"),
             "status": status_info.get("status"),
             "mode": mode_value,

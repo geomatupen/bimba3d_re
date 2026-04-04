@@ -7,6 +7,14 @@ This note explains a practical way to update each learning-rate group separately
 
 The goal is to keep training stable while making updates more targeted than a single global-loss rule.
 
+## Runtime scope map (current implementation)
+
+- `core_individual`: updates LR groups only; uses `tune_min_improvement` gate.
+- `core_only`: updates LR groups plus only `grow_grad2d`; no adaptive gate requirement.
+- `core_ai_optimization`: updates LR groups plus only `grow_grad2d`; uses `tune_min_improvement` gate.
+- `core_individual_plus_strategy`: updates LR groups plus full strategy (`grow_grad2d`, `prune_opa`, `refine_every`, `reset_every`).
+- Legacy alias: `with_strategy` is normalized to `core_individual_plus_strategy`.
+
 ## 1) Total loss and component losses
 
 Training usually has multiple loss terms:

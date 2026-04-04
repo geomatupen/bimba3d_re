@@ -11,8 +11,19 @@ interface ProjectListItem {
   status: string;
 }
 
+interface ProjectRunInfo {
+  run_id: string;
+  run_name?: string | null;
+  saved_at?: string | null;
+  stage?: string | null;
+  session_status?: "completed" | "pending" | string;
+  is_base?: boolean;
+}
+
 interface SummaryPayload {
   project_id: string;
+  run_id?: string | null;
+  run_name?: string | null;
   name?: string | null;
   status?: string;
   mode?: string;
@@ -292,6 +303,10 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [leftId, setLeftId] = useState<string>(currentProjectId);
   const [rightId, setRightId] = useState<string>("");
+  const [leftRuns, setLeftRuns] = useState<ProjectRunInfo[]>([]);
+  const [rightRuns, setRightRuns] = useState<ProjectRunInfo[]>([]);
+  const [leftRunId, setLeftRunId] = useState<string>("");
+  const [rightRunId, setRightRunId] = useState<string>("");
   const [leftSummary, setLeftSummary] = useState<SummaryPayload | null>(null);
   const [rightSummary, setRightSummary] = useState<SummaryPayload | null>(null);
   const [loading, setLoading] = useState(false);
@@ -364,6 +379,64 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
   }, [currentProjectId, rightId]);
 
   useEffect(() => {
+    let mounted = true;
+    const loadLeftRuns = async () => {
+      if (!leftId) {
+        setLeftRuns([]);
+        setLeftRunId("");
+        return;
+      }
+      try {
+        const res = await api.get(`/projects/${leftId}/runs`);
+        if (!mounted) return;
+        const runsRaw = Array.isArray(res.data?.runs) ? (res.data.runs as ProjectRunInfo[]) : [];
+        const runs = runsRaw.filter((run) => run.session_status === "completed");
+        setLeftRuns(runs);
+        if (!leftRunId || !runs.some((r) => r.run_id === leftRunId)) {
+          setLeftRunId(runs[0]?.run_id || "");
+        }
+      } catch {
+        if (!mounted) return;
+        setLeftRuns([]);
+        setLeftRunId("");
+      }
+    };
+    loadLeftRuns();
+    return () => {
+      mounted = false;
+    };
+  }, [leftId, leftRunId]);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadRightRuns = async () => {
+      if (!rightId) {
+        setRightRuns([]);
+        setRightRunId("");
+        return;
+      }
+      try {
+        const res = await api.get(`/projects/${rightId}/runs`);
+        if (!mounted) return;
+        const runsRaw = Array.isArray(res.data?.runs) ? (res.data.runs as ProjectRunInfo[]) : [];
+        const runs = runsRaw.filter((run) => run.session_status === "completed");
+        setRightRuns(runs);
+        if (!rightRunId || !runs.some((r) => r.run_id === rightRunId)) {
+          setRightRunId(runs[0]?.run_id || "");
+        }
+      } catch {
+        if (!mounted) return;
+        setRightRuns([]);
+        setRightRunId("");
+      }
+    };
+    loadRightRuns();
+    return () => {
+      mounted = false;
+    };
+  }, [rightId, rightRunId]);
+
+  useEffect(() => {
     if (!leftId || !rightId) return;
     setLeftSummary(null);
     setRightSummary(null);
@@ -376,23 +449,15 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
     setHoverStep(null);
     let mounted = true;
     const loadSummaries = async () => {
-      const leftProject = projects.find((p) => p.project_id === leftId);
-      const rightProject = projects.find((p) => p.project_id === rightId);
-      const notReady = [leftProject, rightProject].find((p) => p && p.status !== "completed");
-      if (notReady) {
-        if (!mounted) return;
-        setError(`Project ${notReady.name || notReady.project_id.slice(0, 8)} is ${notReady.status}. Comparison data will appear after completion.`);
-        setLoading(false);
-        return;
-      }
-
       try {
         setLoading(true);
         setError(null);
 
-        const loadPreviewSteps = async (projectId: string, engine?: string | null): Promise<Record<number, string>> => {
+        const loadPreviewSteps = async (projectId: string, runId: string, engine?: string | null): Promise<Record<number, string>> => {
           try {
-            const filesRes = await api.get(`/projects/${projectId}/files`);
+            const filesRes = await api.get(`/projects/${projectId}/files`, {
+              params: { run_id: runId || undefined },
+            });
             const payload = (filesRes.data || {}) as FilesPayload;
             const engines = payload.files?.engines || {};
             const chosenEngine = engine && engines[engine] ? engine : Object.keys(engines)[0];
@@ -412,14 +477,18 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
         };
 
         const [leftRes, rightRes] = await Promise.all([
-          api.get(`/projects/${leftId}/experiment-summary`),
-          api.get(`/projects/${rightId}/experiment-summary`),
+          api.get(`/projects/${leftId}/experiment-summary`, {
+            params: { run_id: leftRunId || undefined },
+          }),
+          api.get(`/projects/${rightId}/experiment-summary`, {
+            params: { run_id: rightRunId || undefined },
+          }),
         ]);
         const leftData = leftRes.data as SummaryPayload;
         const rightData = rightRes.data as SummaryPayload;
         const [leftSteps, rightSteps] = await Promise.all([
-          loadPreviewSteps(leftId, leftData.engine),
-          loadPreviewSteps(rightId, rightData.engine),
+          loadPreviewSteps(leftId, leftRunId, leftData.engine),
+          loadPreviewSteps(rightId, rightRunId, rightData.engine),
         ]);
         if (!mounted) return;
         setLeftSummary(leftData);
@@ -440,7 +509,7 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
     return () => {
       mounted = false;
     };
-  }, [leftId, rightId, projects]);
+  }, [leftId, rightId, leftRunId, rightRunId, projects]);
 
   useEffect(() => {
     setHoverStep(null);
@@ -638,6 +707,25 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
                 <option key={`left-${option.value}`} value={option.value}>{option.label}</option>
               ))}
             </select>
+            <label className="block text-xs font-semibold text-slate-600 mt-3 mb-1">Left run</label>
+            <select
+              value={leftRunId}
+              onChange={(e) => {
+                beginRefreshWithStableLayout();
+                setLeftRunId(e.target.value);
+              }}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+            >
+              {leftRuns.length === 0 ? (
+                <option value="">No completed sessions</option>
+              ) : (
+                leftRuns.map((run) => (
+                  <option key={`left-run-${run.run_id}`} value={run.run_id}>
+                    {(run.run_name || run.run_id) + (run.is_base ? " [BASE]" : "")}
+                  </option>
+                ))
+              )}
+            </select>
           </div>
           <div>
             <label className="block text-xs font-semibold text-slate-600 mb-1">Right project</label>
@@ -653,6 +741,25 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
               {options.map((option) => (
                 <option key={`right-${option.value}`} value={option.value}>{option.label}</option>
               ))}
+            </select>
+            <label className="block text-xs font-semibold text-slate-600 mt-3 mb-1">Right run</label>
+            <select
+              value={rightRunId}
+              onChange={(e) => {
+                beginRefreshWithStableLayout();
+                setRightRunId(e.target.value);
+              }}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+            >
+              {rightRuns.length === 0 ? (
+                <option value="">No completed sessions</option>
+              ) : (
+                rightRuns.map((run) => (
+                  <option key={`right-run-${run.run_id}`} value={run.run_id}>
+                    {(run.run_name || run.run_id) + (run.is_base ? " [BASE]" : "")}
+                  </option>
+                ))
+              )}
             </select>
           </div>
         </div>
@@ -672,6 +779,7 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="bg-white rounded-lg border border-slate-200 p-4">
               <p className="text-sm font-semibold text-slate-800">{leftSummary.name || leftSummary.project_id}</p>
+              <p className="text-xs text-slate-500">run: {leftSummary.run_name || leftSummary.run_id || "latest"}</p>
               <p className="text-xs text-slate-500">mode: {leftSummary.mode || "-"} | engine: {leftSummary.engine || "-"}</p>
               <p className="text-xs text-slate-500">eval points: {leftSummary.eval_points ?? 0} (number of evaluation records)</p>
               <p className="text-xs text-slate-500">tune end step: {leftSummary.tuning?.end_step ?? "-"}</p>
@@ -681,6 +789,7 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
             </div>
             <div className="bg-white rounded-lg border border-slate-200 p-4">
               <p className="text-sm font-semibold text-slate-800">{rightSummary.name || rightSummary.project_id}</p>
+              <p className="text-xs text-slate-500">run: {rightSummary.run_name || rightSummary.run_id || "latest"}</p>
               <p className="text-xs text-slate-500">mode: {rightSummary.mode || "-"} | engine: {rightSummary.engine || "-"}</p>
               <p className="text-xs text-slate-500">eval points: {rightSummary.eval_points ?? 0} (number of evaluation records)</p>
               <p className="text-xs text-slate-500">tune end step: {rightSummary.tuning?.end_step ?? "-"}</p>

@@ -20,6 +20,8 @@ def initialize_status(project_id: str, name: Optional[str] = None) -> None:
         "status": "pending",
         "progress": 0,
         "error": None,
+        "current_run_id": None,
+        "base_session_id": None,
         "created_at": datetime.utcnow().isoformat() + "Z",
         "stage": None,
         "stage_progress": None,
@@ -59,6 +61,8 @@ def get_status(project_id: str) -> dict:
     data.setdefault("created_at", None)
     data.setdefault("error", None)
     data.setdefault("progress", 0)
+    data.setdefault("current_run_id", None)
+    data.setdefault("base_session_id", None)
     data.setdefault("stage", None)
     data.setdefault("stage_progress", None)
     data.setdefault("engine", None)
@@ -69,7 +73,9 @@ def get_status(project_id: str) -> dict:
 def update_project_name(project_id: str, name: Optional[str]) -> None:
     """Update only the project name in status metadata."""
     status_file = get_status_file(project_id)
-    status_file.parent.mkdir(parents=True, exist_ok=True)
+    if not status_file.parent.exists():
+        # Project was deleted (or never existed); do not recreate folders.
+        return
 
     current = get_status(project_id)
     current["name"] = name
@@ -97,10 +103,13 @@ def update_status(
     device: Optional[str] = None,
     engine: Optional[str] = None,
     worker_mode: Optional[str] = None,
+    current_run_id: Optional[str] = None,
 ) -> None:
     """Update project status while preserving metadata fields."""
     status_file = get_status_file(project_id)
-    status_file.parent.mkdir(parents=True, exist_ok=True)
+    if not status_file.parent.exists():
+        # Ignore late status updates from stale worker threads after deletion.
+        return
     
     current = get_status(project_id)
     current["status"] = status
@@ -132,6 +141,8 @@ def update_status(
         current["engine"] = engine
     if worker_mode is not None:
         current["worker_mode"] = worker_mode
+    if current_run_id is not None:
+        current["current_run_id"] = current_run_id
     
     # Write atomically using a temporary file
     temp_file = status_file.with_suffix('.tmp')
@@ -143,7 +154,8 @@ def update_status(
 def clear_stop_state(project_id: str) -> None:
     """Remove stale stop markers so a new run starts from a clean state."""
     status_file = get_status_file(project_id)
-    status_file.parent.mkdir(parents=True, exist_ok=True)
+    if not status_file.parent.exists():
+        return
 
     current = get_status(project_id)
     current["stop_requested"] = False
@@ -155,6 +167,21 @@ def clear_stop_state(project_id: str) -> None:
     message = current.get("message")
     if isinstance(message, str) and "stopped by user" in message.lower():
         current["message"] = None
+
+    temp_file = status_file.with_suffix('.tmp')
+    with open(temp_file, "w") as f:
+        json.dump(current, f)
+    temp_file.replace(status_file)
+
+
+def update_base_session_id(project_id: str, base_session_id: Optional[str]) -> None:
+    """Set or clear the project's base session identifier."""
+    status_file = get_status_file(project_id)
+    if not status_file.parent.exists():
+        return
+
+    current = get_status(project_id)
+    current["base_session_id"] = base_session_id
 
     temp_file = status_file.with_suffix('.tmp')
     with open(temp_file, "w") as f:

@@ -14,22 +14,15 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
-import uuid
 from pathlib import Path
 import time
 
 import numpy as np
+from PIL import Image
 
 from .engines import ENGINE_LABELS, SUPPORTED_ENGINES, run_selected_engine
 from .image_resize import prepare_training_images, normalize_max_size
 from .colmap_loader import COLMAPDataset, qvec2rotmat, read_images_binary, read_points3D_binary
-from .modified_rule_scopes import (
-    apply_tune_scope,
-    build_rule_multiplier_summary,
-    normalize_tune_scope,
-    select_rule_profile,
-)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -315,13 +308,16 @@ def update_status(
         logger.error(f"Failed to update status: {e}")
 
 
-def write_metrics(project_dir: Path, metrics: dict, engine: str | None = None):
+def write_metrics(project_dir: Path, metrics: dict, engine: str | None = None, run_id: str | None = None):
     """Write training metrics to engine-scoped metrics.json."""
     if not engine:
         logger.warning("Skipping metrics write without engine scope")
         return
 
-    metrics_root = project_dir / "outputs" / ENGINE_SUBDIR / engine
+    if run_id:
+        metrics_root = project_dir / "runs" / run_id / "outputs" / ENGINE_SUBDIR / engine
+    else:
+        metrics_root = project_dir / "outputs" / ENGINE_SUBDIR / engine
     metrics_file = metrics_root / "metrics.json"
     metrics_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -332,166 +328,6 @@ def write_metrics(project_dir: Path, metrics: dict, engine: str | None = None):
         temp_file.replace(metrics_file)
     except Exception as e:
         logger.error(f"Failed to write metrics for {metrics_root}: {e}")
-
-
-def _ensure_symlink(source: Path, link_path: Path):
-    """Create or replace a symlink pointing to source."""
-    try:
-        source_path = Path(source).resolve()
-    except Exception:
-        source_path = Path(source)
-    link_path = Path(link_path)
-
-    if link_path.exists() or link_path.is_symlink():
-        try:
-            existing_target = link_path.resolve()
-        except Exception:
-            existing_target = None
-        if existing_target and existing_target == source_path:
-            return
-        if link_path.is_dir() and not link_path.is_symlink():
-            shutil.rmtree(link_path)
-        else:
-            link_path.unlink(missing_ok=True)
-    link_path.parent.mkdir(parents=True, exist_ok=True)
-    link_path.symlink_to(source_path, target_is_directory=source_path.is_dir())
-
-
-def _compute_sparse_signature(colmap_dir: Path) -> str:
-    """Return a lightweight signature for cache validation."""
-    colmap_dir = Path(colmap_dir)
-    for name in ("cameras.bin", "cameras.txt"):
-        candidate = colmap_dir / name
-        if candidate.exists():
-            stat = candidate.stat()
-            return f"{stat.st_mtime_ns}-{stat.st_size}"
-    # Fallback if no expected files are present
-    return f"missing-{hash(colmap_dir)}"
-
-
-def _convert_to_pinhole_params(model: str, params: list[float]) -> tuple[float, float, float, float]:
-    """Map various COLMAP camera models to PINHOLE intrinsics."""
-    if len(params) < 3:
-        raise ValueError(f"Camera model {model} has too few parameters")
-
-    model = model.upper()
-    if model == "PINHOLE":
-        if len(params) < 4:
-            raise ValueError("PINHOLE camera missing parameters")
-        return params[0], params[1], params[2], params[3]
-
-    if model in {"SIMPLE_PINHOLE", "SIMPLE_RADIAL", "SIMPLE_RADIAL_FISHEYE"}:
-        f = params[0]
-        cx = params[1]
-        cy = params[2]
-        return f, f, cx, cy
-
-    if model in {"RADIAL", "RADIAL_FISHEYE"}:
-        f = params[0]
-        cx = params[1]
-        cy = params[2]
-        return f, f, cx, cy
-
-    if model in {"OPENCV", "OPENCV_FISHEYE", "FULL_OPENCV", "THIN_PRISM_FISHEYE"}:
-        if len(params) < 4:
-            raise ValueError(f"Camera model {model} missing fx/fy/cx/cy")
-        return params[0], params[1], params[2], params[3]
-
-    if model == "FOV":
-        f = params[0]
-        cx = params[1]
-        cy = params[2]
-        return f, f, cx, cy
-
-    raise ValueError(f"Unsupported COLMAP camera model {model}")
-
-
-def _rewrite_cameras_file_as_pinhole(cameras_txt: Path) -> tuple[bool, set[str]]:
-    """Rewrite cameras.txt so every entry becomes PINHOLE."""
-    models_seen: set[str] = set()
-    converted = False
-    updated_lines: list[str] = []
-
-    with open(cameras_txt, "r", encoding="utf-8") as handle:
-        for line in handle:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                updated_lines.append(line)
-                continue
-            parts = stripped.split()
-            if len(parts) < 5:
-                updated_lines.append(line)
-                continue
-            camera_id, model, width, height = parts[:4]
-            params = list(map(float, parts[4:]))
-            models_seen.add(model)
-            fx, fy, cx, cy = _convert_to_pinhole_params(model, params)
-            new_line = f"{camera_id} PINHOLE {width} {height} {fx:.12f} {fy:.12f} {cx:.12f} {cy:.12f}\n"
-            updated_lines.append(new_line)
-            if model != "PINHOLE":
-                converted = True
-
-    if converted:
-        with open(cameras_txt, "w", encoding="utf-8") as handle:
-            handle.writelines(updated_lines)
-
-    return converted, models_seen
-
-
-def _prepare_pinhole_sparse_for_litegs(colmap_dir: Path, output_dir: Path) -> Path:
-    """Ensure LiteGS sees a PINHOLE-only sparse reconstruction."""
-    colmap_dir = Path(colmap_dir)
-    colmap_exec = _resolve_colmap_executable()
-    cache_root = Path(output_dir) / "litegs" / "cache" / "pinhole_sparse"
-    cache_root.mkdir(parents=True, exist_ok=True)
-
-    signature = _compute_sparse_signature(colmap_dir)
-    cached_dir = cache_root / colmap_dir.name
-    cache_sig_file = cached_dir / ".source_signature"
-    if cached_dir.exists() and cache_sig_file.exists():
-        try:
-            if cache_sig_file.read_text(encoding="utf-8").strip() == signature:
-                logger.info("Using cached PINHOLE sparse model at %s", cached_dir)
-                return cached_dir
-        except Exception:
-            logger.debug("Failed to read LiteGS cache signature at %s", cache_sig_file)
-
-    with tempfile.TemporaryDirectory(dir=cache_root, prefix="litegs_sparse_") as tmp_parent:
-        txt_dir = Path(tmp_parent) / "txt"
-        txt_dir.mkdir(parents=True, exist_ok=True)
-        _run_cmd_with_retry([
-            colmap_exec, "model_converter",
-            "--input_path", str(colmap_dir),
-            "--output_path", str(txt_dir),
-            "--output_type", "TXT",
-        ])
-
-        cameras_txt = txt_dir / "cameras.txt"
-        if not cameras_txt.exists():
-            raise FileNotFoundError(f"COLMAP cameras.txt missing in {txt_dir}")
-
-        converted, models = _rewrite_cameras_file_as_pinhole(cameras_txt)
-        if not converted:
-            logger.info("LiteGS sparse already PINHOLE-compatible (models: %s)", ", ".join(sorted(models)))
-            return colmap_dir
-
-        if cached_dir.exists():
-            shutil.rmtree(cached_dir, ignore_errors=True)
-        cached_dir.mkdir(parents=True, exist_ok=True)
-
-        _run_cmd_with_retry([
-            colmap_exec, "model_converter",
-            "--input_path", str(txt_dir),
-            "--output_path", str(cached_dir),
-            "--output_type", "BIN",
-        ])
-        cache_sig_file.write_text(signature, encoding="utf-8")
-        logger.info(
-            "Prepared PINHOLE sparse model for LiteGS at %s (source models: %s)",
-            cached_dir,
-            ", ".join(sorted(models)),
-        )
-        return cached_dir
 
 
 def _find_latest_litegs_checkpoint(model_root: Path) -> Path | None:
@@ -1904,1141 +1740,6 @@ def _materialize_eval_previews(engine_output_dir: Path, eval_step: int | None = 
         logger.warning("Failed to update preview_latest.png: %s", exc)
 
 
-def run_gsplat_training(image_dir: Path, colmap_dir: Path, output_dir: Path, params: dict, resume: bool = False):
-    """Run upstream simple_trainer-compatible gsplat training."""
-    from .gsplat_upstream.simple_trainer import Config, DefaultStrategy, Runner
-
-    logger.info("Starting gsplat training (upstream simple_trainer path)...")
-
-    try:
-        import gsplat.cuda._wrapper as _gsplat_cuda_wrapper
-        _gsplat_cuda_wrapper._make_lazy_cuda_obj("CameraModelType")
-    except Exception as exc:
-        raise RuntimeError(
-            "Local gsplat CUDA backend is unavailable (CUDA toolkit/runtime extensions not loaded). "
-            "For local mode, install a CUDA-enabled gsplat environment; otherwise use worker_mode='docker'."
-        ) from exc
-
-    base_output_dir = Path(output_dir)
-    base_output_dir.mkdir(parents=True, exist_ok=True)
-    engine_name = "gsplat"
-    engine_output_dir = _get_engine_output_dir(base_output_dir, engine_name)
-    (engine_output_dir / "previews").mkdir(parents=True, exist_ok=True)
-    (engine_output_dir / "snapshots").mkdir(parents=True, exist_ok=True)
-    tuning_history_path = engine_output_dir / "rule_update_history.json"
-
-    p = params or {}
-    runtime_mode = str(p.get("worker_mode") or "").strip().lower()
-    if runtime_mode not in {"docker", "local"}:
-        docker_flag = str(os.getenv("BIMBA3D_DOCKER_WORKER", "")).strip().lower()
-        runtime_mode = "docker" if docker_flag in {"1", "true", "yes", "on"} else "local"
-    logger.info(
-        "Worker runtime mode before training: %s (BIMBA3D_DOCKER_WORKER=%s)",
-        runtime_mode,
-        os.getenv("BIMBA3D_DOCKER_WORKER"),
-    )
-
-    mode = p.get("mode", "baseline")
-    max_steps = int(p.get("max_steps", 30_000))
-    raw_tune_start_step = p.get("tune_start_step", 100)
-    try:
-        modified_tune_start_step = max(1, int(raw_tune_start_step))
-    except Exception:
-        modified_tune_start_step = 100
-    raw_tune_end_step = p.get("tune_end_step", 200)
-    try:
-        modified_tune_end_step = max(1, int(raw_tune_end_step))
-    except Exception:
-        modified_tune_end_step = 200
-    if modified_tune_start_step > modified_tune_end_step:
-        modified_tune_start_step = modified_tune_end_step
-    raw_tune_interval = p.get("tune_interval", 25)
-    try:
-        modified_tune_interval = max(1, int(raw_tune_interval))
-    except Exception:
-        modified_tune_interval = 25
-    raw_tune_min_improvement = p.get("tune_min_improvement", 0.005)
-    try:
-        tune_min_improvement = max(0.0, min(1.0, float(raw_tune_min_improvement)))
-    except Exception:
-        tune_min_improvement = 0.005
-    tune_scope = normalize_tune_scope(p.get("tune_scope", "with_strategy"))
-    raw_densify_start = p.get("densify_from_iter", 500)
-    raw_densify_end = p.get("densify_until_iter", 10000)
-    try:
-        strategy_tune_start_step = max(1, int(raw_densify_start))
-    except Exception:
-        strategy_tune_start_step = 500
-    try:
-        strategy_tune_end_step = max(strategy_tune_start_step, int(raw_densify_end))
-    except Exception:
-        strategy_tune_end_step = max(strategy_tune_start_step, 10000)
-    splat_interval = p.get("splat_export_interval")
-    try:
-        splat_interval = max(1, int(splat_interval)) if splat_interval is not None else None
-    except Exception:
-        splat_interval = None
-    log_interval = p.get("log_interval", 100)
-    try:
-        log_interval = max(1, int(log_interval))
-    except Exception:
-        log_interval = 100
-    project_dir = base_output_dir.parent
-    stop_flag = project_dir / "stop_requested"
-    gsplat_start = time.time()
-    run_session_id = str(uuid.uuid4())
-    host_boot_id = "n/a"
-    host_uptime_text = "n/a"
-    try:
-        host_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8", errors="ignore").strip() or "n/a"
-    except Exception:
-        pass
-    try:
-        uptime_raw = Path("/proc/uptime").read_text(encoding="utf-8", errors="ignore").strip().split()
-        if uptime_raw:
-            host_uptime_text = f"{float(uptime_raw[0]):.1f}s"
-    except Exception:
-        pass
-    logger.info(
-        "GSPLAT run marker: session_id=%s pid=%d boot_id=%s host_uptime=%s started_at=%s",
-        run_session_id,
-        os.getpid(),
-        host_boot_id,
-        host_uptime_text,
-        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(gsplat_start)),
-    )
-    tuning_state: dict[str, object] = {
-        "updates": 0,
-        "last_event": None,
-        "events": [],
-        "last_tuned_step": None,
-        "last_checked_loss": None,
-        "phase_complete_logged": False,
-    }
-    runner_ref: dict[str, object] = {"runner": None}
-    last_snapshot_step: dict[str, int] = {"value": -1}
-    cpu_usage_state: dict[str, tuple[int, int] | None] = {"last": None}
-    telemetry_state: dict[str, object] = {
-        "snapshot_count": 0,
-        "gpu_usage": "n/a",
-        "cpu_usage": "n/a",
-        "ram_usage": "n/a",
-        "gpu_temp": "n/a",
-    }
-
-    if mode == "modified":
-        logger.info(
-            "Modified training mode active: scope=%s, LR tuning window=%d-%d, strategy tuning window=%d-%d, interval=%d; core_individual LR updates apply when relative loss improvement < %.4f",
-            tune_scope,
-            modified_tune_start_step,
-            modified_tune_end_step,
-            strategy_tune_start_step,
-            strategy_tune_end_step,
-            modified_tune_interval,
-            tune_min_improvement,
-        )
-    else:
-        logger.info("Baseline training mode active: no deterministic profile adjustments")
-
-    def persist_rule_update_history() -> None:
-        """Persist detailed rule-update history for reproducibility/debugging."""
-        payload = {
-            "mode": mode,
-            "tune_scope": tune_scope,
-            "tune_start_step": modified_tune_start_step,
-            "tune_end_step": modified_tune_end_step,
-            "tune_interval": modified_tune_interval,
-            "tune_min_improvement": tune_min_improvement,
-            "strategy_tune_start_step": strategy_tune_start_step,
-            "strategy_tune_end_step": strategy_tune_end_step,
-            "updates_count": int(tuning_state.get("updates", 0) or 0),
-            "updates": list(tuning_state.get("events") or []),
-            "last_update": tuning_state.get("last_event"),
-        }
-        _write_json_atomic(tuning_history_path, payload)
-
-    def _log_training_snapshot(
-        step: int,
-        max_steps_local: int,
-        loss: float,
-        progress_fraction: float,
-        elapsed_seconds: float,
-        eta_seconds: float | None,
-    ):
-        """Emit an infrequent, high-value training snapshot for project logs."""
-        runner_obj = runner_ref.get("runner")
-        if runner_obj is None:
-            return
-
-        try:
-            gaussians = None
-            gaussians_opacity_mean = None
-            gaussians_scale_mean = None
-            means_tensor = getattr(runner_obj, "splats", {}).get("means")
-            if means_tensor is not None and hasattr(means_tensor, "shape") and len(means_tensor.shape) > 0:
-                gaussians = int(means_tensor.shape[0])
-            opacity_tensor = getattr(runner_obj, "splats", {}).get("opacities")
-            if opacity_tensor is not None and hasattr(opacity_tensor, "mean"):
-                try:
-                    gaussians_opacity_mean = float(opacity_tensor.detach().mean().item())
-                except Exception:
-                    gaussians_opacity_mean = None
-            scale_tensor = getattr(runner_obj, "splats", {}).get("scales")
-            if scale_tensor is not None and hasattr(scale_tensor, "mean"):
-                try:
-                    gaussians_scale_mean = float(scale_tensor.detach().mean().item())
-                except Exception:
-                    gaussians_scale_mean = None
-
-            strategy_obj = getattr(getattr(runner_obj, "cfg", None), "strategy", None)
-            strategy_vals: dict[str, object] = {}
-            if strategy_obj is not None:
-                for key in ("grow_grad2d", "prune_opa", "refine_every", "reset_every"):
-                    if hasattr(strategy_obj, key):
-                        value = getattr(strategy_obj, key)
-                        if isinstance(value, float):
-                            strategy_vals[key] = round(value, 8)
-                        elif isinstance(value, int):
-                            strategy_vals[key] = value
-
-            optimizer_lrs: dict[str, float] = {}
-            optimizers = getattr(runner_obj, "optimizers", {})
-            for name in ("means", "opacities", "scales", "quats", "sh0", "shN"):
-                optimizer = optimizers.get(name) if isinstance(optimizers, dict) else None
-                if optimizer is None or not getattr(optimizer, "param_groups", None):
-                    continue
-                lr_val = optimizer.param_groups[0].get("lr")
-                if lr_val is None:
-                    continue
-                optimizer_lrs[name] = float(lr_val)
-
-            cfg_obj = getattr(runner_obj, "cfg", None)
-            sh_degree = getattr(runner_obj, "sh_degree_to_use", None)
-            eval_steps_cfg = list(getattr(cfg_obj, "eval_steps", []) or [])
-            save_steps_cfg = list(getattr(cfg_obj, "save_steps", []) or [])
-            next_eval_step = next((int(s) for s in eval_steps_cfg if int(s) >= int(step)), None)
-            next_save_step = next((int(s) for s in save_steps_cfg if int(s) >= int(step)), None)
-
-            steps_per_second = (float(step) / elapsed_seconds) if elapsed_seconds > 0 else None
-            tuning_applied = bool(int(tuning_state.get("updates", 0) or 0) > 0)
-
-            telemetry_state["snapshot_count"] = int(telemetry_state.get("snapshot_count", 0) or 0) + 1
-            snapshot_count = int(telemetry_state["snapshot_count"])
-            should_collect_telemetry = snapshot_count == 1 or (snapshot_count % 2 == 0)
-
-            gpu_usage_text = str(telemetry_state.get("gpu_usage", "n/a"))
-            gpu_temp_text = str(telemetry_state.get("gpu_temp", "n/a"))
-            if should_collect_telemetry:
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        selected_idx = int(torch.cuda.current_device())
-                        smi_cmd = [
-                            "nvidia-smi",
-                            "--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu",
-                            "--format=csv,noheader,nounits",
-                        ]
-                        smi_out = subprocess.run(smi_cmd, check=True, capture_output=True, text=True)
-                        for raw in (smi_out.stdout or "").splitlines():
-                            parts = [part.strip() for part in raw.split(",")]
-                            if len(parts) < 5:
-                                continue
-                            try:
-                                gpu_idx = int(parts[0])
-                            except Exception:
-                                continue
-                            if gpu_idx != selected_idx:
-                                continue
-                            try:
-                                util_pct = int(float(parts[1]))
-                            except Exception:
-                                util_pct = 0
-                            try:
-                                mem_used = float(parts[2])
-                                mem_total = max(1.0, float(parts[3]))
-                                mem_pct = int(round((mem_used / mem_total) * 100.0))
-                            except Exception:
-                                mem_pct = 0
-                            try:
-                                gpu_temp_c = int(round(float(parts[4])))
-                                gpu_temp_text = f"{gpu_temp_c}C"
-                            except Exception:
-                                gpu_temp_text = "n/a"
-                            gpu_usage_text = f"gpu{gpu_idx}:util={util_pct}% mem={mem_pct}%"
-                            break
-                except Exception:
-                    pass
-
-            ram_usage_text = str(telemetry_state.get("ram_usage", "n/a"))
-            if should_collect_telemetry:
-                try:
-                    meminfo: dict[str, int] = {}
-                    with open("/proc/meminfo", "r", encoding="utf-8") as mem_file:
-                        for raw_line in mem_file:
-                            parts = raw_line.split(":", 1)
-                            if len(parts) != 2:
-                                continue
-                            key = parts[0].strip()
-                            value_field = parts[1].strip().split()[0]
-                            try:
-                                meminfo[key] = int(value_field)
-                            except Exception:
-                                continue
-
-                    total_kb = int(meminfo.get("MemTotal", 0))
-                    available_kb = int(meminfo.get("MemAvailable", 0))
-                    if total_kb > 0:
-                        used_kb = max(0, total_kb - available_kb)
-                        ram_pct = int(round((used_kb / float(total_kb)) * 100.0))
-                        ram_usage_text = f"util={ram_pct}%"
-                except Exception:
-                    pass
-
-            cpu_usage_text = str(telemetry_state.get("cpu_usage", "n/a"))
-            if should_collect_telemetry:
-                try:
-                    with open("/proc/stat", "r", encoding="utf-8") as stat_file:
-                        first_line = stat_file.readline().strip()
-                    parts = first_line.split()
-                    if len(parts) >= 5 and parts[0] == "cpu":
-                        values = [int(v) for v in parts[1:11]]
-                        idle = values[3] + values[4]
-                        total = sum(values)
-                        previous = cpu_usage_state.get("last")
-                        cpu_usage_state["last"] = (total, idle)
-                        if previous is not None:
-                            prev_total, prev_idle = previous
-                            total_delta = max(1, total - prev_total)
-                            idle_delta = max(0, idle - prev_idle)
-                            usage_pct = int(round(((total_delta - idle_delta) / float(total_delta)) * 100.0))
-                            usage_pct = max(0, min(100, usage_pct))
-                            cpu_usage_text = f"util={usage_pct}%"
-                except Exception:
-                    pass
-
-            telemetry_state["gpu_usage"] = gpu_usage_text
-            telemetry_state["cpu_usage"] = cpu_usage_text
-            telemetry_state["ram_usage"] = ram_usage_text
-            telemetry_state["gpu_temp"] = gpu_temp_text
-
-            logger.info(
-                "[GSPLAT SNAPSHOT] step=%d/%d progress=%.2f%% loss=%.6f gs=%s opacity_mean=%s scale_mean=%s sh_degree=%s next_eval=%s next_save=%s elapsed=%.1fs eta=%s speed=%s tuning_applied=%s strategy=%s lrs=%s",
-                int(step),
-                int(max_steps_local),
-                float(progress_fraction * 100.0),
-                float(loss),
-                str(gaussians) if gaussians is not None else "n/a",
-                f"{gaussians_opacity_mean:.6f}" if gaussians_opacity_mean is not None else "n/a",
-                f"{gaussians_scale_mean:.6f}" if gaussians_scale_mean is not None else "n/a",
-                str(sh_degree) if sh_degree is not None else "n/a",
-                str(next_eval_step) if next_eval_step is not None else "n/a",
-                str(next_save_step) if next_save_step is not None else "n/a",
-                float(elapsed_seconds),
-                f"{float(eta_seconds):.1f}s" if eta_seconds is not None else "n/a",
-                f"{steps_per_second:.3f} step/s" if steps_per_second is not None else "n/a",
-                tuning_applied,
-                strategy_vals,
-                {k: round(v, 10) for k, v in optimizer_lrs.items()},
-            )
-            logger.info(
-                "[GSPLAT TELEMETRY] step=%d gpu_usage=%s cpu_usage=%s ram_usage=%s gpu_temp=%s",
-                int(step),
-                gpu_usage_text,
-                cpu_usage_text,
-                ram_usage_text,
-                gpu_temp_text,
-            )
-        except Exception as exc:
-            logger.debug("Failed to emit gsplat training snapshot at step %s: %s", step, exc)
-
-    def apply_modified_rules(step: int, loss: float) -> bool:
-        """Apply rule-based tuning updates while modified mode is in its tuning window."""
-        if mode != "modified":
-            return False
-        effective_tune_end = max(modified_tune_end_step, strategy_tune_end_step)
-        if step > effective_tune_end:
-            return False
-        if step < min(modified_tune_start_step, strategy_tune_start_step):
-            return False
-        if step % modified_tune_interval != 0 and step not in {modified_tune_end_step, strategy_tune_end_step}:
-            return False
-        if tuning_state.get("last_tuned_step") == step:
-            return False
-
-        runner_obj = runner_ref.get("runner")
-        if runner_obj is None:
-            return False
-
-        try:
-            try:
-                loss_value = float(loss)
-            except Exception:
-                loss_value = 0.0
-
-            previous_loss = tuning_state.get("last_checked_loss")
-            tuning_state["last_checked_loss"] = float(loss_value)
-            relative_improvement = None
-            if previous_loss is not None:
-                try:
-                    denom = max(abs(float(previous_loss)), 1e-8)
-                    relative_improvement = (float(previous_loss) - float(loss_value)) / denom
-                except Exception:
-                    relative_improvement = None
-
-            if tune_scope == "core_individual":
-                if relative_improvement is None:
-                    return False
-                if float(relative_improvement) >= float(tune_min_improvement):
-                    return False
-
-            apply_lr = modified_tune_start_step <= step <= modified_tune_end_step
-            apply_strategy = strategy_tune_start_step <= step <= strategy_tune_end_step
-            if tune_scope == "core_individual":
-                apply_strategy = False
-            if not apply_lr and not apply_strategy:
-                return False
-
-            profile_data = select_rule_profile(loss_value)
-            profile = profile_data.name
-            applied_multipliers = build_rule_multiplier_summary(tune_scope, profile_data)
-            scope_multipliers = {
-                "lr": dict(profile_data.lr_multipliers),
-                "strategy": dict(profile_data.strategy_multipliers),
-            }
-
-            scope_updates = apply_tune_scope(
-                tune_scope,
-                runner_obj,
-                profile_data,
-                apply_lr=apply_lr,
-                apply_strategy=apply_strategy,
-            )
-            before_lrs = dict(scope_updates.get("before_lrs") or {})
-            after_lrs = dict(scope_updates.get("after_lrs") or {})
-            strategy_before = dict(scope_updates.get("strategy_before") or {})
-            strategy_after = dict(scope_updates.get("strategy_after") or {})
-            adjustments = list(scope_updates.get("adjustments") or [])
-            lr_change_details: dict[str, dict[str, float]] = {}
-            for name, before_val in before_lrs.items():
-                after_val = after_lrs.get(name)
-                if after_val is None:
-                    continue
-                multiplier = None
-                try:
-                    if float(before_val) != 0.0:
-                        multiplier = float(after_val) / float(before_val)
-                except Exception:
-                    multiplier = None
-                lr_change_details[name] = {
-                    "before": float(before_val),
-                    "after": float(after_val),
-                    "multiplier": float(multiplier) if multiplier is not None else 1.0,
-                }
-
-            strategy_change_details: dict[str, dict[str, float]] = {}
-            for key, before_val in strategy_before.items():
-                after_val = strategy_after.get(key)
-                if after_val is None:
-                    continue
-                strategy_change_details[key] = {
-                    "before": float(before_val),
-                    "after": float(after_val),
-                }
-
-            has_lr_updates = any(
-                abs(float(v.get("after", 0.0)) - float(v.get("before", 0.0))) > 1e-15
-                for v in lr_change_details.values()
-            )
-            has_strategy_updates = any(
-                abs(float(v.get("after", 0.0)) - float(v.get("before", 0.0))) > 1e-12
-                for v in strategy_change_details.values()
-            )
-            if not has_lr_updates and not has_strategy_updates:
-                tuning_state["last_tuned_step"] = int(step)
-                return False
-
-            event = {
-                "step": int(step),
-                "loss": loss_value,
-                "previous_loss": float(previous_loss) if previous_loss is not None else None,
-                "relative_improvement": float(relative_improvement) if relative_improvement is not None else None,
-                "required_min_improvement": float(tune_min_improvement),
-                "apply_lr": bool(apply_lr),
-                "apply_strategy": bool(apply_strategy),
-                "profile": profile,
-                "scope": tune_scope,
-                "rule_multipliers": applied_multipliers,
-                "scope_multipliers": scope_multipliers,
-                "adjustments": adjustments,
-                "lr_changes": lr_change_details,
-                "params": {
-                    "learning_rates": after_lrs,
-                    "strategy": strategy_after,
-                },
-                "before": {
-                    "learning_rates": before_lrs,
-                    "strategy": strategy_before,
-                },
-            }
-            tuning_state["last_event"] = event
-            tuning_state["events"].append(event)
-            tuning_state["updates"] = int(tuning_state.get("updates", 0) or 0) + 1
-            tuning_state["last_tuned_step"] = int(step)
-            persist_rule_update_history()
-
-            update_status(
-                project_dir,
-                "processing",
-                mode=mode,
-                tuning_active=True,
-                last_tuning={
-                    "step": int(step),
-                    "action": f"Rule-based {profile} update",
-                    "reason": f"Modified mode rule check (LR {modified_tune_start_step}-{modified_tune_end_step}, strategy {strategy_tune_start_step}-{strategy_tune_end_step})",
-                    "scope": tune_scope,
-                    "profile": profile,
-                    "lr_changes": lr_change_details,
-                    "adjustments": adjustments,
-                },
-            )
-            logger.info(
-                "Modified rule update applied at step %d (lr_window=%d-%d, strategy_window=%d-%d, apply_lr=%s, apply_strategy=%s, loss=%.6f, prev_loss=%s, rel_improve=%s, min_improve=%.4f, profile=%s, scope=%s)",
-                step,
-                modified_tune_start_step,
-                modified_tune_end_step,
-                strategy_tune_start_step,
-                strategy_tune_end_step,
-                str(bool(apply_lr)),
-                str(bool(apply_strategy)),
-                loss_value,
-                f"{float(previous_loss):.6f}" if previous_loss is not None else "n/a",
-                f"{float(relative_improvement):.6f}" if relative_improvement is not None else "n/a",
-                tune_min_improvement,
-                profile,
-                tune_scope,
-            )
-            logger.info(
-                "Modified rule multipliers step=%d profile=%s scope=%s lr=%s strategy=%s",
-                step,
-                profile,
-                tune_scope,
-                json.dumps(scope_multipliers.get("lr", {}), sort_keys=True),
-                json.dumps(scope_multipliers.get("strategy", {}), sort_keys=True),
-            )
-            logger.info(
-                "Modified rule details step=%d lr_changes=%s before_strategy=%s after_strategy=%s",
-                step,
-                json.dumps(lr_change_details, sort_keys=True),
-                json.dumps(strategy_before, sort_keys=True),
-                json.dumps(strategy_after, sort_keys=True),
-            )
-            return True
-        except Exception as exc:
-            logger.warning(
-                "Failed modified-mode rule update at step %d/%d: %s",
-                step,
-                modified_tune_end_step,
-                exc,
-            )
-            return False
-
-    def stop_checker() -> bool:
-        return stop_flag.exists()
-
-    def progress_callback(
-        step: int,
-        max_steps: int | None = None,
-        loss: float = 0.0,
-        **_: object,
-    ) -> None:
-        max_steps = int(max_steps if max_steps is not None else p.get("max_steps", 0))
-        if mode == "modified" and not tuning_state.get("phase_complete_logged") and step == modified_tune_end_step + 1:
-            tuning_state["phase_complete_logged"] = True
-        apply_modified_rules(step, loss)
-        requested_stop = stop_checker()
-        status_text = "stopping" if requested_stop else "processing"
-        progress_fraction = 0.0 if max_steps <= 0 else float(step) / float(max_steps)
-        progress_fraction = max(0.0, min(1.0, progress_fraction))
-        message = (
-            f"⏸️ Stopping after step {step}/{max_steps} completes (loss: {loss:.6f})..."
-            if requested_stop
-            else f"🎯 Training step {step}/{max_steps} (loss: {loss:.6f})"
-        )
-
-        now = time.time()
-        elapsed = now - gsplat_start
-        eta = (
-            (elapsed / progress_fraction) * (1 - progress_fraction)
-            if progress_fraction > 0
-            else None
-        )
-        timing = {"start": gsplat_start, "elapsed": elapsed}
-        if eta is not None:
-            timing["eta"] = eta
-
-        update_status(
-            project_dir,
-            status_text,
-            progress=60 + int(progress_fraction * 35),
-            mode=mode,
-            tuning_active=(mode == "modified" and step <= max(modified_tune_end_step, strategy_tune_end_step)),
-            currentStep=step,
-            maxSteps=max_steps,
-            stop_requested=requested_stop,
-            stage="training",
-            stage_progress=int(progress_fraction * 100),
-            message=message,
-            timing=timing,
-        )
-        write_metrics(project_dir, {
-            "step": step,
-            "loss": loss,
-            "progress": progress_fraction,
-        }, engine=engine_name)
-
-        should_log_snapshot = (
-            step == 1
-            or step == max_steps
-            or step % log_interval == 0
-        )
-        if should_log_snapshot and step != last_snapshot_step["value"]:
-            _log_training_snapshot(step, max_steps, loss, progress_fraction, elapsed, eta)
-            last_snapshot_step["value"] = step
-
-    gpu_inventory: list[dict[str, object]] = []
-    selected_gpu_index: int | None = None
-    selected_gpu_name: str | None = None
-    try:
-        import torch
-        cuda_ok = torch.cuda.is_available()
-        if cuda_ok:
-            for gpu_idx in range(int(torch.cuda.device_count())):
-                try:
-                    gpu_inventory.append({
-                        "index": int(gpu_idx),
-                        "name": str(torch.cuda.get_device_name(gpu_idx)),
-                    })
-                except Exception:
-                    gpu_inventory.append({
-                        "index": int(gpu_idx),
-                        "name": "unknown",
-                    })
-            selected_gpu_index = int(torch.cuda.current_device()) if torch.cuda.device_count() > 0 else None
-            if selected_gpu_index is not None:
-                selected_gpu_name = str(torch.cuda.get_device_name(selected_gpu_index))
-    except Exception:
-        cuda_ok = False
-    device = "cuda" if (p.get("use_cuda", True) and cuda_ok) else "cpu"
-
-    logger.info(
-        "Training runtime selection: mode=%s device=%s use_cuda=%s cuda_available=%s gpu_count=%d",
-        mode,
-        device,
-        bool(p.get("use_cuda", True)),
-        bool(cuda_ok),
-        len(gpu_inventory),
-    )
-    if gpu_inventory:
-        logger.info("CUDA GPU inventory: %s", json.dumps(gpu_inventory))
-    if device == "cuda":
-        logger.info(
-            "Selected CUDA device: index=%s name=%s",
-            str(selected_gpu_index) if selected_gpu_index is not None else "unknown",
-            selected_gpu_name or "unknown",
-        )
-        try:
-            smi_cmd = [
-                "nvidia-smi",
-                "--query-gpu=index,utilization.gpu,memory.used,memory.total",
-                "--format=csv,noheader,nounits",
-            ]
-            smi_out = subprocess.run(smi_cmd, check=True, capture_output=True, text=True)
-            selected_usage_line = None
-            for raw in (smi_out.stdout or "").splitlines():
-                parts = [part.strip() for part in raw.split(",")]
-                if len(parts) < 4:
-                    continue
-                try:
-                    gpu_idx = int(parts[0])
-                except Exception:
-                    continue
-                if selected_gpu_index is not None and gpu_idx != selected_gpu_index:
-                    continue
-                try:
-                    util_pct = int(float(parts[1]))
-                except Exception:
-                    util_pct = 0
-                try:
-                    mem_used = float(parts[2])
-                    mem_total = max(1.0, float(parts[3]))
-                    mem_pct = int(round((mem_used / mem_total) * 100.0))
-                except Exception:
-                    mem_pct = 0
-                selected_usage_line = f"GPU usage now: util={util_pct}% mem={mem_pct}%"
-                break
-            if selected_usage_line:
-                logger.info(selected_usage_line)
-        except Exception:
-            pass
-    else:
-        logger.info("Selected compute mode: CPU")
-
-    if stop_flag.exists():
-        update_status(project_dir, "stopped", progress=55, stage="training", message="⏸️ Processing stopped before gsplat training.", stop_requested=True, stopped_stage="training")
-        return 0
-
-    update_status(
-        project_dir,
-        "processing",
-        progress=55,
-        stage="training",
-        stage_progress=0,
-        message=f"🚀 Initializing upstream simple_trainer ({'GPU ⚡' if device == 'cuda' else 'CPU'})...",
-        mode=mode,
-        timing={"start": gsplat_start},
-    )
-
-    # Upstream simple_trainer expects data_dir/{images,sparse/0}. Reuse engine root directly.
-    dataset_dir = engine_output_dir
-    images_link = dataset_dir / "images"
-    sparse_zero = dataset_dir / "sparse" / "0"
-    sparse_zero.parent.mkdir(parents=True, exist_ok=True)
-    for link_path, target in ((images_link, image_dir), (sparse_zero, colmap_dir)):
-        if link_path.exists() or link_path.is_symlink():
-            try:
-                if link_path.is_symlink() or link_path.is_file():
-                    link_path.unlink()
-                else:
-                    shutil.rmtree(link_path)
-            except Exception:
-                pass
-        os.symlink(str(Path(target).resolve()), str(link_path), target_is_directory=True)
-
-    def _build_steps(interval_value, fallback):
-        if interval_value is None:
-            return fallback
-        try:
-            interval = max(1, int(interval_value))
-        except Exception:
-            return fallback
-        out = list(range(interval, max_steps + 1, interval))
-        if max_steps not in out:
-            out.append(max_steps)
-        return sorted(set(out))
-
-    strategy = DefaultStrategy(
-        verbose=True,
-        prune_opa=float(p.get("opacity_threshold", 0.005)),
-        grow_grad2d=float(p.get("densify_grad_threshold", 0.0002)),
-        grow_scale3d=float(p.get("percent_dense", 0.01)),
-        refine_start_iter=int(p.get("densify_from_iter", 500)),
-        refine_stop_iter=int(p.get("densify_until_iter", 15000)),
-        refine_every=max(1, int(p.get("densification_interval", 100))),
-        reset_every=max(1, int(p.get("opacity_reset_interval", 3000))),
-    )
-
-    feature_lr = float(p.get("feature_lr", 2.5e-3))
-    eval_steps = _build_steps(p.get("eval_interval"), [7000, 30000])
-    save_steps = sorted(set(
-        _build_steps(p.get("save_interval"), [7000, 30000])
-        + _build_steps(p.get("splat_export_interval"), [7000, 30000])
-    ))
-
-    cfg = Config(
-        disable_viewer=True,
-        disable_video=True,
-        load_exposure=False,
-        data_dir=str(dataset_dir),
-        data_factor=1,
-        result_dir=str(engine_output_dir),
-        test_every=8,
-        normalize_world_space=True,
-        batch_size=1,
-        max_steps=max_steps,
-        eval_steps=eval_steps,
-        save_steps=save_steps,
-        save_ply=False,
-        ssim_lambda=float(p.get("lambda_dssim", 0.2)),
-        means_lr=float(p.get("position_lr_init", 1.6e-4)),
-        scales_lr=float(p.get("scaling_lr", 5.0e-3)),
-        opacities_lr=float(p.get("opacity_lr", 5.0e-2)),
-        quats_lr=float(p.get("rotation_lr", 1.0e-3)),
-        sh0_lr=feature_lr,
-        shN_lr=feature_lr / 20.0,
-        strategy=strategy,
-        tb_every=0,
-    )
-    cfg.disable_tqdm = not bool(p.get("enable_tqdm", False))
-    progress_every = max(1, int(log_interval))
-    if mode == "modified":
-        # Ensure rule checks can run at tuning cadence even when log cadence is coarser.
-        progress_every = min(progress_every, max(1, int(modified_tune_interval)))
-    cfg.progress_every = progress_every
-    if cfg.disable_tqdm:
-        os.environ["TQDM_DISABLE"] = "1"
-    else:
-        os.environ.pop("TQDM_DISABLE", None)
-
-    logger.info(
-        "GSPLAT logging cadence: snapshot every %d steps (log_interval), callback every %d steps, modified_tune_interval=%d; tqdm=%s",
-        log_interval,
-        cfg.progress_every,
-        modified_tune_interval,
-        "disabled" if cfg.disable_tqdm else "enabled",
-    )
-
-    # Hook worker-level stop/progress into vendored upstream runner.
-    cfg.stop_checker = stop_checker
-    cfg.progress_callback = progress_callback
-
-    snapshots_dir = engine_output_dir / "snapshots"
-    snapshots_dir.mkdir(parents=True, exist_ok=True)
-
-    def eval_callback(step: int) -> None:
-        _materialize_eval_previews(engine_output_dir, eval_step=step)
-
-    def checkpoint_callback(step: int, checkpoint_path: str) -> None:
-        if splat_interval and step % splat_interval != 0 and step != max_steps:
-            return
-        snapshot_name = f"snapshot_step_{step:06d}.splat"
-        snapshot_path = snapshots_dir / snapshot_name
-        if snapshot_path.exists():
-            return
-        _export_with_gsplat(
-            Path(checkpoint_path),
-            snapshots_dir,
-            splat_name=snapshot_name,
-            export_ply=False,
-        )
-
-    cfg.eval_callback = eval_callback
-    cfg.checkpoint_callback = checkpoint_callback
-
-    if device == "cpu":
-        # Upstream runner assumes CUDA device naming; keep compatibility guard.
-        raise RuntimeError("Upstream simple_trainer currently requires CUDA in this worker path")
-
-    runner = Runner(local_rank=0, world_rank=0, world_size=1, cfg=cfg)
-    runner_ref["runner"] = runner
-    stop_reason = runner.train()
-    gsplat_end = time.time()
-
-    if stop_reason is not None or stop_flag.exists():
-        logger.info("Training stopped by user, skipping export and completion status.")
-        update_status(
-            project_dir,
-            "stopped",
-            progress=60,
-            stage="training",
-            message="⏸️ Training stopped by user.",
-            stopped_stage="training",
-            stopped_step=stop_reason if isinstance(stop_reason, int) else None,
-        )
-        if stop_flag.exists():
-            stop_flag.unlink()
-        return stop_reason if isinstance(stop_reason, int) else 1
-
-    logger.info("Training complete, exporting final checkpoint...")
-    update_status(
-        project_dir, "processing", stage="training", stage_progress=100,
-        message="✅ Gsplat training complete",
-        timing={"start": gsplat_start, "end": gsplat_end, "elapsed": gsplat_end - gsplat_start}
-    )
-    update_status(
-        project_dir, "completed", progress=90, stage="training", message="Training done"
-    )
-    time.sleep(1.5)
-    update_status(project_dir, "processing", stage="export", stage_progress=10, message="📦 Preparing export of final artifacts...")
-    ckpt_dir = engine_output_dir / "ckpts"
-    ckpts = sorted(ckpt_dir.glob("ckpt_*.pt"))
-    snapshots_dir = engine_output_dir / "snapshots"
-    snapshots_dir.mkdir(parents=True, exist_ok=True)
-
-    exported_snapshots = 0
-    for ckpt in ckpts:
-        step_zero = _parse_step_from_name(ckpt.stem, "ckpt_")
-        if step_zero is None:
-            continue
-        step = step_zero + 1
-        if splat_interval and step % splat_interval != 0 and step != max_steps:
-            continue
-        snapshot_name = f"snapshot_step_{step:06d}.splat"
-        snapshot_path = snapshots_dir / snapshot_name
-        if snapshot_path.exists():
-            continue
-        try:
-            _export_with_gsplat(
-                ckpt,
-                snapshots_dir,
-                splat_name=snapshot_name,
-                export_ply=False,
-            )
-            exported_snapshots += 1
-        except Exception as exc:
-            logger.warning("Failed snapshot export for %s: %s", ckpt.name, exc)
-
-    if ckpts:
-        latest = ckpts[-1]
-        logger.info(f"Exporting checkpoint: {latest}")
-        update_status(project_dir, "processing", stage="export", stage_progress=40, message="📝 Exporting .splat file...")
-        # Allow stop requests to interrupt export
-        if stop_flag.exists():
-            update_status(project_dir, "stopped", progress=0, stop_requested=True, stage="export", message="⏸️ Processing stopped by user before export.", stopped_stage="export")
-            try:
-                stop_flag.unlink()
-            except Exception:
-                pass
-            return None
-        _export_with_gsplat(latest, engine_output_dir)
-        update_status(project_dir, "processing", stage="export", stage_progress=100, message="✅ Export complete")
-    else:
-        logger.info("No saved checkpoints found; skipping checkpoint export")
-
-    if exported_snapshots:
-        logger.info("Exported %d interval snapshot(s) to %s", exported_snapshots, snapshots_dir)
-
-    # Build frontend/comparison-compatible artifacts from upstream outputs.
-    _materialize_eval_previews(engine_output_dir)
-    eval_history = _collect_eval_history(engine_output_dir, p, mode)
-    if eval_history and mode == "modified":
-        for row in eval_history:
-            tuning_params = row.get("tuning_params") if isinstance(row, dict) else None
-            if isinstance(tuning_params, dict):
-                tuning_params["modified_rule_updates"] = int(tuning_state.get("updates", 0) or 0)
-                if tuning_state.get("last_event"):
-                    tuning_params["modified_last_rule_step"] = tuning_state["last_event"].get("step")
-    if eval_history:
-        _write_json_atomic(engine_output_dir / "eval_history.json", eval_history)
-        final_eval = eval_history[-1]
-        latest_training_loss = _read_latest_training_loss(engine_output_dir)
-        final_loss_value = final_eval.get("final_loss")
-        if final_loss_value is None:
-            final_loss_value = latest_training_loss
-        laplacian_variance = _compute_laplacian_variance(engine_output_dir / "previews" / "preview_latest.png")
-        final_metrics = {
-            "lpips_score": final_eval.get("lpips_mean"),
-            "sharpness": final_eval.get("sharpness_mean"),
-            "laplacian_variance": laplacian_variance,
-            "convergence_speed": final_eval.get("convergence_speed"),
-            "final_loss": final_loss_value,
-            "gaussian_count": final_eval.get("num_gaussians"),
-        }
-        evaluation_parameters = {
-            "fixed_iteration_step": final_eval.get("step"),
-            "eval_interval": p.get("eval_interval"),
-            "save_interval": p.get("save_interval"),
-            "splat_export_interval": p.get("splat_export_interval"),
-            "metrics_requested": [
-                "convergence_speed",
-                "final_loss",
-                "lpips",
-                "image_sharpness_laplacian_variance",
-                "gaussian_count",
-                "visual_comparison",
-            ],
-            "visual_comparison": {
-                "latest_preview": "previews/preview_latest.png",
-                "renders_dir": "renders",
-                "snapshots_dir": "snapshots",
-            },
-        }
-        adaptive_payload = {
-            "mode": mode,
-            "tune_scope": tune_scope if mode == "modified" else None,
-            "final_evaluation": final_metrics,
-            "evaluation_parameters": evaluation_parameters,
-            "tune_start_step": modified_tune_start_step if mode == "modified" else None,
-            "tune_end_step": modified_tune_end_step if mode == "modified" else final_eval.get("step"),
-            "tune_interval": modified_tune_interval if mode == "modified" else None,
-            "tune_min_improvement": tune_min_improvement if mode == "modified" else None,
-            "strategy_tune_start_step": strategy_tune_start_step if mode == "modified" else None,
-            "strategy_tune_end_step": strategy_tune_end_step if mode == "modified" else None,
-            "tuning_history": list(tuning_state.get("events") or []),
-            "final_params": (tuning_state.get("last_event") or {}).get("params", {}),
-        }
-        _write_json_atomic(engine_output_dir / "adaptive_tuning_results.json", adaptive_payload)
-        if mode == "modified":
-            persist_rule_update_history()
-
-        metadata_path = engine_output_dir / "metadata.json"
-        metadata = {}
-        if metadata_path.exists():
-            try:
-                with open(metadata_path, "r", encoding="utf-8") as handle:
-                    metadata = json.load(handle)
-            except Exception:
-                metadata = {}
-        metadata["evaluation_metrics"] = final_metrics
-        metadata["final_metrics"] = {
-            "convergence_speed": final_eval.get("convergence_speed"),
-            "final_loss": final_loss_value,
-            "lpips_mean": final_eval.get("lpips_mean"),
-            "sharpness_mean": final_eval.get("sharpness_mean"),
-            "laplacian_variance": laplacian_variance,
-        }
-        metadata["evaluation_parameters"] = evaluation_parameters
-        metadata["num_gaussians"] = final_eval.get("num_gaussians")
-        metadata["mode"] = mode
-        metadata["tune_scope"] = tune_scope if mode == "modified" else None
-        _write_json_atomic(metadata_path, metadata)
-
-    if stop_flag.exists():
-        stop_flag.unlink()
-
-    return None
-
-
-def run_litegs_training(image_dir: Path, colmap_dir: Path, output_dir: Path, params: dict, resume: bool = False):
-    """Run LiteGS training pipeline and export artifacts."""
-    project_dir = output_dir.parent
-    stop_flag = project_dir / "stop_requested"
-    engine_label = "LiteGS"
-
-    # Detect device availability for status updates
-    try:
-        import torch
-        device_label = "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception:  # pragma: no cover - torch should exist but guard anyway
-        device_label = "cuda"
-
-    status_message = f"🎯 Starting {engine_label} training..."
-    update_status(
-        project_dir,
-        "processing",
-        progress=55,
-        stage="training",
-        stage_progress=5,
-        message=status_message,
-        device=device_label,
-        engine="litegs",
-    )
-
-    if stop_flag.exists():
-        update_status(
-            project_dir,
-            "stopped",
-            progress=55,
-            stage="training",
-            message="⏸️ Processing stopped before LiteGS training.",
-            stop_requested=True,
-            stopped_stage="training",
-        )
-        try:
-            stop_flag.unlink()
-        except Exception:
-            pass
-        return 0
-
-    try:
-        import litegs  # pylint: disable=import-error
-        from litegs import config as litegs_config  # pylint: disable=import-error
-        from litegs import training as litegs_training  # pylint: disable=import-error
-    except Exception as exc:
-        logger.error("LiteGS import failed: %s", exc)
-        update_status(project_dir, "failed", error=f"LiteGS not installed: {exc}")
-        raise
-
-    dataset_root = output_dir / "litegs" / "dataset"
-    model_root = output_dir / "litegs" / "artifacts"
-    dataset_root.mkdir(parents=True, exist_ok=True)
-    model_root.mkdir(parents=True, exist_ok=True)
-
-    _ensure_symlink(Path(image_dir), dataset_root / "images")
-    colmap_sparse_root = Path(colmap_dir)
-
-    processed_sparse = _prepare_pinhole_sparse_for_litegs(colmap_sparse_root, output_dir)
-
-    litegs_sparse_root = dataset_root / "sparse"
-    if litegs_sparse_root.is_symlink():
-        litegs_sparse_root.unlink()
-    litegs_sparse_root.mkdir(parents=True, exist_ok=True)
-    _ensure_symlink(processed_sparse, litegs_sparse_root / "0")
-
-    lp, op, pp, dp = litegs_config.get_default_arg()
-    lp.source_path = str(dataset_root)
-    lp.model_path = str(model_root)
-    if hasattr(lp, "images"):
-        lp.images = "images"
-
-    training_summary = {
-        "iterations": getattr(op, "iterations", None),
-        "target_primitives": getattr(dp, "target_primitives", None),
-        "alpha_shrink": None,
-        "sh_degree": getattr(lp, "sh_degree", 3),
-    }
-
-    user_steps = params.get("max_steps")
-    if user_steps is not None:
-        try:
-            op.iterations = max(1, int(user_steps))
-            training_summary["iterations"] = op.iterations
-        except Exception:
-            logger.warning("Invalid LiteGS max_steps override: %s", user_steps)
-
-    target_override = params.get("litegs_target_primitives")
-    if target_override is not None:
-        try:
-            dp.target_primitives = max(1, int(target_override))
-        except Exception:
-            logger.warning("Invalid LiteGS target primitive override: %s", target_override)
-    training_summary["target_primitives"] = getattr(dp, "target_primitives", None)
-
-    alpha_shrink = params.get("litegs_alpha_shrink", 0.95)
-    try:
-        alpha_shrink = float(alpha_shrink)
-    except Exception:
-        alpha_shrink = 0.95
-    if alpha_shrink <= 0:
-        alpha_shrink = 0.95
-    training_summary["alpha_shrink"] = alpha_shrink
-    _patch_litegs_opacity_decay(alpha_shrink)
-
-    start_checkpoint = None
-    if resume:
-        ckpt_path = _find_latest_litegs_checkpoint(model_root)
-        if ckpt_path:
-            start_checkpoint = str(ckpt_path)
-            logger.info("Resuming LiteGS from %s", ckpt_path)
-        else:
-            logger.info("LiteGS resume requested but no checkpoints found; starting fresh")
-
-    litegs_start = time.time()
-    try:
-        litegs_training.start(lp, op, pp, dp, [], [], [], start_checkpoint)
-    except Exception as exc:
-        logger.error("LiteGS training failed: %s", exc, exc_info=True)
-        update_status(project_dir, "failed", error=str(exc), stage="training", message=str(exc))
-        raise
-
-    if stop_flag.exists():
-        logger.info("Stop requested after LiteGS training finished")
-        return 0
-
-    update_status(
-        project_dir,
-        "processing",
-        stage="training",
-        stage_progress=85,
-        message=f"✅ {engine_label} training complete",
-        device=device_label,
-    )
-
-    _export_litegs_outputs(model_root, output_dir, colmap_sparse_root, training_summary)
-
-    litegs_end = time.time()
-    update_status(
-        project_dir,
-        "processing",
-        stage="export",
-        stage_progress=100,
-        message="✅ LiteGS export complete",
-        timing={"start": litegs_start, "end": litegs_end, "elapsed": litegs_end - litegs_start},
-        device=device_label,
-    )
-
-    return None
-
-
 def _run_selected_training_engine(
     engine: str,
     image_dir: Path,
@@ -3059,8 +1760,6 @@ def _run_selected_training_engine(
         "parse_step_from_name": _parse_step_from_name,
         "collect_eval_history": _collect_eval_history,
         "write_json_atomic": _write_json_atomic,
-        "ensure_symlink": _ensure_symlink,
-        "prepare_pinhole_sparse_for_litegs": _prepare_pinhole_sparse_for_litegs,
         "patch_litegs_opacity_decay": _patch_litegs_opacity_decay,
         "find_latest_litegs_checkpoint": _find_latest_litegs_checkpoint,
         "export_litegs_outputs": _export_litegs_outputs,
@@ -3079,7 +1778,7 @@ def _run_selected_training_engine(
         if engine != "gsplat":
             raise
 
-        project_dir = Path(output_dir).parent
+        project_dir = Path(image_dir).parent
         root_error = str(exc) if exc else "unknown error"
 
         if os.name == "nt":
@@ -3145,7 +1844,41 @@ def main():
 
     project_dir = Path(args.data_dir) / args.project_id
     image_dir = project_dir / "images"
-    output_dir = project_dir / "outputs"
+    shared_output_dir = project_dir / "outputs"
+    stop_flag = project_dir / "stop_requested"
+    status_file = project_dir / "status.json"
+
+    # Reset stale stop markers from previous runs so a fresh start does not auto-stop.
+    if stop_flag.exists():
+        try:
+            stop_flag.unlink()
+            logger.info("Cleared stale stop flag before processing start: %s", stop_flag)
+        except Exception as exc:
+            logger.warning("Failed to clear stale stop flag %s: %s", stop_flag, exc)
+
+    if status_file.exists():
+        try:
+            with open(status_file, "r", encoding="utf-8") as handle:
+                status_data = json.load(handle)
+            if isinstance(status_data, dict) and status_data.get("stop_requested"):
+                status_data["stop_requested"] = False
+                status_data.pop("stopped_stage", None)
+                status_data.pop("stopped_step", None)
+                status_data.pop("stopped_percentage", None)
+                status_data["updated_at"] = time.time()
+                temp_status = status_file.with_suffix(".tmp")
+                with open(temp_status, "w", encoding="utf-8") as handle:
+                    json.dump(status_data, handle)
+                temp_status.replace(status_file)
+                logger.info("Cleared stale stop_requested state in %s", status_file)
+        except Exception as exc:
+            logger.warning("Failed to reset stale stop_requested state in %s: %s", status_file, exc)
+
+    configured_run_id = str(params.get("run_id") or "").strip()
+    if configured_run_id:
+        output_dir = project_dir / "runs" / configured_run_id / "outputs"
+    else:
+        output_dir = shared_output_dir
     sparse_preference = params.get("sparse_preference") if isinstance(params, dict) else None
     if isinstance(sparse_preference, str):
         sparse_preference = sparse_preference.strip() or None
@@ -3170,6 +1903,11 @@ def main():
     stop_reason = None
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
+        shared_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Keep COLMAP sparse outputs shared at project level for all sessions.
+        shared_sparse_dir = shared_output_dir / "sparse"
+        shared_sparse_dir.mkdir(parents=True, exist_ok=True)
 
         stage = params.get("stage", "full")
         if not image_dir.exists():
@@ -3215,10 +1953,10 @@ def main():
         
         if stage == "colmap_only":
             update_status(project_dir, "processing", progress=1, stage="colmap", message="🚀 Starting COLMAP structure-from-motion pipeline...", engine=engine)
-            colmap_dir = run_colmap(active_image_dir, output_dir, params)
+            colmap_dir = run_colmap(active_image_dir, shared_output_dir, params)
             logger.info("COLMAP completed")
             try:
-                _select_best_sparse_model(output_dir / "sparse", active_image_dir, sparse_preference)
+                _select_best_sparse_model(shared_sparse_dir, active_image_dir, sparse_preference)
             except Exception as exc:
                 logger.warning("Failed to evaluate sparse candidates after COLMAP: %s", exc)
             # Mark COLMAP as completed for frontend tick/green
@@ -3226,7 +1964,7 @@ def main():
             time.sleep(1.5)
             stop_reason = None
         elif stage == "train_only":
-            sparse_root = output_dir / "sparse"
+            sparse_root = shared_sparse_dir
             if not sparse_root.exists():
                 raise RuntimeError("Sparse model not found. Run COLMAP first.")
             colmap_dir = _resolve_sparse_model_for_training(
@@ -3249,11 +1987,11 @@ def main():
         else:
             # Full pipeline
             update_status(project_dir, "processing", progress=1, stage="colmap", message="🚀 Starting full pipeline - Running COLMAP structure-from-motion...", engine=engine)
-            colmap_dir = run_colmap(active_image_dir, output_dir, params)
+            colmap_dir = run_colmap(active_image_dir, shared_output_dir, params)
             logger.info("COLMAP completed")
 
             colmap_dir = _resolve_sparse_model_for_training(
-                output_dir / "sparse",
+                shared_sparse_dir,
                 active_image_dir,
                 sparse_preference,
                 sparse_merge_selection,

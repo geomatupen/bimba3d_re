@@ -9,10 +9,13 @@ logger = logging.getLogger(__name__)
 ENGINE_SUBDIR = "engines"
 
 
-def _collect_outputs(root_dir: Path, project_id: str, engine: str) -> dict:
+def _collect_outputs(root_dir: Path, project_id: str, engine: str, run_id: str | None = None) -> dict:
     """Collect export artifacts for a specific engine output directory."""
     bundle: dict = {}
-    query_suffix = f"?engine={engine}"
+    query_parts = [f"engine={engine}"]
+    if run_id:
+        query_parts.append(f"run_id={run_id}")
+    query_suffix = "?" + "&".join(query_parts)
 
     if not root_dir.exists():
         return bundle
@@ -126,12 +129,14 @@ def _collect_outputs(root_dir: Path, project_id: str, engine: str) -> dict:
     return bundle
 
 
-def get_output_files(project_id: str) -> dict:
+def get_output_files(project_id: str, run_id: str | None = None) -> dict:
     """
     Get list of output files for a project.
     """
     project_dir = DATA_DIR / project_id
     output_dir = project_dir / "outputs"
+    if run_id:
+        output_dir = project_dir / "runs" / run_id / "outputs"
     
     if not output_dir.exists():
         return {}
@@ -179,7 +184,7 @@ def get_output_files(project_id: str) -> dict:
         engine_entries = {}
         for engine_dir in sorted([p for p in engines_root.iterdir() if p.is_dir()]):
             engine_name = engine_dir.name
-            bundle = _collect_outputs(engine_dir, project_id, engine_name)
+            bundle = _collect_outputs(engine_dir, project_id, engine_name, run_id=run_id)
             if bundle:
                 engine_entries[engine_name] = bundle
         if engine_entries:

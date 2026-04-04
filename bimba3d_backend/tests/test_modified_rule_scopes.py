@@ -41,6 +41,7 @@ class ModifiedRuleScopesTests(unittest.TestCase):
     def test_normalize_tune_scope_accepts_known_and_falls_back(self):
         self.assertEqual(normalize_tune_scope("core_individual"), "core_individual")
         self.assertEqual(normalize_tune_scope("core_only"), "core_only")
+        self.assertEqual(normalize_tune_scope("core_ai_optimization"), "core_ai_optimization")
         self.assertEqual(normalize_tune_scope("core_individual_plus_strategy"), "core_individual_plus_strategy")
         self.assertEqual(normalize_tune_scope("with_strategy"), "core_individual_plus_strategy")
         self.assertEqual(normalize_tune_scope("unknown"), "core_individual_plus_strategy")
@@ -110,6 +111,24 @@ class ModifiedRuleScopesTests(unittest.TestCase):
         # so we only require that fields expected to change in this profile changed.
         self.assertNotEqual(runner.cfg.strategy.grow_grad2d, strategy_before["grow_grad2d"])
         self.assertNotEqual(runner.cfg.strategy.refine_every, strategy_before["refine_every"])
+
+    def test_core_ai_optimization_uses_core_strategy_only(self):
+        runner = self._make_runner()
+        strategy_before = {
+            "grow_grad2d": runner.cfg.strategy.grow_grad2d,
+            "prune_opa": runner.cfg.strategy.prune_opa,
+            "refine_every": runner.cfg.strategy.refine_every,
+            "reset_every": runner.cfg.strategy.reset_every,
+        }
+
+        result = apply_tune_scope("core_ai_optimization", runner, self._mid_profile())
+
+        self.assertIn("rule_based_strategy_scaling_core", result["adjustments"])
+        self.assertNotIn("rule_based_strategy_scaling", result["adjustments"])
+        self.assertNotEqual(runner.cfg.strategy.grow_grad2d, strategy_before["grow_grad2d"])
+        self.assertEqual(runner.cfg.strategy.prune_opa, strategy_before["prune_opa"])
+        self.assertEqual(runner.cfg.strategy.refine_every, strategy_before["refine_every"])
+        self.assertEqual(runner.cfg.strategy.reset_every, strategy_before["reset_every"])
 
     def test_with_strategy_alias_still_maps_to_plus_strategy(self):
         runner = self._make_runner()

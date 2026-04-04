@@ -5,6 +5,7 @@ import maplibregl from "maplibre-gl";
 import { api } from "../../api/client";
 import ViewerTab from "./ViewerTab";
 import SparseViewer from "../SparseViewer.tsx";
+import ConfirmModal from "../ConfirmModal";
 
 // Small Info wrapper: render a smaller info icon throughout the modal
 const Info = (props: any) => <LucideInfo className={props.className ? props.className + " w-3 h-3" : "w-3 h-3"} {...props} />;
@@ -60,8 +61,26 @@ interface SparseMergeReport {
   source_details?: MergeReportSourceDetail[];
 }
 
+interface ProjectRunInfo {
+  run_id: string;
+  run_name?: string | null;
+  saved_at?: string | null;
+  mode?: string | null;
+  stage?: string | null;
+  engine?: string | null;
+  session_status?: "completed" | "pending" | string;
+  max_steps?: number | null;
+  tune_scope?: string | null;
+  adaptive_event_count?: number;
+  has_run_config?: boolean;
+  has_run_log?: boolean;
+  is_base?: boolean;
+}
+
+type NewSessionConfigSource = "current" | "defaults" | "selected";
+
 type TrainingEngine = "gsplat" | "litegs";
-type TuneScope = "core_individual" | "core_only" | "core_individual_plus_strategy";
+type TuneScope = "core_individual" | "core_only" | "core_ai_optimization" | "core_individual_plus_strategy";
 
 const extractSnapshotStep = (name?: string): number | null => {
   if (!name) return null;
@@ -73,6 +92,34 @@ const formatEngineLabel = (name: string) =>
   name
     .replace(/_/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
+
+const sanitizeRunToken = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 80);
+
+const buildDefaultRunName = (
+  projectLabel: string | null | undefined,
+  projectId: string,
+  runs: ProjectRunInfo[] = []
+): string => {
+  const base = sanitizeRunToken(projectLabel || projectId || "project") || "project";
+  const matcher = new RegExp(`^${base}_session(\\d+)$`);
+  let nextIdx = 1;
+
+  runs.forEach((run) => {
+    const candidate = String(run.run_id || run.run_name || "").trim().toLowerCase();
+    const match = candidate.match(matcher);
+    if (!match) return;
+    nextIdx = Math.max(nextIdx, Number.parseInt(match[1], 10) + 1);
+  });
+
+  return `${base}_session${nextIdx}`;
+};
 
 const COLMAP_CAMERA_MODELS = [
   "SIMPLE_PINHOLE",
@@ -254,12 +301,12 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [configTab, setConfigTab] = useState<"images"|"colmap"|"training">("training");
 
   const trainingInfo: Record<string, string> = {
-    mode: 'Training profile. Baseline keeps default behavior; Modified applies deterministic tuning profile during training.',
+    mode: 'Training profile. Baseline keeps default behavior; Modified applies rule-based or adaptive tuning during training depending on selected scope.',
     tune_start_step: 'For Modified mode, this is the first step where tuning checks are allowed. Before this step, no rule-based LR updates are applied.',
-    tune_min_improvement: 'For Core individual scope, apply a tuning update only if relative loss improvement since the previous tuning check is below this threshold (example: 0.005 = 0.5%).',
+    tune_min_improvement: 'For Core individual and Core AI optimization scopes, this is the baseline minimum improvement reference used to gate aggressive updates (example: 0.005 = 0.5%).',
     tune_end_step: 'For Modified mode, this is the last step where rule-based tuning updates are allowed. The worker keeps applying rule checks until this step, then continues normal training.',
     tune_interval: 'For Modified mode, worker evaluates and applies rule-based updates every N steps during the tuning window.',
-    tune_scope: 'Rule tuning scope: Core individual updates only LR groups. Core only updates LR groups + core strategy threshold. Core individual + strategy updates LR groups and full strategy controls.',
+    tune_scope: 'Rule tuning scope: Core individual updates only LR groups. Core only updates LR groups + core strategy threshold. Core AI optimization runs a lightweight adaptive controller with gated actions and cross-run memory. Core individual + strategy updates LR groups and full strategy controls.',
     // --- ORIGINAL KERBL PARAMETERS ---
     maxSteps: 'Total training iterations. This value is sent from frontend in both baseline and modified modes. [original]',
     logInterval: 'How often (in steps) to print consolidated training snapshots in worker logs. Lower values are more verbose. [custom]',
@@ -339,6 +386,28 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [currentStageKey, setCurrentStageKey] = useState<"docker"|"colmap"|"training"|"export"|"">("");
   const [stageProgress, setStageProgress] = useState<number | undefined>(undefined);
   const [pipelineDone, setPipelineDone] = useState(false);
+  const [projectRuns, setProjectRuns] = useState<ProjectRunInfo[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string>("");
+  const [baseSessionId, setBaseSessionId] = useState<string>("");
+  const [projectDisplayName, setProjectDisplayName] = useState<string>(projectId);
+  const [newRunName, setNewRunName] = useState<string>(buildDefaultRunName(projectId, projectId, projectRuns));
+  const [isRenamingRun, setIsRenamingRun] = useState<boolean>(false);
+  const [showRestartConfirmModal, setShowRestartConfirmModal] = useState<boolean>(false);
+  const [showRenameSessionModal, setShowRenameSessionModal] = useState<boolean>(false);
+  const [renameSessionDraft, setRenameSessionDraft] = useState<string>("");
+  const [showNewSessionModal, setShowNewSessionModal] = useState<boolean>(false);
+  const [newSessionNameDraft, setNewSessionNameDraft] = useState<string>("");
+  const [newSessionConfigSource, setNewSessionConfigSource] = useState<NewSessionConfigSource>("current");
+  const [newSessionSourceRunId, setNewSessionSourceRunId] = useState<string>("");
+  const [isCreatingSessionDraft, setIsCreatingSessionDraft] = useState<boolean>(false);
+  const [canCreateSessionDraft, setCanCreateSessionDraft] = useState<boolean>(false);
+  const [createSessionDisabledReason, setCreateSessionDisabledReason] = useState<string>("Complete COLMAP on the base session before creating new sessions.");
+
+  const selectedRunMeta = useMemo(
+    () => projectRuns.find((r) => r.run_id === selectedRunId) || null,
+    [projectRuns, selectedRunId],
+  );
+  const canManageColmapImages = !selectedRunId || selectedRunMeta?.is_base === true;
 
   const applyTrainingDefaults = (defaults: ReturnType<typeof getDefaultProcessConfig>) => {
     setMode(defaults.mode ?? "baseline");
@@ -385,6 +454,52 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const applyImageDefaults = (defaults: ReturnType<typeof getDefaultProcessConfig>) => {
     setImagesResizeEnabled(defaults.images_resize_enabled);
     setImagesMaxSize(defaults.images_max_size);
+  };
+
+  const applyResolvedParamsToForm = (resolved: Record<string, any>) => {
+    if (resolved.mode === "baseline" || resolved.mode === "modified") setMode(resolved.mode);
+    if (typeof resolved.tune_start_step === "number") setTuneStartStep(resolved.tune_start_step);
+    if (typeof resolved.tune_min_improvement === "number") setTuneMinImprovement(resolved.tune_min_improvement);
+    if (typeof resolved.tune_end_step === "number") setTuneEndStep(resolved.tune_end_step);
+    if (typeof resolved.tune_interval === "number") setTuneInterval(resolved.tune_interval);
+    if (resolved.tune_scope) setTuneScope(resolved.tune_scope as TuneScope);
+    if (resolved.engine === "gsplat" || resolved.engine === "litegs") setEngine(resolved.engine);
+    if (typeof resolved.max_steps === "number") setMaxSteps(resolved.max_steps);
+    if (typeof resolved.log_interval === "number") setLogInterval(resolved.log_interval);
+    if (typeof resolved.splat_export_interval === "number") setSplatInterval(resolved.splat_export_interval);
+    if (typeof resolved.eval_interval === "number") setEvalInterval(resolved.eval_interval);
+    if (typeof resolved.save_interval === "number") setSaveInterval(resolved.save_interval);
+    if (typeof resolved.densify_from_iter === "number") setDensifyFromIter(resolved.densify_from_iter);
+    if (typeof resolved.densify_until_iter === "number") setDensifyUntilIter(resolved.densify_until_iter);
+    if (typeof resolved.densification_interval === "number") setDensificationInterval(resolved.densification_interval);
+    if (typeof resolved.densify_grad_threshold === "number") setDensifyGradThreshold(resolved.densify_grad_threshold);
+    if (typeof resolved.opacity_threshold === "number") setOpacityThreshold(resolved.opacity_threshold);
+    if (typeof resolved.lambda_dssim === "number") setLambdaDssim(resolved.lambda_dssim);
+    if (typeof resolved.images_max_size === "number") {
+      setImagesResizeEnabled(true);
+      setImagesMaxSize(resolved.images_max_size);
+    }
+    if (typeof resolved.litegs_target_primitives === "number") setLitegsTargetPrimitives(resolved.litegs_target_primitives);
+    if (typeof resolved.litegs_alpha_shrink === "number") setLitegsAlphaShrink(resolved.litegs_alpha_shrink);
+    if (typeof resolved.sparse_preference === "string") setSparsePreference(resolved.sparse_preference);
+    if (Array.isArray(resolved.sparse_merge_selection)) setSparseMergeSelection(resolved.sparse_merge_selection);
+
+    const colmap = resolved.colmap;
+    if (colmap && typeof colmap === "object") {
+      if (typeof colmap.max_image_size === "number") setColmapMaxImageSize(colmap.max_image_size);
+      if (typeof colmap.peak_threshold === "number") setColmapPeakThreshold(colmap.peak_threshold);
+      if (typeof colmap.guided_matching === "boolean") setColmapGuidedMatching(colmap.guided_matching);
+      if (typeof colmap.camera_model === "string") setColmapCameraModel(colmap.camera_model);
+      if (typeof colmap.single_camera === "boolean") setColmapSingleCamera(colmap.single_camera);
+      if (typeof colmap.camera_params === "string") setColmapCameraParams(colmap.camera_params);
+      if (typeof colmap.matching_type === "string") setColmapMatchingType(colmap.matching_type);
+      if (typeof colmap.mapper_num_threads === "number") setColmapMapperThreads(colmap.mapper_num_threads);
+      if (typeof colmap.mapper_min_num_matches === "number") setColmapMapperMinNumMatches(colmap.mapper_min_num_matches);
+      if (typeof colmap.mapper_abs_pose_min_num_inliers === "number") setColmapMapperAbsPoseMinNumInliers(colmap.mapper_abs_pose_min_num_inliers);
+      if (typeof colmap.mapper_init_min_num_inliers === "number") setColmapMapperInitMinNumInliers(colmap.mapper_init_min_num_inliers);
+      if (typeof colmap.sift_matching_min_num_inliers === "number") setColmapSiftMatchingMinNumInliers(colmap.sift_matching_min_num_inliers);
+      if (typeof colmap.run_image_registrator === "boolean") setColmapRunImageRegistrator(colmap.run_image_registrator);
+    }
   };
 
   const resetConfigToDefaults = () => {
@@ -479,6 +594,49 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   }, [projectId]);
 
   useEffect(() => {
+    let isMounted = true;
+    const fetchRuns = async () => {
+      try {
+        const res = await api.get(`/projects/${projectId}/runs`);
+        const runs = Array.isArray(res.data?.runs) ? (res.data.runs as ProjectRunInfo[]) : [];
+        const baseId = typeof res.data?.base_session_id === "string" ? res.data.base_session_id : "";
+        if (!isMounted) return;
+        setProjectRuns(runs);
+        setBaseSessionId(baseId);
+        setCanCreateSessionDraft(Boolean(res.data?.can_create_session));
+        setCreateSessionDisabledReason(
+          typeof res.data?.can_create_session_reason === "string" && res.data.can_create_session_reason.trim()
+            ? res.data.can_create_session_reason
+            : "Complete COLMAP on the base session before creating new sessions.",
+        );
+        if (!selectedRunId && runs.length > 0) {
+          setSelectedRunId(runs[0].run_id);
+        } else if (selectedRunId && !runs.some((r) => r.run_id === selectedRunId)) {
+          setSelectedRunId(runs.length > 0 ? runs[0].run_id : "");
+        }
+      } catch {
+        if (!isMounted) return;
+        setProjectRuns([]);
+        setCanCreateSessionDraft(false);
+        setCreateSessionDisabledReason("Complete COLMAP on the base session before creating new sessions.");
+      }
+    };
+    fetchRuns();
+    const id = setInterval(fetchRuns, 10000);
+    return () => {
+      isMounted = false;
+      clearInterval(id);
+    };
+  }, [projectId, selectedRunId]);
+
+  useEffect(() => {
+    if (!canManageColmapImages) {
+      if (runColmap) setRunColmap(false);
+      if (configTab !== "training") setConfigTab("training");
+    }
+  }, [canManageColmapImages, runColmap, configTab]);
+
+  useEffect(() => {
     setSelectedModelSnapshot(null);
     setModelSnapshots([]);
   }, [projectId]);
@@ -486,10 +644,28 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   useEffect(() => {
     const checkOutputs = async () => {
       try {
+        const runIdParam = selectedRunId || undefined;
         const [filesRes, statusRes] = await Promise.all([
-          api.get(`/projects/${projectId}/files`),
+          api.get(`/projects/${projectId}/files`, { params: { run_id: runIdParam } }),
           api.get(`/projects/${projectId}/status`).catch(() => ({ data: { stage: "idle", message: null, status: "pending" } }))
         ]);
+
+        if (typeof statusRes?.data?.name === "string" && statusRes.data.name.trim()) {
+          const resolvedProjectName = statusRes.data.name.trim();
+          setProjectDisplayName(resolvedProjectName);
+          // If the current run-name still looks like an auto-generated project-id session name,
+          // swap only its prefix to the human project name while preserving the session number.
+          setNewRunName((prev) => {
+            const match = prev.match(/^(.*?)(_session\d+)$/);
+            if (!match) return prev;
+            const currentPrefix = match[1];
+            const suffix = match[2];
+            const oldPrefix = sanitizeRunToken(projectId || "project") || "project";
+            const newPrefix = sanitizeRunToken(resolvedProjectName || projectId) || oldPrefix;
+            if (currentPrefix !== oldPrefix) return prev;
+            return `${newPrefix}${suffix}`;
+          });
+        }
         
         const files = filesRes.data.files;
         // Try to infer outputs presence across possible shapes
@@ -803,7 +979,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     // Poll every 3 seconds to update status
     const interval = setInterval(checkOutputs, 3000);
     return () => clearInterval(interval);
-  }, [projectId, show3DModel]);
+  }, [projectId, show3DModel, selectedRunId]);
 
   // Compute map center and bounds for auto-fit
   const mapCenter = useMemo(() => {
@@ -913,6 +1089,11 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       }
     }
   }, [projectId]);
+
+  useEffect(() => {
+    if (newRunName.trim()) return;
+    setNewRunName(buildDefaultRunName(projectDisplayName, projectId, projectRuns));
+  }, [projectDisplayName, projectId, projectRuns, newRunName]);
 
   useEffect(() => {
     refreshSparseOptions();
@@ -1441,7 +1622,15 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     setTopView('viewer');
   };
 
-  const handleProcess = async () => {
+  const handleProcess = async (skipRestartConfirm = false) => {
+    const isRestart = pipelineDone || wasStopped;
+    if (isRestart && !skipRestartConfirm) {
+      setShowRestartConfirmModal(true);
+      return;
+    }
+
+    const runNameForRequest = selectedRunId || newRunName.trim() || buildDefaultRunName(projectDisplayName, projectId, projectRuns);
+
     setProcessing(true);
     setError(null);
 
@@ -1466,6 +1655,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     try {
       const effectiveMode = engine === "gsplat" ? mode : "baseline";
       await api.post(`/projects/${projectId}/process`, {
+        run_name: runNameForRequest,
+        restart_fresh: isRestart,
         mode: effectiveMode,
         tune_start_step: effectiveMode === "modified" ? tuneStartStep : undefined,
         tune_min_improvement: effectiveMode === "modified" ? tuneMinImprovement : undefined,
@@ -1536,6 +1727,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
 
       const effectiveMode = engine === "gsplat" ? mode : "baseline";
       await api.post(`/projects/${projectId}/process`, {
+        run_name: newRunName.trim() || buildDefaultRunName(projectDisplayName, projectId, projectRuns),
         mode: effectiveMode,
         tune_start_step: effectiveMode === "modified" ? tuneStartStep : undefined,
         tune_min_improvement: effectiveMode === "modified" ? tuneMinImprovement : undefined,
@@ -1581,6 +1773,221 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to resume processing");
       setProcessing(false);
+    }
+  };
+
+  const handleRenameSelectedRun = async (proposedNameInput?: string): Promise<boolean> => {
+    if (!selectedRunId) {
+      setError("Select a run to rename.");
+      return false;
+    }
+    const proposedName = (proposedNameInput ?? newRunName).trim();
+    if (!proposedName) {
+      setError("Enter a new run name before renaming.");
+      return false;
+    }
+    setError(null);
+    setIsRenamingRun(true);
+    try {
+      const res = await api.patch(`/projects/${projectId}/runs/${selectedRunId}`, {
+        run_name: proposedName,
+      });
+      const renamedId = String(res?.data?.run_id || proposedName);
+      setSelectedRunId(renamedId);
+      setNewRunName(renamedId);
+      const runsRes = await api.get(`/projects/${projectId}/runs`);
+      const runs = Array.isArray(runsRes.data?.runs) ? (runsRes.data.runs as ProjectRunInfo[]) : [];
+      setProjectRuns(runs);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to rename run");
+      return false;
+    } finally {
+      setIsRenamingRun(false);
+    }
+  };
+
+  const promptRenameCurrentSession = () => {
+    if (!selectedRunId) {
+      setError("Select a session first.");
+      return;
+    }
+    const current = projectRuns.find((r) => r.run_id === selectedRunId);
+    const suggested = (current?.run_name || current?.run_id || selectedRunId).trim();
+    setRenameSessionDraft(suggested);
+    setShowRenameSessionModal(true);
+  };
+
+  const confirmRenameCurrentSession = async () => {
+    const ok = await handleRenameSelectedRun(renameSessionDraft);
+    if (ok) {
+      setShowRenameSessionModal(false);
+      setRenameSessionDraft("");
+    }
+  };
+
+  const openNewSessionModal = () => {
+    if (!canCreateSessionDraft) {
+      setError(createSessionDisabledReason || "Create Session is disabled until base COLMAP is ready.");
+      return;
+    }
+    setError(null);
+    setNewSessionConfigSource("current");
+    const fallbackRunId = selectedRunId || (projectRuns.length > 0 ? projectRuns[0].run_id : "");
+    setNewSessionSourceRunId(fallbackRunId);
+    setNewSessionNameDraft(buildDefaultRunName(projectDisplayName, projectId, projectRuns));
+    setShowNewSessionModal(true);
+  };
+
+  const buildCurrentSessionResolvedParams = (): Record<string, any> => {
+    let stage: "full" | "colmap_only" | "train_only";
+    if (runColmap && runTraining && runExport) {
+      stage = "full";
+    } else if (runColmap && !runTraining && !runExport) {
+      stage = "colmap_only";
+    } else if (!runColmap && runTraining) {
+      stage = "train_only";
+    } else {
+      stage = "full";
+    }
+
+    const effectiveMode = engine === "gsplat" ? mode : "baseline";
+    return {
+      mode: effectiveMode,
+      tune_start_step: effectiveMode === "modified" ? tuneStartStep : undefined,
+      tune_min_improvement: effectiveMode === "modified" ? tuneMinImprovement : undefined,
+      tune_end_step: effectiveMode === "modified" ? tuneEndStep : undefined,
+      tune_interval: effectiveMode === "modified" ? tuneInterval : undefined,
+      tune_scope: effectiveMode === "modified" ? tuneScope : undefined,
+      stage,
+      engine,
+      max_steps: maxSteps,
+      log_interval: logInterval,
+      splat_export_interval: splatInterval,
+      png_export_interval: evalInterval,
+      eval_interval: evalInterval,
+      save_interval: saveInterval,
+      densify_from_iter: densifyFromIter,
+      densify_until_iter: densifyUntilIter,
+      densification_interval: densificationInterval,
+      densify_grad_threshold: densifyGradThreshold,
+      opacity_threshold: opacityThreshold,
+      lambda_dssim: lambdaDssim,
+      images_max_size: imagesResizeEnabled ? imagesMaxSize : undefined,
+      sparse_preference: sparsePreference,
+      sparse_merge_selection: sparsePreference === "merge_selected" ? sparseMergeSelection : undefined,
+      litegs_target_primitives: litegsTargetPrimitives,
+      litegs_alpha_shrink: litegsAlphaShrink,
+      colmap: {
+        ...(imagesResizeEnabled && imagesMaxSize ? { max_image_size: imagesMaxSize } : {}),
+        peak_threshold: colmapPeakThreshold,
+        guided_matching: colmapGuidedMatching,
+        camera_model: colmapCameraModel,
+        single_camera: colmapSingleCamera,
+        camera_params: colmapCameraParams?.trim() ? colmapCameraParams.trim() : undefined,
+        matching_type: colmapMatchingType,
+        mapper_num_threads: colmapMapperThreads,
+        mapper_min_num_matches: colmapMapperMinNumMatches,
+        mapper_abs_pose_min_num_inliers: colmapMapperAbsPoseMinNumInliers,
+        mapper_init_min_num_inliers: colmapMapperInitMinNumInliers,
+        sift_matching_min_num_inliers: colmapSiftMatchingMinNumInliers,
+        run_image_registrator: colmapRunImageRegistrator,
+      },
+    };
+  };
+
+  const handleCreateSessionDraft = async () => {
+    if (!canCreateSessionDraft) {
+      setError(createSessionDisabledReason || "Create Session is disabled until base COLMAP is ready.");
+      return;
+    }
+    const draftName = (newSessionNameDraft || "").trim() || buildDefaultRunName(projectDisplayName, projectId, projectRuns);
+    setIsCreatingSessionDraft(true);
+    setError(null);
+    try {
+      let sourceRunIdForCreate: string | undefined;
+      let resolvedParamsForCreate: Record<string, any> | undefined = buildCurrentSessionResolvedParams();
+      if (newSessionConfigSource === "defaults") {
+        const defaults = getDefaultProcessConfig();
+        applyTrainingDefaults(defaults);
+        applyColmapDefaults(defaults);
+        applyImageDefaults(defaults);
+        resolvedParamsForCreate = {
+          mode: defaults.engine === "gsplat" ? defaults.mode : "baseline",
+          tune_start_step: defaults.tune_start_step,
+          tune_min_improvement: defaults.tune_min_improvement,
+          tune_end_step: defaults.tune_end_step,
+          tune_interval: defaults.tune_interval,
+          tune_scope: defaults.tune_scope,
+          engine: defaults.engine,
+          max_steps: defaults.maxSteps,
+          log_interval: defaults.logInterval,
+          splat_export_interval: defaults.splatInterval,
+          png_export_interval: defaults.evalInterval,
+          eval_interval: defaults.evalInterval,
+          save_interval: defaults.saveInterval,
+          densify_from_iter: defaults.densifyFromIter,
+          densify_until_iter: defaults.densifyUntilIter,
+          densification_interval: defaults.densificationInterval,
+          densify_grad_threshold: defaults.densifyGradThreshold,
+          opacity_threshold: defaults.opacityThreshold,
+          lambda_dssim: defaults.lambdaDssim,
+          images_max_size: defaults.images_resize_enabled ? defaults.images_max_size : undefined,
+          sparse_preference: defaults.sparse_preference,
+          sparse_merge_selection: defaults.sparse_preference === "merge_selected" ? defaults.sparse_merge_selection : undefined,
+          litegs_target_primitives: defaults.litegs_target_primitives,
+          litegs_alpha_shrink: defaults.litegs_alpha_shrink,
+          colmap: {
+            ...(defaults.images_resize_enabled && defaults.images_max_size ? { max_image_size: defaults.images_max_size } : {}),
+            peak_threshold: defaults.colmap.peak_threshold,
+            guided_matching: defaults.colmap.guided_matching,
+            camera_model: defaults.colmap.camera_model,
+            single_camera: defaults.colmap.single_camera,
+            camera_params: defaults.colmap.camera_params?.trim() ? defaults.colmap.camera_params.trim() : undefined,
+            matching_type: defaults.colmap.matching_type,
+            mapper_num_threads: defaults.colmap.mapper_num_threads,
+            mapper_min_num_matches: defaults.colmap.mapper_min_num_matches,
+            mapper_abs_pose_min_num_inliers: defaults.colmap.mapper_abs_pose_min_num_inliers,
+            mapper_init_min_num_inliers: defaults.colmap.mapper_init_min_num_inliers,
+            sift_matching_min_num_inliers: defaults.colmap.sift_matching_min_num_inliers,
+            run_image_registrator: defaults.colmap.run_image_registrator,
+          },
+        };
+      } else if (newSessionConfigSource === "selected") {
+        const sourceRunId = (newSessionSourceRunId || "").trim();
+        if (!sourceRunId) {
+          throw new Error("Select a source session to copy config from.");
+        }
+        const res = await api.get(`/projects/${projectId}/runs/${sourceRunId}/config`);
+        const runConfig = res.data?.run_config;
+        const resolved = runConfig?.resolved_params;
+        if (resolved && typeof resolved === "object") {
+          applyResolvedParamsToForm(resolved);
+          resolvedParamsForCreate = resolved as Record<string, any>;
+        }
+        sourceRunIdForCreate = sourceRunId;
+      }
+
+      const createRes = await api.post(`/projects/${projectId}/runs`, {
+        run_name: draftName,
+        source_run_id: sourceRunIdForCreate,
+        resolved_params: resolvedParamsForCreate,
+      });
+      const createdRunId = String(createRes.data?.run_id || draftName);
+
+      const runsRes = await api.get(`/projects/${projectId}/runs`);
+      const runs = Array.isArray(runsRes.data?.runs) ? (runsRes.data.runs as ProjectRunInfo[]) : [];
+      setProjectRuns(runs);
+      setBaseSessionId(typeof runsRes.data?.base_session_id === "string" ? runsRes.data.base_session_id : "");
+
+      setSelectedRunId(createdRunId);
+      setNewRunName(createdRunId);
+      setShowNewSessionModal(false);
+      setShowConfig(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to prepare new session");
+    } finally {
+      setIsCreatingSessionDraft(false);
     }
   };
 
@@ -1661,17 +2068,68 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                 <p className="text-xs uppercase font-semibold text-slate-500">Pipeline</p>
                 <h3 className="text-base font-bold text-slate-900">Stages</h3>
               </div>
-              <button
-                onClick={() => setShowConfig(true)}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={openNewSessionModal}
+                  disabled={!canCreateSessionDraft}
+                  title={!canCreateSessionDraft ? createSessionDisabledReason : "Create a new session draft"}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-blue-200 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  + New Session
+                </button>
+                <button
+                  onClick={() => setShowConfig(true)}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <Settings2 className="w-4 h-4" />
+                  Config
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Active Session Output</label>
+              <select
+                value={selectedRunId}
+                onChange={(e) => setSelectedRunId(e.target.value)}
+                className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
               >
-                <Settings2 className="w-4 h-4" />
-                Config
-              </button>
+                {projectRuns.length === 0 ? (
+                  <option value="">Latest (no named sessions yet)</option>
+                ) : (
+                  projectRuns.map((run) => {
+                    const isBase = run.run_id === baseSessionId || run.is_base;
+                    const statusSuffix = run.session_status === "completed" ? "\u00A0\u00A0\u2713" : "\u00A0\u00A0\u00A0";
+                    const label = `${run.run_name || run.run_id}${isBase ? ' [BASE]' : ''}${statusSuffix}`;
+                    return (
+                      <option key={run.run_id} value={run.run_id}>{label}</option>
+                    );
+                  })
+                )}
+              </select>
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <span className="text-[11px] text-slate-500 truncate">
+                  {selectedRunId
+                    ? (projectRuns.find((r) => r.run_id === selectedRunId)?.run_name || selectedRunId)
+                    : "No session selected"}
+                </span>
+                {baseSessionId && selectedRunId === baseSessionId && (
+                  <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-emerald-100 text-emerald-700">BASE</span>
+                )}
+                <button
+                  type="button"
+                  onClick={promptRenameCurrentSession}
+                  disabled={!selectedRunId || isRenamingRun}
+                  className="px-2 py-1 text-[11px] font-semibold rounded border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isRenamingRun ? "Renaming..." : "Rename"}
+                </button>
+              </div>
             </div>
 
             <div className="space-y-2">
               {/* --- STAGE LABELS --- */}
+              {canManageColmapImages && (
               <label className="flex items-center justify-between px-3 py-2 rounded-lg border border-slate-200 bg-slate-50">
                 <div className="flex items-center gap-2">
                   <input type="checkbox" className="w-4 h-4 accent-blue-600" checked={runColmap} onChange={(e) => {
@@ -1689,6 +2147,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                 {stageStatus.colmap === "failed" && <X className="w-4 h-4 text-red-600" />}
                 {stageStatus.colmap === "running" && <Clock className="w-4 h-4 text-blue-600 animate-pulse" />}
               </label>
+              )}
               <label className="flex items-center justify-between px-3 py-2 rounded-lg border border-slate-200 bg-slate-50">
                 <div className="flex items-center gap-2">
                   <input type="checkbox" className="w-4 h-4 accent-blue-600" checked={runTraining} 
@@ -1700,7 +2159,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                         setRunExport(false);
                       }
                     }}
-                    disabled={processing || isStopping || (!runColmap && stageStatus.colmap !== "success")}
+                    disabled={processing || isStopping || (canManageColmapImages && !runColmap && stageStatus.colmap !== "success")}
                   />
                   <span className={stageStatus.training === "success" ? "text-xs font-medium text-green-700" : "text-xs font-medium text-slate-800"}>Training</span>
                 </div>
@@ -1712,7 +2171,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                 <div className="flex items-center gap-2">
                   <input type="checkbox" className="w-4 h-4 accent-blue-600" checked={runExport} 
                     onChange={(e) => setRunExport(e.target.checked)}
-                    disabled={processing || isStopping || (!runTraining && stageStatus.training !== "success" && runExport) || (!runColmap && stageStatus.colmap !== "success" && !runTraining)}
+                    disabled={processing || isStopping || (!runTraining && stageStatus.training !== "success" && runExport) || (canManageColmapImages && !runColmap && stageStatus.colmap !== "success" && !runTraining)}
                   />
                   <span className={stageStatus.export === "success" ? "text-xs font-medium text-green-700" : "text-xs font-medium text-slate-800"}>Export</span>
                 </div>
@@ -1761,8 +2220,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                   // Show Start/Restart and Resume buttons when not processing
                   <>
                     <button
-                      onClick={handleProcess}
-                      disabled={processing || densifyScheduleBlocked || (!runColmap && stageStatus.colmap !== "success") || (!runTraining && stageStatus.training !== "success" && runExport) || (!runColmap && !runTraining && !runExport)}
+                      onClick={() => {
+                        void handleProcess();
+                      }}
+                      disabled={processing || densifyScheduleBlocked || (canManageColmapImages && !runColmap && stageStatus.colmap !== "success") || (!runTraining && stageStatus.training !== "success" && runExport) || (!runColmap && !runTraining && !runExport)}
                       className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 text-white font-semibold shadow-sm disabled:bg-slate-300 disabled:cursor-not-allowed"
                     >
                       <Play className="w-4 h-4" />
@@ -2183,32 +2644,45 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           <div className="absolute inset-0 bg-black/50" onClick={() => setShowConfig(false)} />
           <div className="absolute inset-0 flex items-center justify-center p-4">
             <div className="w-[820px] max-w-full bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+              <div className="flex items-center justify-between px-4 py-1 border-b border-slate-200">
                 <div>
                   <p className="text-xs uppercase font-semibold text-slate-500">Advanced</p>
                   <h3 className="text-base font-bold text-slate-900">Processing Configuration</h3>
+                  <p className="text-[11px] font-medium text-slate-500">
+                    Session: {selectedRunMeta?.run_name || selectedRunId || "latest"}
+                  </p>
                 </div>
                 <button className="text-sm text-slate-600" onClick={() => setShowConfig(false)}>
                   Close
                 </button>
               </div>
-              <div className="px-4 py-4 text-sm overflow-auto max-h-[70vh]">
+
+              <div className="px-4 pt-1.5 pb-4 text-sm overflow-auto max-h-[70vh]">
+                {!canManageColmapImages && (
+                  <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Non-base session: Image and COLMAP settings are hidden. This session is training-only by default.
+                  </div>
+                )}
                 <div className="grid grid-cols-12 gap-0">
                   <div className="col-span-2 flex flex-col gap-1">
-                    <button
-                      onClick={() => setConfigTab("images")}
-                      className={`text-left px-3 py-2 rounded-lg flex items-center justify-between ${configTab === "images" ? "bg-blue-600 text-white font-semibold shadow" : "bg-slate-50 text-slate-700 hover:bg-slate-100"}`}
-                    >
-                      <span>Images</span>
-                      {configTab === "images" && <div className="w-2 h-6 bg-white/20 rounded ml-2" />}
-                    </button>
-                    <button
-                      onClick={() => setConfigTab("colmap")}
-                      className={`text-left px-3 py-2 rounded-lg flex items-center justify-between ${configTab === "colmap" ? "bg-blue-600 text-white font-semibold shadow" : "bg-slate-50 text-slate-700 hover:bg-slate-100"}`}
-                    >
-                      <span>COLMAP</span>
-                      {configTab === "colmap" && <div className="w-2 h-6 bg-white/20 rounded ml-2" />}
-                    </button>
+                    {canManageColmapImages && (
+                      <button
+                        onClick={() => setConfigTab("images")}
+                        className={`text-left px-3 py-2 rounded-lg flex items-center justify-between ${configTab === "images" ? "bg-blue-600 text-white font-semibold shadow" : "bg-slate-50 text-slate-700 hover:bg-slate-100"}`}
+                      >
+                        <span>Images</span>
+                        {configTab === "images" && <div className="w-2 h-6 bg-white/20 rounded ml-2" />}
+                      </button>
+                    )}
+                    {canManageColmapImages && (
+                      <button
+                        onClick={() => setConfigTab("colmap")}
+                        className={`text-left px-3 py-2 rounded-lg flex items-center justify-between ${configTab === "colmap" ? "bg-blue-600 text-white font-semibold shadow" : "bg-slate-50 text-slate-700 hover:bg-slate-100"}`}
+                      >
+                        <span>COLMAP</span>
+                        {configTab === "colmap" && <div className="w-2 h-6 bg-white/20 rounded ml-2" />}
+                      </button>
+                    )}
                     <button
                       onClick={() => setConfigTab("training")}
                       className={`text-left px-3 py-2 rounded-lg flex items-center justify-between ${configTab === "training" ? "bg-blue-600 text-white font-semibold shadow" : "bg-slate-50 text-slate-700 hover:bg-slate-100"}`}
@@ -2348,9 +2822,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                 >
                                   <option value="core_individual">Core individual</option>
                                   <option value="core_only">Core only</option>
+                                  <option value="core_ai_optimization">Core AI optimization</option>
                                   <option value="core_individual_plus_strategy">Core individual + strategy</option>
                                 </select>
-                                <p className="text-[11px] text-slate-500 mt-1">Core individual tunes only LR groups. Core only also tunes grow threshold. Core individual + strategy tunes LR plus full strategy controls.</p>
+                                <p className="text-[11px] text-slate-500 mt-1">Core individual tunes only LR groups. Core only also tunes grow threshold. Core AI optimization uses a lightweight adaptive learner with gated actions and tunes LR plus core strategy thresholds. Core individual + strategy tunes LR plus full strategy controls.</p>
                               </div>
                             )}
                             <div className="md:col-span-2">
@@ -2783,7 +3258,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                           </div>
                         )}
                       </div>
-                    ) : configTab === "colmap" ? (
+                    ) : canManageColmapImages && configTab === "colmap" ? (
                       <div className="grid grid-cols-2 gap-4">
                         <div>
                           <label className="flex items-center justify-between text-xs font-semibold text-slate-600 mb-1">
@@ -3030,6 +3505,170 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           </div>
         </div>
       )}
+
+      {showNewSessionModal && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowNewSessionModal(false)} />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div className="w-[560px] max-w-full bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+                <div>
+                  <p className="text-xs uppercase font-semibold text-slate-500">Session</p>
+                  <h3 className="text-base font-bold text-slate-900">Create New Session</h3>
+                </div>
+                <button className="text-sm text-slate-600" onClick={() => setShowNewSessionModal(false)}>
+                  Close
+                </button>
+              </div>
+
+              <div className="p-4 space-y-4 text-sm">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Session Name</label>
+                  <input
+                    value={newSessionNameDraft}
+                    onChange={(e) => setNewSessionNameDraft(e.target.value)}
+                    placeholder={buildDefaultRunName(projectDisplayName, projectId, projectRuns)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Config Source</label>
+                  <select
+                    value={newSessionConfigSource}
+                    onChange={(e) => {
+                      const nextSource = e.target.value as NewSessionConfigSource;
+                      setNewSessionConfigSource(nextSource);
+                      if (nextSource === "selected" && !newSessionSourceRunId) {
+                        setNewSessionSourceRunId(selectedRunId || (projectRuns.length > 0 ? projectRuns[0].run_id : ""));
+                      }
+                    }}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                  >
+                    <option value="current">Copy current config</option>
+                    <option value="defaults">Start from defaults</option>
+                    <option value="selected" disabled={projectRuns.length === 0}>Copy from selected session</option>
+                  </select>
+                </div>
+
+                {newSessionConfigSource === "selected" && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Source Session</label>
+                    <select
+                      value={newSessionSourceRunId}
+                      onChange={(e) => setNewSessionSourceRunId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                    >
+                      {projectRuns.length === 0 ? (
+                        <option value="">No sessions available</option>
+                      ) : (
+                        projectRuns.map((run) => (
+                          <option key={run.run_id} value={run.run_id}>
+                            {run.run_name || run.run_id}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </div>
+                )}
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    onClick={() => setShowNewSessionModal(false)}
+                    className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleCreateSessionDraft}
+                    disabled={isCreatingSessionDraft}
+                    className="px-3 py-2 rounded-lg bg-blue-600 text-white font-semibold disabled:bg-slate-300"
+                  >
+                    {isCreatingSessionDraft ? "Preparing..." : "Create Session Draft"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRenameSessionModal && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/50" onClick={() => !isRenamingRun && setShowRenameSessionModal(false)} />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div className="w-[520px] max-w-full bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+                <div>
+                  <p className="text-xs uppercase font-semibold text-slate-500">Session</p>
+                  <h3 className="text-base font-bold text-slate-900">Rename Current Session</h3>
+                </div>
+                <button
+                  className="text-sm text-slate-600 disabled:text-slate-300"
+                  onClick={() => setShowRenameSessionModal(false)}
+                  disabled={isRenamingRun}
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="p-4 space-y-3 text-sm">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Session Name</label>
+                  <input
+                    value={renameSessionDraft}
+                    onChange={(e) => setRenameSessionDraft(e.target.value)}
+                    placeholder="Enter session name"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    onClick={() => {
+                      setShowRenameSessionModal(false);
+                      setRenameSessionDraft("");
+                    }}
+                    disabled={isRenamingRun}
+                    className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 disabled:text-slate-300 disabled:border-slate-200"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={confirmRenameCurrentSession}
+                    disabled={isRenamingRun}
+                    className="px-3 py-2 rounded-lg bg-blue-600 text-white font-semibold disabled:bg-slate-300"
+                  >
+                    {isRenamingRun ? "Renaming..." : "Rename"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ConfirmModal
+        open={showRestartConfirmModal}
+        title="Restart Processing"
+        message={
+          <>
+            Are you sure you want to restart processing? Existing generated model files and outputs in this session may be overridden. Create a new session first if you want to keep current outputs.
+          </>
+        }
+        confirmLabel="Restart"
+        cancelLabel="Cancel"
+        tone="danger"
+        busy={processing}
+        onCancel={() => {
+          if (!processing) setShowRestartConfirmModal(false);
+        }}
+        onConfirm={() => {
+          setShowRestartConfirmModal(false);
+          void handleProcess(true);
+        }}
+      />
     </div>
   );
 }

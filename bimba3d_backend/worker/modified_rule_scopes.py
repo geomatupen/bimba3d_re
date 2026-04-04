@@ -7,6 +7,7 @@ DEFAULT_TUNE_SCOPE = "core_individual_plus_strategy"
 VALID_TUNE_SCOPES = {
     "core_individual",
     "core_only",
+    "core_ai_optimization",
     "core_individual_plus_strategy",
     "with_strategy",
 }
@@ -93,7 +94,7 @@ def build_rule_multiplier_summary(scope: str, profile: RuleProfile) -> dict[str,
         ),
         "position_lr_mult": float(profile.lr_multipliers["means"]),
     }
-    if scope in {"core_only", "core_individual_plus_strategy", "with_strategy"}:
+    if scope in {"core_only", "core_ai_optimization", "core_individual_plus_strategy", "with_strategy"}:
         summary["densify_threshold_mult"] = float(profile.strategy_multipliers["grow_grad2d"])
     return summary
 
@@ -244,7 +245,7 @@ def apply_tune_scope(
     normalized_scope = normalize_tune_scope(scope)
     if normalized_scope == "core_individual":
         return apply_scope_core_individual(runner_obj, profile, apply_lr=apply_lr)
-    if normalized_scope == "core_only":
+    if normalized_scope in {"core_only", "core_ai_optimization"}:
         return apply_scope_core_only(
             runner_obj,
             profile,

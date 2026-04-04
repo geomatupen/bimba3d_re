@@ -191,7 +191,7 @@
       <header class="cover">
         <h1>Modified Mode Tuning Book</h1>
         <p>
-          A practical, chapter-style guide for all three tuning scopes.
+          A practical, chapter-style guide for all four tuning scopes.
           Includes what is tuned, what happens at the beginning of training,
           and how to choose the right scope for your next run.
         </p>
@@ -213,7 +213,7 @@
             <div class="chapter-head">Chapter 1 - Scope Index</div>
             <div class="chapter-body">
               <p>
-                The UI exposes three tuning scopes.
+                The UI exposes four tuning scopes.
               </p>
               <table>
                 <thead>
@@ -236,6 +236,12 @@
                     <td>Learning rates only (per group)</td>
                     <td>Medium</td>
                     <td>LR shaping when densification policy should remain stable</td>
+                  </tr>
+                  <tr>
+                    <td><code>core_ai_optimization</code></td>
+                    <td>Learning rates plus only <code>grow_grad2d</code>, with adaptive improvement gate</td>
+                    <td>Medium</td>
+                    <td>Core-only behavior with smarter update timing based on recent improvement</td>
                   </tr>
                   <tr>
                     <td><code>core_individual_plus_strategy</code></td>
@@ -396,7 +402,7 @@
               <h3>3.2 Between <code>tune_start_step</code> and <code>tune_end_step</code></h3>
               <p>
                 LR adaptation can apply every <code>tune_interval</code> steps.
-                In <code>core_individual</code>, the <code>tune_min_improvement</code> gate is used so updates are skipped unless improvement is strong enough.
+                In <code>core_individual</code> and <code>core_ai_optimization</code>, the <code>tune_min_improvement</code> gate is used so updates are skipped unless improvement is below the threshold.
               </p>
 
               <h3>3.3 Strategy window starts at <code>densify_from_iter</code></h3>
@@ -431,14 +437,21 @@
                 <li>Uses the improvement gate logic in the modified control path.</li>
               </ul>
 
-              <h3>4.3 <code>core_individual_plus_strategy</code></h3>
+              <h3>4.3 <code>core_ai_optimization</code></h3>
+              <ul>
+                <li>Applies the same LR multipliers as other scopes.</li>
+                <li>Applies strategy only to <code>grow_grad2d</code> (same strategy coverage as <code>core_only</code>).</li>
+                <li>Uses the improvement gate logic (same gating family as <code>core_individual</code>).</li>
+              </ul>
+
+              <h3>4.4 <code>core_individual_plus_strategy</code></h3>
               <ul>
                 <li>Applies LR multipliers.</li>
                 <li>Applies full strategy updates: <code>grow_grad2d</code>, <code>prune_opa</code>, <code>refine_every</code>, <code>reset_every</code>.</li>
                 <li>Most powerful scope, also easiest to destabilize early growth if timing is aggressive.</li>
               </ul>
 
-              <h3>4.4 Rule profiles used by all scopes</h3>
+              <h3>4.5 Rule profiles used by all scopes</h3>
               <p>
                 Profile is selected from loss level:
               </p>
@@ -448,7 +461,7 @@
                 <li><code>low_loss</code> otherwise</li>
               </ul>
 
-              <h3>4.5 How values are updated</h3>
+              <h3>4.6 How values are updated</h3>
               <p>
                 At an eligible tuning step, each tuned value is multiplied by the profile multiplier.
               </p>
@@ -470,7 +483,7 @@
                 <li><code>new_reset_every = clamp(int(old_reset_every * mult), max(refine_every, 1000), 6000)</code></li>
               </ul>
 
-              <h3>4.5a Exactly what gets updated in each scope</h3>
+              <h3>4.6a Exactly what gets updated in each scope</h3>
               <table>
                 <thead>
                   <tr>
@@ -503,6 +516,15 @@
                     <td><code>prune_opa</code>, <code>refine_every</code>, <code>reset_every</code></td>
                   </tr>
                   <tr>
+                    <td><code>core_ai_optimization</code></td>
+                    <td>
+                      <code>means</code>, <code>opacities</code>, <code>scales</code>,
+                      <code>quats</code>, <code>sh0</code>, <code>shN</code>
+                    </td>
+                    <td><code>grow_grad2d</code> only (adaptive-gated by <code>tune_min_improvement</code>)</td>
+                    <td><code>prune_opa</code>, <code>refine_every</code>, <code>reset_every</code></td>
+                  </tr>
+                  <tr>
                     <td><code>core_individual_plus_strategy</code></td>
                     <td>
                       <code>means</code>, <code>opacities</code>, <code>scales</code>,
@@ -517,11 +539,11 @@
                 </tbody>
               </table>
               <p>
-                In short: all three scopes update the same six LR groups; the difference is strategy coverage
-                (none, only <code>grow_grad2d</code>, or full strategy set).
+                In short: all four scopes update the same six LR groups; the difference is strategy coverage
+                and whether <code>tune_min_improvement</code> gating is required.
               </p>
 
-              <h3>4.6 Profile multipliers (exact values)</h3>
+              <h3>4.7 Profile multipliers (exact values)</h3>
               <table>
                 <thead>
                   <tr>
@@ -568,7 +590,7 @@
                 </tbody>
               </table>
 
-              <h3>4.7 Example update at one step</h3>
+              <h3>4.8 Example update at one step</h3>
               <p>
                 If profile is <code>mid_loss</code>, and current values are
                 <code>means_lr=1.0e-4</code>, <code>opacities_lr=0.05</code>, <code>refine_every=250</code>, then after one update:
@@ -602,7 +624,14 @@
                 <li>Keep strategy stable until confidence is built</li>
               </ul>
 
-              <h3>5.3 Advanced test</h3>
+              <h3>5.3 Adaptive core test</h3>
+              <ul>
+                <li>Use <code>core_ai_optimization</code></li>
+                <li>Keep <code>tune_min_improvement</code> meaningful (for example 0.01 to 0.03)</li>
+                <li>Good when you want core-only strategy coverage with adaptive timing</li>
+              </ul>
+
+              <h3>5.4 Advanced test</h3>
               <ul>
                 <li>Use <code>core_individual_plus_strategy</code></li>
                 <li>Narrow strategy window to avoid late oscillation</li>

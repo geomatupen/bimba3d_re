@@ -14,13 +14,11 @@ def run_training(
     """Run LiteGS training pipeline and export artifacts."""
     logger = context["logger"]
     update_status = context["update_status"]
-    ensure_symlink = context["ensure_symlink"]
-    prepare_pinhole_sparse_for_litegs = context["prepare_pinhole_sparse_for_litegs"]
     patch_litegs_opacity_decay = context["patch_litegs_opacity_decay"]
     find_latest_litegs_checkpoint = context["find_latest_litegs_checkpoint"]
     export_litegs_outputs = context["export_litegs_outputs"]
 
-    project_dir = output_dir.parent
+    project_dir = Path(image_dir).parent
     stop_flag = project_dir / "stop_requested"
     engine_label = "LiteGS"
 
@@ -59,7 +57,6 @@ def run_training(
         return 0
 
     try:
-        import litegs  # pylint: disable=import-error
         from litegs import config as litegs_config  # pylint: disable=import-error
         from litegs import training as litegs_training  # pylint: disable=import-error
     except Exception as exc:
@@ -67,27 +64,24 @@ def run_training(
         update_status(project_dir, "failed", error=f"LiteGS not installed: {exc}")
         raise
 
-    dataset_root = output_dir / "litegs" / "dataset"
+    shared_output_dir = project_dir / "outputs"
+    dataset_root = shared_output_dir
     model_root = output_dir / "litegs" / "artifacts"
-    dataset_root.mkdir(parents=True, exist_ok=True)
     model_root.mkdir(parents=True, exist_ok=True)
 
-    ensure_symlink(Path(image_dir), dataset_root / "images")
-    colmap_sparse_root = Path(colmap_dir)
-
-    processed_sparse = prepare_pinhole_sparse_for_litegs(colmap_sparse_root, output_dir)
-
-    litegs_sparse_root = dataset_root / "sparse"
-    if litegs_sparse_root.is_symlink():
-        litegs_sparse_root.unlink()
-    litegs_sparse_root.mkdir(parents=True, exist_ok=True)
-    ensure_symlink(processed_sparse, litegs_sparse_root / "0")
+    colmap_sparse_root = Path(colmap_dir).resolve()
+    expected_sparse_root = (shared_output_dir / "sparse" / "0").resolve()
+    if colmap_sparse_root != expected_sparse_root:
+        raise RuntimeError(
+            "LiteGS no-duplicate mode requires shared sparse path at project outputs/sparse/0. "
+            f"Received: {colmap_sparse_root}"
+        )
 
     lp, op, pp, dp = litegs_config.get_default_arg()
     lp.source_path = str(dataset_root)
     lp.model_path = str(model_root)
     if hasattr(lp, "images"):
-        lp.images = "images"
+        lp.images = "../images"
 
     training_summary = {
         "iterations": getattr(op, "iterations", None),

@@ -90,6 +90,10 @@ class Config:
 
     # Path to the Mip-NeRF 360 dataset
     data_dir: str = "data/360_v2/garden"
+    # Optional absolute image directory override (no staging copy needed)
+    image_dir_override: Optional[str] = None
+    # Optional absolute sparse directory override (no staging copy needed)
+    sparse_dir_override: Optional[str] = None
     # Downsample factor for the dataset
     data_factor: int = 4
     # Directory to save results
@@ -392,6 +396,8 @@ class Runner:
             normalize=cfg.normalize_world_space,
             test_every=cfg.test_every,
             load_exposure=cfg.load_exposure,
+            image_dir_override=cfg.image_dir_override,
+            sparse_dir_override=cfg.sparse_dir_override,
         )
         self.trainset = Dataset(
             self.parser,

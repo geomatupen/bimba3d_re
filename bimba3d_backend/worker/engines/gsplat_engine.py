@@ -11,6 +11,7 @@ from ..modified_rule_scopes import (
     normalize_tune_scope,
     select_rule_profile,
 )
+from ..ai_adaptive_light import ACTION_KEEP, CoreAIAdaptiveController
 
 
 def _find_vswhere_exe() -> Path | None:
@@ -196,9 +197,11 @@ def run_training(
         log_interval = max(1, int(log_interval))
     except Exception:
         log_interval = 100
-    project_dir = base_output_dir.parent
+    project_dir = Path(image_dir).parent
     stop_flag = project_dir / "stop_requested"
     gsplat_start = time.time()
+    configured_run_id = str(p.get("run_id") or "").strip()
+    run_session_id = configured_run_id or f"engine-{os.getpid()}-{int(gsplat_start * 1000)}"
     tuning_state: dict[str, object] = {
         "updates": 0,
         "last_event": None,
@@ -207,6 +210,19 @@ def run_training(
         "last_checked_loss": None,
         "phase_complete_logged": False,
     }
+    core_ai_controller: CoreAIAdaptiveController | None = None
+    if mode == "modified" and tune_scope == "core_ai_optimization":
+        core_ai_controller = CoreAIAdaptiveController(
+            project_dir=project_dir,
+            run_id=run_session_id,
+            max_steps=max_steps,
+            tune_start_step=modified_tune_start_step,
+            tune_end_step=modified_tune_end_step,
+            strategy_start_step=strategy_tune_start_step,
+            strategy_end_step=strategy_tune_end_step,
+            base_min_improvement=tune_min_improvement,
+            decision_interval=modified_tune_interval,
+        )
     runner_ref: dict[str, object] = {"runner": None}
     last_snapshot_step: dict[str, int] = {"value": -1}
 
@@ -341,6 +357,79 @@ def run_training(
                 apply_strategy = False
             if not apply_lr and not apply_strategy:
                 return False
+
+            if tune_scope == "core_ai_optimization" and core_ai_controller is not None:
+                decision = core_ai_controller.decide_and_apply(
+                    step=int(step),
+                    loss=loss_value,
+                    runner_obj=runner_obj,
+                    apply_lr=bool(apply_lr),
+                    apply_strategy=bool(apply_strategy),
+                )
+                event = {
+                    "step": int(step),
+                    "loss": loss_value,
+                    "previous_loss": float(previous_loss) if previous_loss is not None else None,
+                    "relative_improvement": float(relative_improvement) if relative_improvement is not None else None,
+                    "required_min_improvement": float(tune_min_improvement),
+                    "apply_lr": bool(apply_lr),
+                    "apply_strategy": bool(apply_strategy),
+                    "profile": "ai_adaptive_light",
+                    "scope": tune_scope,
+                    "rule_multipliers": {},
+                    "scope_multipliers": {},
+                    "adjustments": [f"ai_action_{decision.action}"],
+                    "lr_changes": {},
+                    "params": {
+                        "learning_rates": {},
+                        "strategy": {},
+                    },
+                    "before": {
+                        "learning_rates": {},
+                        "strategy": {},
+                    },
+                    "ai_decision": {
+                        "action": decision.action,
+                        "reason": decision.reason,
+                        "gate_threshold": decision.gate_threshold,
+                        "reward_from_previous": decision.reward_from_previous,
+                        "relative_improvement": decision.relative_improvement,
+                        "scores": decision.action_scores,
+                    },
+                }
+                tuning_state["last_event"] = event
+                tuning_state["events"].append(event)
+                tuning_state["updates"] = int(tuning_state.get("updates", 0) or 0) + 1
+                tuning_state["last_tuned_step"] = int(step)
+
+                update_status(
+                    project_dir,
+                    "processing",
+                    mode=mode,
+                    tuning_active=True,
+                    last_tuning={
+                        "step": int(step),
+                        "action": f"AI adaptive action: {decision.action}",
+                        "reason": decision.reason,
+                        "scope": tune_scope,
+                        "profile": "ai_adaptive_light",
+                        "adjustments": [f"ai_action_{decision.action}"],
+                    },
+                )
+                logger.info(
+                    "Core-AI adaptive decision step=%d action=%s reason=%s apply_lr=%s apply_strategy=%s loss=%.6f prev_loss=%s rel_improve=%s gate=%.6f reward_prev=%s",
+                    step,
+                    decision.action,
+                    decision.reason,
+                    str(bool(apply_lr)),
+                    str(bool(apply_strategy)),
+                    loss_value,
+                    f"{float(previous_loss):.6f}" if previous_loss is not None else "n/a",
+                    f"{float(relative_improvement):.6f}" if relative_improvement is not None else "n/a",
+                    float(decision.gate_threshold),
+                    f"{float(decision.reward_from_previous):.6f}" if decision.reward_from_previous is not None else "n/a",
+                )
+                return decision.action != ACTION_KEEP
 
             profile_data = select_rule_profile(loss_value)
             profile = profile_data.name
@@ -580,47 +669,7 @@ def run_training(
         timing={"start": gsplat_start},
     )
 
-    dataset_dir = engine_output_dir / "_runtime" / f"run_{int(gsplat_start * 1000)}"
-    dataset_dir.mkdir(parents=True, exist_ok=True)
-    images_link = dataset_dir / "images"
-    sparse_zero = dataset_dir / "sparse" / "0"
-    sparse_zero.parent.mkdir(parents=True, exist_ok=True)
-
-    def _materialize_dataset_path(link_path: Path, target: Path):
-        resolved_target = Path(target).resolve()
-        try:
-            os.symlink(str(resolved_target), str(link_path), target_is_directory=True)
-            return
-        except OSError as exc:
-            if os.name != "nt":
-                raise
-            win_error = getattr(exc, "winerror", None)
-            logger.warning(
-                "Windows symlink failed (%s) for %s -> %s; falling back to copy.",
-                win_error,
-                link_path,
-                resolved_target,
-            )
-            try:
-                if link_path.exists() or link_path.is_symlink():
-                    if link_path.is_symlink() or link_path.is_file():
-                        link_path.unlink()
-                    else:
-                        shutil.rmtree(link_path)
-            except Exception as cleanup_exc:
-                logger.warning("Cleanup before copy fallback failed for %s: %s", link_path, cleanup_exc)
-            shutil.copytree(resolved_target, link_path, dirs_exist_ok=True)
-
-    for link_path, target in ((images_link, image_dir), (sparse_zero, colmap_dir)):
-        if link_path.exists() or link_path.is_symlink():
-            try:
-                if link_path.is_symlink() or link_path.is_file():
-                    link_path.unlink()
-                else:
-                    shutil.rmtree(link_path)
-            except Exception:
-                pass
-        _materialize_dataset_path(link_path, target)
+    dataset_dir = Path(image_dir).parent
 
     def _build_steps(interval_value, fallback):
         if interval_value is None:
@@ -657,6 +706,8 @@ def run_training(
         disable_video=True,
         load_exposure=False,
         data_dir=str(dataset_dir),
+        image_dir_override=str(Path(image_dir)),
+        sparse_dir_override=str(Path(colmap_dir)),
         data_factor=1,
         result_dir=str(engine_output_dir),
         test_every=8,

@@ -164,6 +164,8 @@ class Parser:
         normalize: bool = False,
         test_every: int = 8,
         load_exposure: bool = False,
+        image_dir_override: Optional[str] = None,
+        sparse_dir_override: Optional[str] = None,
     ):
         self.data_dir = data_dir
         self.factor = factor
@@ -171,9 +173,18 @@ class Parser:
         self.test_every = test_every
         self.load_exposure = load_exposure
 
-        colmap_dir = os.path.join(data_dir, "sparse/0/")
-        if not os.path.exists(colmap_dir):
-            colmap_dir = os.path.join(data_dir, "sparse")
+        if sparse_dir_override:
+            override_dir = str(Path(sparse_dir_override))
+            if os.path.exists(os.path.join(override_dir, "cameras.bin")) or os.path.exists(os.path.join(override_dir, "cameras.txt")):
+                colmap_dir = override_dir
+            elif os.path.exists(os.path.join(override_dir, "0")):
+                colmap_dir = os.path.join(override_dir, "0")
+            else:
+                colmap_dir = override_dir
+        else:
+            colmap_dir = os.path.join(data_dir, "sparse/0/")
+            if not os.path.exists(colmap_dir):
+                colmap_dir = os.path.join(data_dir, "sparse")
         assert os.path.exists(
             colmap_dir
         ), f"COLMAP directory {colmap_dir} does not exist."
@@ -276,12 +287,16 @@ class Parser:
             self.bounds = np.load(posefile)[:, -2:]
 
         # Load images.
-        if factor > 1 and not self.extconf["no_factor_suffix"]:
-            image_dir_suffix = f"_{factor}"
+        if image_dir_override:
+            colmap_image_dir = str(Path(image_dir_override))
+            image_dir = colmap_image_dir
         else:
-            image_dir_suffix = ""
-        colmap_image_dir = os.path.join(data_dir, "images")
-        image_dir = os.path.join(data_dir, "images" + image_dir_suffix)
+            if factor > 1 and not self.extconf["no_factor_suffix"]:
+                image_dir_suffix = f"_{factor}"
+            else:
+                image_dir_suffix = ""
+            colmap_image_dir = os.path.join(data_dir, "images")
+            image_dir = os.path.join(data_dir, "images" + image_dir_suffix)
         for d in [image_dir, colmap_image_dir]:
             if not os.path.exists(d):
                 raise ValueError(f"Image folder {d} does not exist.")
@@ -290,7 +305,7 @@ class Parser:
         # so we need to map between the two sorted lists of files.
         colmap_files = sorted(_get_rel_paths(colmap_image_dir))
         image_files = sorted(_get_rel_paths(image_dir))
-        if factor > 1 and os.path.splitext(image_files[0])[1].lower() == ".jpg":
+        if (not image_dir_override) and factor > 1 and os.path.splitext(image_files[0])[1].lower() == ".jpg":
             image_dir = _resize_image_folder(
                 colmap_image_dir, image_dir + "_png", factor=factor
             )

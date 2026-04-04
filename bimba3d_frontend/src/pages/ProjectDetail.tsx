@@ -1,6 +1,6 @@
 import { useParams, Link } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { ArrowLeft, Images, Play, FileText, Columns2 } from "lucide-react";
+import { ArrowLeft, Images, Play, FileText, Columns2, Boxes } from "lucide-react";
 import { api } from "../api/client";
 
 // Tab components
@@ -8,8 +8,9 @@ import ImagesTab from "../components/tabs/ImagesTab";
 import ProcessTab from "../components/tabs/ProcessTab";
 import LogsTab from "../components/tabs/LogsTab";
 import ComparisonTab from "../components/tabs/ComparisonTab";
+import SessionsTab from "../components/tabs/SessionsTab";
 
-type TabType = "images" | "process" | "logs" | "comparison";
+type TabType = "images" | "process" | "logs" | "sessions" | "comparison";
 
 interface ProjectStatus {
   project_id: string;
@@ -61,6 +62,7 @@ export default function ProjectDetail() {
     { id: "images" as TabType, label: "Images", icon: Images, enabled: true },
     { id: "process" as TabType, label: "Process", icon: Play, enabled: hasImages },
     { id: "logs" as TabType, label: "Logs", icon: FileText, enabled: true },
+    { id: "sessions" as TabType, label: "Sessions", icon: Boxes, enabled: true },
     { id: "comparison" as TabType, label: "Comparison", icon: Columns2, enabled: true },
     // viewer tab removed: viewer functionality is available inside the Process tab
   ];
@@ -154,6 +156,7 @@ export default function ProjectDetail() {
         )}
         {activeTab === "process" && <ProcessTab projectId={id!} />}
         {activeTab === "logs" && <LogsTab projectId={id!} />}
+        {activeTab === "sessions" && <SessionsTab projectId={id!} />}
         {activeTab === "comparison" && <ComparisonTab currentProjectId={id!} />}
         {/* Viewer tab removed; viewer is available inside the Process tab */}
       </main>

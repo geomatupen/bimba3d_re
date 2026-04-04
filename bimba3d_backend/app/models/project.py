@@ -15,6 +15,7 @@ class ProjectListItem(BaseModel):
     progress: int
     created_at: Optional[str] = None
     has_outputs: bool = False
+    session_count: int = 0
 
 
 class CreateProjectRequest(BaseModel):
@@ -63,6 +64,7 @@ class StatusResponse(BaseModel):
     last_completed_step: Optional[int] = None
     engine: Optional[str] = None
     worker_mode: Optional[str] = None
+    base_session_id: Optional[str] = None
 
 
 class ProcessParams(BaseModel):
@@ -74,8 +76,12 @@ class ProcessParams(BaseModel):
     engine: Optional[str] = None
     # Pipeline stage: "full" (default), "colmap_only", "train_only"
     stage: Optional[str] = None
+    # Optional user-provided run session name (used as run folder id after sanitization)
+    run_name: Optional[str] = None
     # Resume from last checkpoint if available
     resume: Optional[bool] = None
+    # Force restart from scratch for the selected session (clear generated artifacts first)
+    restart_fresh: Optional[bool] = None
     # --- ORIGINAL KERBL PARAMETERS ---
     max_steps: Optional[int] = None  # [original]
     log_interval: Optional[int] = None  # [custom]
@@ -107,7 +113,7 @@ class ProcessParams(BaseModel):
     tune_min_improvement: Optional[float] = None  # [custom]
     tune_end_step: Optional[int] = None  # [custom]
     tune_interval: Optional[int] = None  # [custom]
-    tune_scope: Optional[str] = None  # [custom] "core_individual" | "core_only" | "core_individual_plus_strategy"
+    tune_scope: Optional[str] = None  # [custom] "core_individual" | "core_only" | "core_ai_optimization" | "core_individual_plus_strategy"
     images_max_size: Optional[int] = None  # [custom]
     litegs_target_primitives: Optional[int] = None  # [custom]
     litegs_alpha_shrink: Optional[float] = None  # [custom]
@@ -146,3 +152,13 @@ class SparseEditRequest(BaseModel):
 
 class SparseMergeRequest(BaseModel):
     selections: list[str]
+
+
+class RenameRunRequest(BaseModel):
+    run_name: str
+
+
+class CreateRunRequest(BaseModel):
+    run_name: Optional[str] = None
+    source_run_id: Optional[str] = None
+    resolved_params: Optional[dict] = None

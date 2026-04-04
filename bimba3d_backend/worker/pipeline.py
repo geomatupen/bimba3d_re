@@ -64,6 +64,16 @@ def run_full_pipeline(project_id: str, params: dict | None = None):
             _root = logging.getLogger()
             _root.addHandler(_fh)
             logger.info(f"Initialized project log file: {_log_file}")
+
+            _run_id = str(params.get("run_id") or "").strip()
+            if _run_id:
+                _run_log_file = _project_dir / "runs" / _run_id / "processing.log"
+                _run_log_file.parent.mkdir(parents=True, exist_ok=True)
+                _run_fh = logging.FileHandler(_run_log_file, mode='a')
+                _run_fh.setLevel(logging.INFO)
+                _run_fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+                _root.addHandler(_run_fh)
+                logger.info(f"Initialized run log file: {_run_log_file}")
         except Exception as e:
             logger.warning(f"Failed to initialize project log file: {e}")
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
+import ConfirmModal from "../components/ConfirmModal";
 
 type ProjectListItem = {
   project_id: string;
@@ -9,6 +10,7 @@ type ProjectListItem = {
   progress: number;
   created_at?: string | null;
   has_outputs: boolean;
+  session_count: number;
 };
 
 export default function Projects() {
@@ -20,6 +22,8 @@ export default function Projects() {
   const [editName, setEditName] = useState("");
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  const [pendingDeleteProject, setPendingDeleteProject] = useState<ProjectListItem | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const loadProjects = async () => {
     setLoading(true);
@@ -47,17 +51,19 @@ export default function Projects() {
     });
   }, [projects]);
 
-  const handleDelete = async (id: string) => {
-    const target = projects.find(p => p.project_id === id);
-    const label = target?.name || id;
-    if (!window.confirm(`Delete project "${label}"? This cannot be undone.`)) return;
-
+  const handleDelete = async () => {
+    if (!pendingDeleteProject) return;
+    const id = pendingDeleteProject.project_id;
+    setDeleteBusy(true);
     try {
       await api.delete(`/projects/${id}`);
       setProjects(prev => prev.filter(p => p.project_id !== id));
+      setPendingDeleteProject(null);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Delete failed";
       setError(msg);
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -159,7 +165,7 @@ export default function Projects() {
                   >Viewer</button>
                   <button
                     style={{ ...styles.button, backgroundColor: "#dc3545" }}
-                    onClick={() => handleDelete(project.project_id)}
+                    onClick={() => setPendingDeleteProject(project)}
                   >Delete</button>
                 </div>
               </div>
@@ -172,6 +178,7 @@ export default function Projects() {
                 <div style={styles.metaField}>Progress: {project.progress}%</div>
                 <div style={styles.metaField}>Created: {formatDate(project.created_at)}</div>
                 <div style={styles.metaField}>Outputs: {project.has_outputs ? "Yes" : "No"}</div>
+                <div style={styles.metaField}>Sessions: {project.session_count ?? 0}</div>
               </div>
             </div>
           ))}
@@ -201,6 +208,24 @@ export default function Projects() {
           </div>
         </div>
       )}
+
+      <ConfirmModal
+        open={Boolean(pendingDeleteProject)}
+        title="Delete Project"
+        message={
+          <>
+            Are you sure you want to delete <span className="font-semibold text-slate-800">{pendingDeleteProject?.name || pendingDeleteProject?.project_id}</span>? This cannot be undone.
+          </>
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        tone="danger"
+        busy={deleteBusy}
+        onCancel={() => {
+          if (!deleteBusy) setPendingDeleteProject(null);
+        }}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }
