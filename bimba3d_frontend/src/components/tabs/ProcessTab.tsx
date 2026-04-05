@@ -80,7 +80,7 @@ interface ProjectRunInfo {
   shared_outdated?: boolean;
 }
 
-type NewSessionConfigSource = "current" | "defaults" | "selected";
+type NewSessionConfigSource = "current" | "defaults";
 
 type TrainingEngine = "gsplat" | "litegs";
 type TuneScope = "core_individual" | "core_only" | "core_ai_optimization" | "core_individual_plus_strategy";
@@ -411,7 +411,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [showNewSessionModal, setShowNewSessionModal] = useState<boolean>(false);
   const [newSessionNameDraft, setNewSessionNameDraft] = useState<string>("");
   const [newSessionConfigSource, setNewSessionConfigSource] = useState<NewSessionConfigSource>("current");
-  const [newSessionSourceRunId, setNewSessionSourceRunId] = useState<string>("");
   const [isCreatingSessionDraft, setIsCreatingSessionDraft] = useState<boolean>(false);
   const [canCreateSessionDraft, setCanCreateSessionDraft] = useState<boolean>(false);
   const [createSessionDisabledReason, setCreateSessionDisabledReason] = useState<string>("Complete COLMAP on the base session before creating new sessions.");
@@ -2034,8 +2033,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     }
     setError(null);
     setNewSessionConfigSource("current");
-    const fallbackRunId = selectedRunId || (projectRuns.length > 0 ? projectRuns[0].run_id : "");
-    setNewSessionSourceRunId(fallbackRunId);
     setNewSessionNameDraft(buildDefaultRunName(projectDisplayName, projectId, projectRuns));
     setShowNewSessionModal(true);
   };
@@ -2079,7 +2076,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     setIsCreatingSessionDraft(true);
     setError(null);
     try {
-      let sourceRunIdForCreate: string | undefined;
       let resolvedParamsForCreate: Record<string, any> | undefined = buildCurrentSessionTrainingParams();
       if (newSessionConfigSource === "defaults") {
         const defaults = getDefaultProcessConfig();
@@ -2109,26 +2105,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           litegs_target_primitives: defaults.litegs_target_primitives,
           litegs_alpha_shrink: defaults.litegs_alpha_shrink,
         };
-      } else if (newSessionConfigSource === "selected") {
-        const sourceRunId = (newSessionSourceRunId || "").trim();
-        if (!sourceRunId) {
-          throw new Error("Select a source session to copy config from.");
-        }
-        const res = await api.get(`/projects/${projectId}/runs/${sourceRunId}/config`);
-        const runConfig = res.data?.run_config;
-        const resolved = runConfig?.resolved_params;
-        if (resolved && typeof resolved === "object") {
-          applyResolvedParamsToForm(resolved, { includeTraining: true, includeShared: false });
-          resolvedParamsForCreate = {
-            ...(resolved as Record<string, any>),
-          };
-        }
-        sourceRunIdForCreate = sourceRunId;
       }
 
       const createRes = await api.post(`/projects/${projectId}/runs`, {
         run_name: draftName,
-        source_run_id: sourceRunIdForCreate,
         resolved_params: resolvedParamsForCreate,
       });
       const createdRunId = String(createRes.data?.run_id || draftName);
@@ -3760,38 +3740,13 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                     onChange={(e) => {
                       const nextSource = e.target.value as NewSessionConfigSource;
                       setNewSessionConfigSource(nextSource);
-                      if (nextSource === "selected" && !newSessionSourceRunId) {
-                        setNewSessionSourceRunId(selectedRunId || (projectRuns.length > 0 ? projectRuns[0].run_id : ""));
-                      }
                     }}
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg"
                   >
-                    <option value="current">Copy current training config</option>
+                    <option value="current">Copy current base config</option>
                     <option value="defaults">Training defaults only</option>
-                    <option value="selected" disabled={projectRuns.length === 0}>Copy full selected session config</option>
                   </select>
                 </div>
-
-                {newSessionConfigSource === "selected" && (
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1">Source Session</label>
-                    <select
-                      value={newSessionSourceRunId}
-                      onChange={(e) => setNewSessionSourceRunId(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    >
-                      {projectRuns.length === 0 ? (
-                        <option value="">No sessions available</option>
-                      ) : (
-                        projectRuns.map((run) => (
-                          <option key={run.run_id} value={run.run_id}>
-                            {run.run_name || run.run_id}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-                )}
 
                 <div className="flex justify-end gap-2 pt-1">
                   <button

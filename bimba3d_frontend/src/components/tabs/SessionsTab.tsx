@@ -60,7 +60,6 @@ export default function SessionsTab({ projectId }: SessionsTabProps) {
   const [renameDraft, setRenameDraft] = useState<string>("");
   const [showCreateSessionModal, setShowCreateSessionModal] = useState<boolean>(false);
   const [createSessionNameDraft, setCreateSessionNameDraft] = useState<string>("");
-  const [createSessionSourceRunId, setCreateSessionSourceRunId] = useState<string>("");
   const [isCreatingSessionDraft, setIsCreatingSessionDraft] = useState<boolean>(false);
 
   const loadRuns = async () => {
@@ -78,12 +77,6 @@ export default function SessionsTab({ projectId }: SessionsTabProps) {
           : "Complete COLMAP on the base session before creating new sessions.",
       );
 
-      if (list.length > 0) {
-        const fallbackSource = (typeof res.data?.base_session_id === "string" && res.data.base_session_id) || list[0].run_id;
-        setCreateSessionSourceRunId((prev) => prev || fallbackSource);
-      } else {
-        setCreateSessionSourceRunId("");
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load sessions");
       setCanCreateSession(false);
@@ -165,9 +158,6 @@ export default function SessionsTab({ projectId }: SessionsTabProps) {
     }
     setError(null);
     setCreateSessionNameDraft(buildDefaultRunName(projectId, runs));
-    if (!createSessionSourceRunId) {
-      setCreateSessionSourceRunId(baseSessionId || (runs.length > 0 ? runs[0].run_id : ""));
-    }
     setShowCreateSessionModal(true);
   };
 
@@ -177,14 +167,12 @@ export default function SessionsTab({ projectId }: SessionsTabProps) {
       return;
     }
     const runName = (createSessionNameDraft || "").trim() || buildDefaultRunName(projectId, runs);
-    const sourceRunId = (createSessionSourceRunId || "").trim();
 
     setIsCreatingSessionDraft(true);
     setError(null);
     try {
       await api.post(`/projects/${projectId}/runs`, {
         run_name: runName,
-        source_run_id: sourceRunId || undefined,
       });
       setShowCreateSessionModal(false);
       setCreateSessionNameDraft("");
@@ -435,22 +423,6 @@ export default function SessionsTab({ projectId }: SessionsTabProps) {
                     placeholder={buildDefaultRunName(projectId, runs)}
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg"
                   />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">Copy Config From</label>
-                  <select
-                    value={createSessionSourceRunId}
-                    onChange={(e) => setCreateSessionSourceRunId(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                  >
-                    <option value="">No source (use defaults/current backend behavior)</option>
-                    {runs.map((run) => (
-                      <option key={run.run_id} value={run.run_id}>
-                        {run.run_name || run.run_id}
-                      </option>
-                    ))}
-                  </select>
                 </div>
 
                 <div className="flex justify-end gap-2 pt-1">

@@ -162,5 +162,4 @@ class RenameRunRequest(BaseModel):
 
 class CreateRunRequest(BaseModel):
     run_name: Optional[str] = None
-    source_run_id: Optional[str] = None
     resolved_params: Optional[dict] = None

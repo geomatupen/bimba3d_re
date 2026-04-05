@@ -1422,22 +1422,6 @@ def create_project_run(project_id: str, payload: CreateRunRequest = Body(...)):
         requested_params: dict = {"run_name": run_id, "run_id": run_id}
         resolved_params: dict = {"run_name": run_id, "run_id": run_id}
 
-        source_run_id = str(payload.source_run_id or "").strip()
-        if source_run_id:
-            source_cfg = _read_json_if_exists(project_dir / "runs" / source_run_id / "run_config.json")
-            if not isinstance(source_cfg, dict):
-                raise HTTPException(status_code=404, detail="Source run config not found")
-
-            source_requested = source_cfg.get("requested_params")
-            source_resolved = source_cfg.get("resolved_params")
-            if isinstance(source_requested, dict):
-                requested_params.update(json.loads(json.dumps(source_requested)))
-            if isinstance(source_resolved, dict):
-                resolved_params.update(json.loads(json.dumps(source_resolved)))
-
-            requested_params["source_run_id"] = source_run_id
-            resolved_params["source_run_id"] = source_run_id
-
         if isinstance(payload.resolved_params, dict):
             provided_params = json.loads(json.dumps(payload.resolved_params))
             requested_params.update(provided_params)
@@ -1451,10 +1435,6 @@ def create_project_run(project_id: str, payload: CreateRunRequest = Body(...)):
         shared_doc = _read_project_shared_config(project_dir, str(base_session_id) if base_session_id else None)
         active_shared = shared_doc.get("active_shared") if isinstance(shared_doc.get("active_shared"), dict) else None
         inherited_shared = active_shared if active_shared else (shared_doc.get("shared") if isinstance(shared_doc.get("shared"), dict) else {})
-        include_common_in_session_config = bool(source_run_id)
-        if include_common_in_session_config:
-            resolved_params = _merge_shared_config_into_params(resolved_params, inherited_shared)
-            requested_params = _merge_shared_config_into_params(requested_params, inherited_shared)
         inherited_shared_version = int(shared_doc.get("active_sparse_version") or shared_doc.get("version") or 1)
 
         run_config_payload = {
@@ -1466,7 +1446,7 @@ def create_project_run(project_id: str, payload: CreateRunRequest = Body(...)):
             "resolved_params": resolved_params,
             "shared_config_version": inherited_shared_version,
             "shared_base_run_id": shared_doc.get("base_run_id") if isinstance(shared_doc.get("base_run_id"), str) else base_session_id,
-            "shared_config_snapshot": _extract_shared_config_from_params(resolved_params) if include_common_in_session_config else {},
+            "shared_config_snapshot": {},
         }
 
         run_cfg_path = run_dir / "run_config.json"
