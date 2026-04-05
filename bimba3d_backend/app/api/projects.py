@@ -270,6 +270,89 @@ def _clear_restart_artifacts(
             logger.warning("Failed to clear restart artifact %s: %s", target, exc)
 
 
+def _apply_run_jitter(params: dict, run_index: int, jitter_factor: float) -> dict:
+    """Apply per-run multiplicative jitter to selected learning-rate parameters."""
+    if jitter_factor <= 0:
+        jitter_factor = 1.0
+    if abs(jitter_factor - 1.0) < 1e-9:
+        return dict(params)
+
+    out = dict(params)
+    multiplier = float(jitter_factor) ** int(run_index)
+    lr_defaults = {
+        "feature_lr": 2.5e-3,
+        "opacity_lr": 5.0e-2,
+        "scaling_lr": 5.0e-3,
+        "rotation_lr": 1.0e-3,
+        "position_lr_init": 1.6e-4,
+        "position_lr_final": 1.6e-6,
+    }
+    for key, default_val in lr_defaults.items():
+        base_val = out.get(key, default_val)
+        if isinstance(base_val, (int, float)):
+            out[key] = float(base_val) * multiplier
+    return out
+
+
+def _wait_for_run_completion(project_id: str, run_id: str, timeout_seconds: int = 0) -> dict:
+    """Wait until the targeted run reaches a terminal project status."""
+    started_at = time.time()
+    terminal_states = {"completed", "done", "failed", "stopped"}
+    while True:
+        current = status.get_status(project_id)
+        current_run = str(current.get("current_run_id") or "")
+        current_state = str(current.get("status") or "")
+        if current_run == run_id and current_state in terminal_states:
+            return current
+        if timeout_seconds > 0 and (time.time() - started_at) >= timeout_seconds:
+            return current
+        time.sleep(2)
+
+
+def _run_batch_process(
+    project_id: str,
+    base_params: dict,
+    run_count: int,
+    run_name_prefix: str | None,
+    jitter_factor: float,
+    continue_on_failure: bool,
+) -> None:
+    """Run multiple sessions sequentially using the same base config."""
+    try:
+        prefix = _sanitize_run_token(run_name_prefix or "") if run_name_prefix else ""
+        for idx in range(max(1, int(run_count))):
+            run_params = json.loads(json.dumps(base_params))
+            run_params["run_count"] = 1
+            run_params["resume"] = False
+            run_params["restart_fresh"] = False
+
+            if idx > 0:
+                run_params["stage"] = "train_only"
+
+            if prefix:
+                run_params["run_name"] = f"{prefix}_session{idx + 1}"
+            elif run_params.get("run_name"):
+                base_name = _sanitize_run_token(str(run_params.get("run_name") or "batch")) or "batch"
+                run_params["run_name"] = f"{base_name}_{idx + 1}"
+
+            run_params = _apply_run_jitter(run_params, idx, jitter_factor)
+            logger.info("Batch %s/%s starting for %s (run_name=%s)", idx + 1, run_count, project_id, run_params.get("run_name"))
+
+            response = process_project(project_id, ProcessParams(**run_params))
+            run_id = str(response.get("run_id") or "")
+            if not run_id:
+                raise RuntimeError("Batch run started without run_id")
+
+            final_status = _wait_for_run_completion(project_id, run_id)
+            final_state = str(final_status.get("status") or "")
+            if final_state in {"failed", "stopped"} and not continue_on_failure:
+                logger.warning("Batch halted for %s after run %s ended with %s", project_id, run_id, final_state)
+                break
+    except Exception as exc:
+        logger.error("Batch process failed for %s: %s", project_id, exc, exc_info=True)
+        status.update_status(project_id, "failed", error=str(exc))
+
+
 def _sanitize_run_token(value: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip().lower())
     cleaned = re.sub(r"-+", "-", cleaned).strip("-_")
@@ -948,6 +1031,76 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
             raise HTTPException(status_code=400, detail=f"Invalid training engine: {engine}")
         params_payload["engine"] = engine
 
+        # Optional sequential batch orchestration.
+        try:
+            run_count = int(requested_params.get("run_count") or 1)
+        except Exception:
+            run_count = 1
+        if run_count < 1:
+            run_count = 1
+
+        if run_count > 1:
+            if bool(requested_params.get("resume")):
+                raise HTTPException(status_code=400, detail="Batch resume is not supported. Use Batch Continue from a fresh start.")
+
+            jitter_factor = float(requested_params.get("run_jitter_factor") or 1.0)
+            run_name_prefix = str(requested_params.get("run_name_prefix") or "").strip() or None
+            continue_on_failure = bool(requested_params.get("continue_on_failure", True))
+
+            # Reuse existing conflict checks before launching the batch orchestrator.
+            if resolved_worker_mode == "docker":
+                running_workers = colmap.get_project_worker_container_ids(project_id)
+                if running_workers:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "A docker worker is already running for this project. "
+                            "Stop it first or wait for it to finish."
+                        ),
+                    )
+            else:
+                if pipeline.is_local_project_active(project_id):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "A local worker is already running for this project. "
+                            "Stop it first or wait for it to finish."
+                        ),
+                    )
+
+            status.update_status(
+                project_id,
+                "processing",
+                progress=1,
+                engine=engine,
+                worker_mode=resolved_worker_mode,
+                stop_requested=False,
+                message=f"Batch queued: {run_count} runs (jitter={jitter_factor}).",
+                error=None,
+            )
+
+            batch_seed_params = dict(requested_params)
+            batch_seed_params["run_count"] = 1
+            batch_seed_params["run_jitter_factor"] = jitter_factor
+            batch_seed_params["run_name_prefix"] = run_name_prefix
+            batch_seed_params["continue_on_failure"] = continue_on_failure
+
+            thread = threading.Thread(
+                target=_run_batch_process,
+                args=(project_id, batch_seed_params, run_count, run_name_prefix, jitter_factor, continue_on_failure),
+                daemon=True,
+            )
+            thread.start()
+
+            logger.info("Started batch processing for %s with %s runs", project_id, run_count)
+            return {
+                "status": "batch_processing_started",
+                "run_count": run_count,
+                "jitter_factor": jitter_factor,
+                "continue_on_failure": continue_on_failure,
+                "run_name_prefix": run_name_prefix,
+            }
+
         # Create a per-run session directory under project/runs/<run_name>.
         project_status = status.get_status(project_id)
         project_label = None
@@ -1608,9 +1761,26 @@ def delete_project_run(project_id: str, run_id: str):
             and current_status.get("status") in {"processing", "stopping"}
             and current_status.get("current_run_id") == run_id
         ):
-            raise HTTPException(status_code=409, detail="Cannot delete an active run")
+            worker_mode = str(current_status.get("worker_mode") or "")
+            is_actively_running = False
+            try:
+                resolved_mode = resolve_worker_mode(worker_mode)
+                if resolved_mode == "docker":
+                    is_actively_running = bool(colmap.get_project_worker_container_ids(project_id))
+                else:
+                    is_actively_running = bool(pipeline.is_local_project_active(project_id))
+            except Exception:
+                # If we cannot confirm runtime activity, keep conservative behavior.
+                is_actively_running = True
 
-        shutil.rmtree(target_dir, ignore_errors=False)
+            if is_actively_running:
+                raise HTTPException(status_code=409, detail="Cannot delete an active run")
+
+            # Status says active, but no worker exists anymore; clear stale binding first.
+            status.update_status(project_id, "stopped", current_run_id=None, stop_requested=True)
+            current_status = status.get_status(project_id)
+
+        _delete_path_strict(target_dir)
 
         base_session_id = current_status.get("base_session_id") if isinstance(current_status, dict) else None
         deleted_was_base = base_session_id == run_id

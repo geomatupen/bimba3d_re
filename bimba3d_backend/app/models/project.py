@@ -84,6 +84,11 @@ class ProcessParams(BaseModel):
     resume: Optional[bool] = None
     # Force restart from scratch for the selected session (clear generated artifacts first)
     restart_fresh: Optional[bool] = None
+    # Optional batch orchestration settings
+    run_count: Optional[int] = None
+    run_name_prefix: Optional[str] = None
+    run_jitter_factor: Optional[float] = None
+    continue_on_failure: Optional[bool] = None
     # --- ORIGINAL KERBL PARAMETERS ---
     max_steps: Optional[int] = None  # [original]
     log_interval: Optional[int] = None  # [custom]

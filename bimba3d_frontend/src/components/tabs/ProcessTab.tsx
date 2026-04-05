@@ -145,6 +145,10 @@ const getDefaultProcessConfig = () => ({
   tune_end_step: 15000,
   tune_interval: 100,
   tune_scope: "core_individual_plus_strategy" as TuneScope,
+  run_count: 1,
+  run_jitter_factor: 1,
+  run_name_prefix: "",
+  continue_on_failure: true,
   engine: "gsplat" as TrainingEngine,
   maxSteps: 15000,
   logInterval: 100,
@@ -226,6 +230,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [tuneEndStep, setTuneEndStep] = useState<number>(cfg.tune_end_step ?? 15000);
   const [tuneInterval, setTuneInterval] = useState<number>(cfg.tune_interval ?? 100);
   const [tuneScope, setTuneScope] = useState<TuneScope>(cfg.tune_scope ?? "core_individual_plus_strategy");
+  const [runCount, setRunCount] = useState<number>(cfg.run_count ?? 1);
+  const [runJitterFactor, setRunJitterFactor] = useState<number>(cfg.run_jitter_factor ?? 1);
+  const [runNamePrefix, setRunNamePrefix] = useState<string>(cfg.run_name_prefix ?? "");
+  const [continueOnFailure, setContinueOnFailure] = useState<boolean>(cfg.continue_on_failure ?? true);
   const [engine, setEngine] = useState<TrainingEngine>(cfg.engine ?? "gsplat");
   const [maxSteps, setMaxSteps] = useState<number>(cfg.maxSteps ?? 15000);
   const [logInterval, setLogInterval] = useState<number>(cfg.logInterval ?? 100);
@@ -257,6 +265,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [densifyGradThreshold, setDensifyGradThreshold] = useState<number>(cfg.densifyGradThreshold ?? 0.0002);
   const [opacityThreshold, setOpacityThreshold] = useState<number>(cfg.opacityThreshold ?? 0.005);
   const [lambdaDssim, setLambdaDssim] = useState<number>(cfg.lambdaDssim ?? 0.2);
+
+  const showCoreAiSessionControls =
+    engine === "gsplat" && mode === "modified" && tuneScope === "core_ai_optimization";
+  const showBatchActions = showCoreAiSessionControls && runCount > 1;
 
   const densifyScheduleBlocked = densificationInterval <= 0 || densifyFromIter >= densifyUntilIter;
   const densifyBlockedReason = useMemo(() => {
@@ -299,6 +311,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     tune_end_step: 'For Modified mode, this is the last step where rule-based tuning updates are allowed. The worker keeps applying rule checks until this step, then continues normal training.',
     tune_interval: 'For Modified mode, worker evaluates and applies rule-based updates every N steps during the tuning window.',
     tune_scope: 'Rule tuning scope: Core individual updates only LR groups. Core only updates LR groups + core strategy threshold. Core AI optimization runs a lightweight adaptive controller with gated actions and cross-run memory. Core individual + strategy updates LR groups and full strategy controls.',
+    run_count: 'Number of sessions to run automatically in sequence. Default 1 keeps manual behavior.',
+    run_jitter_factor: 'Per-run multiplier for LR-related params. 1 means no jitter across runs.',
+    run_name_prefix: 'Optional prefix used for auto-created batch session names.',
+    continue_on_failure: 'If enabled, remaining runs continue even when one run fails/stops.',
     // --- ORIGINAL KERBL PARAMETERS ---
     maxSteps: 'Total training iterations. This value is sent from frontend in both baseline and modified modes. [original]',
     logInterval: 'How often (in steps) to print consolidated training snapshots in worker logs. Lower values are more verbose. [custom]',
@@ -417,6 +433,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     setTuneEndStep(defaults.tune_end_step ?? 15000);
     setTuneInterval(defaults.tune_interval ?? 100);
     setTuneScope(defaults.tune_scope ?? "core_individual_plus_strategy");
+    setRunCount(defaults.run_count ?? 1);
+    setRunJitterFactor(defaults.run_jitter_factor ?? 1);
+    setRunNamePrefix(defaults.run_name_prefix ?? "");
+    setContinueOnFailure(defaults.continue_on_failure ?? true);
     setEngine(defaults.engine ?? "gsplat");
     setMaxSteps(defaults.maxSteps);
     setLogInterval(defaults.logInterval ?? 100);
@@ -471,6 +491,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       if (typeof resolved.tune_end_step === "number") setTuneEndStep(resolved.tune_end_step);
       if (typeof resolved.tune_interval === "number") setTuneInterval(resolved.tune_interval);
       if (resolved.tune_scope) setTuneScope(resolved.tune_scope as TuneScope);
+      if (typeof resolved.run_count === "number") setRunCount(Math.max(1, Math.floor(resolved.run_count)));
+      if (typeof resolved.run_jitter_factor === "number") setRunJitterFactor(Math.max(0.1, resolved.run_jitter_factor));
+      if (typeof resolved.run_name_prefix === "string") setRunNamePrefix(resolved.run_name_prefix);
+      if (typeof resolved.continue_on_failure === "boolean") setContinueOnFailure(resolved.continue_on_failure);
       if (resolved.engine === "gsplat" || resolved.engine === "litegs") setEngine(resolved.engine);
       if (typeof resolved.max_steps === "number") setMaxSteps(resolved.max_steps);
       if (typeof resolved.log_interval === "number") setLogInterval(resolved.log_interval);
@@ -545,6 +569,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       tune_end_step: tuneEndStep,
       tune_interval: tuneInterval,
       tune_scope: tuneScope,
+      run_count: runCount,
+      run_jitter_factor: runJitterFactor,
+      run_name_prefix: runNamePrefix,
+      continue_on_failure: continueOnFailure,
       engine,
       maxSteps,
       logInterval,
@@ -564,7 +592,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       litegs_alpha_shrink: litegsAlphaShrink,
     };
     localStorage.setItem(getTrainingConfigStorageKey(selectedRunId), JSON.stringify(config));
-  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, engine, maxSteps, logInterval, splatInterval, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
+  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, runCount, runJitterFactor, runNamePrefix, continueOnFailure, engine, maxSteps, logInterval, splatInterval, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
 
   // Persist shared image/COLMAP config once per project.
   useEffect(() => {
@@ -1831,6 +1859,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
 
     try {
       const effectiveMode = engine === "gsplat" ? mode : "baseline";
+      const includeSessionControls =
+        engine === "gsplat" && effectiveMode === "modified" && tuneScope === "core_ai_optimization";
       await api.post(`/projects/${projectId}/process`, {
         run_name: runNameForRequest,
         restart_fresh: isRestart,
@@ -1840,6 +1870,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         tune_end_step: effectiveMode === "modified" ? tuneEndStep : undefined,
         tune_interval: effectiveMode === "modified" ? tuneInterval : undefined,
         tune_scope: effectiveMode === "modified" ? tuneScope : undefined,
+        run_count: includeSessionControls ? runCount : undefined,
+        run_jitter_factor: includeSessionControls ? runJitterFactor : undefined,
+        run_name_prefix: includeSessionControls ? (runNamePrefix?.trim() || undefined) : undefined,
+        continue_on_failure: includeSessionControls ? continueOnFailure : undefined,
         stage,
         engine,
         max_steps: maxSteps,
@@ -1907,6 +1941,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       if (stoppedStage === 'export') setRunExport(true);
 
       const effectiveMode = engine === "gsplat" ? mode : "baseline";
+      const includeSessionControls =
+        engine === "gsplat" && effectiveMode === "modified" && tuneScope === "core_ai_optimization";
       await api.post(`/projects/${projectId}/process`, {
         run_name: newRunName.trim() || buildDefaultRunName(projectDisplayName, projectId, projectRuns),
         mode: effectiveMode,
@@ -1915,6 +1951,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         tune_end_step: effectiveMode === "modified" ? tuneEndStep : undefined,
         tune_interval: effectiveMode === "modified" ? tuneInterval : undefined,
         tune_scope: effectiveMode === "modified" ? tuneScope : undefined,
+        run_count: includeSessionControls ? runCount : undefined,
+        run_jitter_factor: includeSessionControls ? runJitterFactor : undefined,
+        run_name_prefix: includeSessionControls ? (runNamePrefix?.trim() || undefined) : undefined,
+        continue_on_failure: includeSessionControls ? continueOnFailure : undefined,
         stage: resumeStage,
         engine,
         max_steps: maxSteps,
@@ -2020,6 +2060,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
 
   const buildCurrentSessionTrainingParams = (): Record<string, any> => {
     const effectiveMode = engine === "gsplat" ? mode : "baseline";
+    const includeSessionControls =
+      engine === "gsplat" && effectiveMode === "modified" && tuneScope === "core_ai_optimization";
     return {
       mode: effectiveMode,
       tune_start_step: effectiveMode === "modified" ? tuneStartStep : undefined,
@@ -2027,6 +2069,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       tune_end_step: effectiveMode === "modified" ? tuneEndStep : undefined,
       tune_interval: effectiveMode === "modified" ? tuneInterval : undefined,
       tune_scope: effectiveMode === "modified" ? tuneScope : undefined,
+      run_count: includeSessionControls ? runCount : undefined,
+      run_jitter_factor: includeSessionControls ? runJitterFactor : undefined,
+      run_name_prefix: includeSessionControls ? (runNamePrefix?.trim() || undefined) : undefined,
+      continue_on_failure: includeSessionControls ? continueOnFailure : undefined,
       stage: "train_only",
       engine,
       max_steps: maxSteps,
@@ -2060,6 +2106,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       let resolvedParamsForCreate: Record<string, any> | undefined = buildCurrentSessionTrainingParams();
       if (newSessionConfigSource === "defaults") {
         const defaults = getDefaultProcessConfig();
+        const includeSessionControls =
+          defaults.engine === "gsplat" &&
+          defaults.mode === "modified" &&
+          defaults.tune_scope === "core_ai_optimization";
         applyTrainingDefaults(defaults);
         resolvedParamsForCreate = {
           mode: defaults.engine === "gsplat" ? defaults.mode : "baseline",
@@ -2068,6 +2118,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           tune_end_step: defaults.tune_end_step,
           tune_interval: defaults.tune_interval,
           tune_scope: defaults.tune_scope,
+          run_count: includeSessionControls ? defaults.run_count : undefined,
+          run_jitter_factor: includeSessionControls ? defaults.run_jitter_factor : undefined,
+          run_name_prefix: includeSessionControls ? defaults.run_name_prefix : undefined,
+          continue_on_failure: includeSessionControls ? defaults.continue_on_failure : undefined,
           engine: defaults.engine,
           max_steps: defaults.maxSteps,
           log_interval: defaults.logInterval,
@@ -2397,7 +2451,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                       className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 text-white font-semibold shadow-sm disabled:bg-slate-300 disabled:cursor-not-allowed"
                     >
                       <Play className="w-4 h-4" />
-                      {(pipelineDone || wasStopped) ? "Restart Processing" : "Start Processing"}
+                      {(pipelineDone || wasStopped)
+                        ? (showBatchActions ? "Batch Restart" : "Restart Processing")
+                        : (showBatchActions ? "Batch Start" : "Start Processing")}
                     </button>
                     {/* --- RESUME BUTTON LOGIC --- */}
                     {canResume && wasStopped ? (
@@ -2417,7 +2473,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                           disabled={densifyScheduleBlocked}
                         >
                           <Play className="w-4 h-4" />
-                          Resume Processing
+                          {showBatchActions ? "Batch Continue" : "Resume Processing"}
                         </button>
                       ) : null
                     ) : null}
@@ -2816,8 +2872,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
             <div className="w-[820px] max-w-full bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden">
               <div className="flex items-center justify-between px-3.5 py-0.5 border-b border-slate-200">
                 <div>
-                  <p className="text-xs uppercase font-semibold text-slate-500">Advanced</p>
-                  <h3 className="text-base font-bold leading-tight text-slate-900">Processing Configuration</h3>
+                  {/* <p className="text-xs uppercase font-semibold text-slate-500">Advanced</p> */}
+                  <h3 className="text-base font-bold leading-tight text-slate-900 pt-2">Processing Configuration</h3>
                   <p className="text-xs leading-none font-medium text-slate-500 mb-1">
                     Session: {selectedRunMeta?.run_name || selectedRunId || "latest"}
                   </p>
@@ -2876,7 +2932,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                   <div className="col-span-7 [&_input]:text-[15px] [&_select]:text-[15px]">
                     {configTab === "training" ? (
                       <div className="space-y-1 text-sm">
-                        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+                        <div className="rounded-xl border border-slate-200 bg-slate-50/60 shadow-sm">
                           <div className="flex items-center justify-between px-3 py-1 border-b border-slate-100">
                             <div>
                               <p className="text-sm font-semibold text-slate-800">Shared controls</p>
@@ -2912,6 +2968,94 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                   <option value="baseline">Baseline</option>
                                   <option value="modified">Modified</option>
                                 </select>
+                              </div>
+                            )}
+                            {engine === "gsplat" && mode === "modified" && (
+                              <div className="md:col-span-2">
+                                <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                  <span>Rule tuning scope</span>
+                                  <button onClick={() => setSelectedInfoKey("tune_scope")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                </label>
+                                <select
+                                  value={tuneScope}
+                                  onChange={(e) => setTuneScope((e.target.value as TuneScope) || "core_individual_plus_strategy")}
+                                  className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                >
+                                  <option value="core_individual">Core individual</option>
+                                  <option value="core_only">Core only</option>
+                                  <option value="core_ai_optimization">Core AI optimization</option>
+                                  <option value="core_individual_plus_strategy">Core individual + strategy</option>
+                                </select>
+                              </div>
+                            )}
+                            {showCoreAiSessionControls && (
+                              <div className="md:col-span-2 mt-1 rounded-lg border border-slate-300 bg-slate-100 p-2.5 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <p className="text-xs font-semibold text-blue-900">Session</p>
+                                  <span className="text-[10px] text-blue-700">Core AI optimization only</span>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                  <div>
+                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                      <span>Run count</span>
+                                      <button onClick={() => setSelectedInfoKey("run_count")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                    </label>
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      step={1}
+                                      value={runCount}
+                                      onChange={(e) => setRunCount(Math.max(1, parseInt(e.target.value || "1") || 1))}
+                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                      <span>Jitter factor</span>
+                                      <button onClick={() => setSelectedInfoKey("run_jitter_factor")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                    </label>
+                                    <input
+                                      type="number"
+                                      min={0.1}
+                                      step={0.01}
+                                      value={runJitterFactor}
+                                      onChange={(e) => {
+                                        const value = parseFloat(e.target.value);
+                                        if (Number.isFinite(value)) {
+                                          setRunJitterFactor(Math.max(0.1, value));
+                                        }
+                                      }}
+                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    />
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                      <span>Run name prefix</span>
+                                      <button onClick={() => setSelectedInfoKey("run_name_prefix")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={runNamePrefix}
+                                      onChange={(e) => setRunNamePrefix(e.target.value)}
+                                      placeholder="Optional prefix for auto-created runs"
+                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    />
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <label className="inline-flex items-center gap-2 text-[11px] font-medium text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        className="w-4 h-4"
+                                        checked={continueOnFailure}
+                                        onChange={(e) => setContinueOnFailure(e.target.checked)}
+                                      />
+                                      <span className="flex items-center gap-1">
+                                        Continue remaining runs on failure
+                                        <button type="button" onClick={() => setSelectedInfoKey("continue_on_failure")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                      </span>
+                                    </label>
+                                  </div>
+                                </div>
                               </div>
                             )}
                             {engine === "gsplat" && mode === "modified" && (
@@ -2982,24 +3126,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                   onChange={(e) => setTuneInterval(Math.max(1, parseInt(e.target.value) || 100))}
                                   className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                 />
-                              </div>
-                            )}
-                            {engine === "gsplat" && mode === "modified" && (
-                              <div>
-                                <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                  <span>Rule tuning scope</span>
-                                  <button onClick={() => setSelectedInfoKey("tune_scope")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                </label>
-                                <select
-                                  value={tuneScope}
-                                  onChange={(e) => setTuneScope((e.target.value as TuneScope) || "core_individual_plus_strategy")}
-                                  className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                >
-                                  <option value="core_individual">Core individual</option>
-                                  <option value="core_only">Core only</option>
-                                  <option value="core_ai_optimization">Core AI optimization</option>
-                                  <option value="core_individual_plus_strategy">Core individual + strategy</option>
-                                </select>
                               </div>
                             )}
                             <div className="md:col-span-2">
@@ -3243,7 +3369,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                         </div>
 
                         {engine === "gsplat" && (
-                          <div className="rounded-xl border border-blue-200 bg-white shadow-sm">
+                          <div className="rounded-xl border border-slate-300 bg-slate-100 shadow-sm">
                             <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100">
                               <div>
                                 <p className="text-sm font-semibold text-slate-800">gsplat-only controls</p>
@@ -3351,7 +3477,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                         )}
 
                         {engine === "litegs" && (
-                          <div className="rounded-xl border border-blue-200 bg-white shadow-sm">
+                          <div className="rounded-xl border border-blue-200 bg-slate-50/60 shadow-sm">
                             <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100">
                               <div>
                                 <p className="text-sm font-semibold text-slate-800">LiteGS-only controls</p>
