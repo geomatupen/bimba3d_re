@@ -78,6 +78,9 @@ interface ProjectRunInfo {
   shared_config_version?: number | null;
   active_sparse_shared_version?: number | null;
   shared_outdated?: boolean;
+  batch_plan_id?: string | null;
+  batch_index?: number | null;
+  batch_total?: number | null;
 }
 
 type NewSessionConfigSource = "current" | "defaults";
@@ -455,6 +458,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [isCreatingSessionDraft, setIsCreatingSessionDraft] = useState<boolean>(false);
   const [isSavingConfig, setIsSavingConfig] = useState<boolean>(false);
   const [configSavedToast, setConfigSavedToast] = useState<string>("");
+  const [processInfoToast, setProcessInfoToast] = useState<string>("");
   const [canCreateSessionDraft, setCanCreateSessionDraft] = useState<boolean>(false);
   const [createSessionDisabledReason, setCreateSessionDisabledReason] = useState<string>("Complete COLMAP on the base session before creating new sessions.");
   const [baseColmapProfile, setBaseColmapProfile] = useState<{
@@ -933,6 +937,14 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   }, [selectedRunId, getSelectedRunStorageKey]);
 
   useEffect(() => {
+    const batchActive = batchTotal > 1 || batchCurrentIndex > 0;
+    if (!batchActive) return;
+    if (!processingRunId) return;
+    if (processingRunId === selectedRunId) return;
+    setSelectedRunId(processingRunId);
+  }, [batchTotal, batchCurrentIndex, processingRunId, selectedRunId]);
+
+  useEffect(() => {
     if (!canManageColmapImages) {
       if (runColmap) setRunColmap(false);
       if (configTab !== "training") setConfigTab("training");
@@ -1129,7 +1141,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
             (!suppressStoppedAtStart && ["stopped", "failed"].includes(String(status?.status || "")))),
         );
         const batchRunIsActive = Boolean(
-          showBatchActions &&
+          ((typeof status?.batch_total === "number" && status.batch_total > 1) ||
+            (typeof status?.batch_current_index === "number" && status.batch_current_index > 0)) &&
           (status?.status === "processing" || status?.status === "stopping") &&
           status?.current_run_id,
         );
@@ -1379,6 +1392,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const prevSparsePresenceRef = useRef<boolean>(false);
   const stoppedPollCountRef = useRef<number>(0);
   const saveToastTimeoutRef = useRef<number | null>(null);
+  const processInfoToastTimeoutRef = useRef<number | null>(null);
   const hydratedTrainingRunIdRef = useRef<string>("");
   const hydratedSharedProjectRef = useRef<string>("");
 
@@ -1392,6 +1406,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       isMountedRef.current = false;
       if (saveToastTimeoutRef.current !== null) {
         window.clearTimeout(saveToastTimeoutRef.current);
+      }
+      if (processInfoToastTimeoutRef.current !== null) {
+        window.clearTimeout(processInfoToastTimeoutRef.current);
       }
     };
   }, []);
@@ -1994,13 +2011,24 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   };
 
   const handleProcess = async (skipRestartConfirm = false) => {
-    const isRestart = pipelineDone || wasStopped;
+    const effectiveModeForIntent = engine === "gsplat" ? mode : "baseline";
+    const includeSessionControlsForIntent =
+      engine === "gsplat" && effectiveModeForIntent === "modified" && tuneScope === "core_ai_optimization";
+    const wantsBatchStart = includeSessionControlsForIntent && runCount > 1;
+    const isRestart = !wantsBatchStart && (pipelineDone || wasStopped);
     if (isRestart && !skipRestartConfirm) {
       setShowRestartConfirmModal(true);
       return;
     }
 
-    const runNameForRequest = selectedRunId || newRunName.trim() || buildDefaultRunName(projectDisplayName, projectId, projectRuns);
+    if (isRestart && !selectedRunId) {
+      setError("Select a session to restart.");
+      return;
+    }
+
+    const runNameForRequest = isRestart
+      ? selectedRunId
+      : (selectedRunId || newRunName.trim() || buildDefaultRunName(projectDisplayName, projectId, projectRuns));
 
     setProcessing(true);
     setError(null);
@@ -2037,7 +2065,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       const effectiveMode = engine === "gsplat" ? mode : "baseline";
       const includeSessionControls =
         engine === "gsplat" && effectiveMode === "modified" && tuneScope === "core_ai_optimization";
-      await api.post(`/projects/${projectId}/process`, {
+      const includeBatchControls = includeSessionControls && runCount > 1;
+      const res = await api.post(`/projects/${projectId}/process`, {
         run_name: runNameForRequest,
         restart_fresh: isRestart,
         mode: effectiveMode,
@@ -2046,10 +2075,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         tune_end_step: effectiveMode === "modified" ? tuneEndStep : undefined,
         tune_interval: effectiveMode === "modified" ? tuneInterval : undefined,
         tune_scope: effectiveMode === "modified" ? tuneScope : undefined,
-        run_count: includeSessionControls ? runCount : undefined,
-        run_jitter_factor: includeSessionControls ? runJitterFactor : undefined,
-        run_name_prefix: includeSessionControls ? (runNamePrefix?.trim() || undefined) : undefined,
-        continue_on_failure: includeSessionControls ? continueOnFailure : undefined,
+        run_count: includeBatchControls ? runCount : 1,
+        run_jitter_factor: includeBatchControls ? runJitterFactor : undefined,
+        run_name_prefix: includeBatchControls ? (runNamePrefix?.trim() || undefined) : undefined,
+        continue_on_failure: includeBatchControls ? continueOnFailure : undefined,
         start_model_mode: includeSessionControls ? startModelMode : undefined,
         source_model_id: includeSessionControls && startModelMode === "reuse" ? sourceModelId || undefined : undefined,
         stage,
@@ -2088,8 +2117,43 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           run_image_registrator: colmapRunImageRegistrator,
         }
       });
+
+      const seedActionNote = typeof res?.data?.seed_action_note === "string"
+        ? res.data.seed_action_note.trim()
+        : "";
+      if (seedActionNote) {
+        setProcessInfoToast(seedActionNote);
+        if (processInfoToastTimeoutRef.current !== null) {
+          window.clearTimeout(processInfoToastTimeoutRef.current);
+        }
+        processInfoToastTimeoutRef.current = window.setTimeout(() => {
+          setProcessInfoToast("");
+          processInfoToastTimeoutRef.current = null;
+        }, 9000);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start processing");
+      setProcessing(false);
+    }
+  };
+
+  const handleContinueBatchFromSelected = async () => {
+    if (!selectedRunId) {
+      setError("Select a session first.");
+      return;
+    }
+    setProcessing(true);
+    setError(null);
+    setWasStopped(false);
+    setStoppedStage(null);
+    setStartRequestAtMs(Date.now());
+    stoppedPollCountRef.current = 0;
+    try {
+      await api.post(`/projects/${projectId}/runs/${selectedRunId}/continue-batch`, {
+        restart_current: true,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to continue batch chain");
       setProcessing(false);
     }
   };
@@ -2127,7 +2191,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       const includeSessionControls =
         engine === "gsplat" && effectiveMode === "modified" && tuneScope === "core_ai_optimization";
       await api.post(`/projects/${projectId}/process`, {
-        run_name: newRunName.trim() || buildDefaultRunName(projectDisplayName, projectId, projectRuns),
+        run_name: selectedRunId || newRunName.trim() || buildDefaultRunName(projectDisplayName, projectId, projectRuns),
         mode: effectiveMode,
         tune_start_step: effectiveMode === "modified" ? tuneStartStep : undefined,
         tune_min_improvement: effectiveMode === "modified" ? tuneMinImprovement : undefined,
@@ -2589,6 +2653,14 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           </div>
         </div>
       )}
+      {processInfoToast && (
+        <div className={`fixed right-4 z-[1090] pointer-events-none ${configSavedToast ? "bottom-16" : "bottom-4"}`}>
+          <div className="inline-flex max-w-[32rem] items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900 shadow-lg">
+            <Info className="mt-0.5 w-4 h-4 text-sky-700" />
+            <span>{processInfoToast}</span>
+          </div>
+        </div>
+      )}
       {!gpuAvailable && (
         <div className="bg-yellow-50 border-l-4 border-yellow-400 p-3 rounded flex items-center gap-3 text-xs text-yellow-800">
           <svg className="h-4 w-4 text-yellow-500" viewBox="0 0 20 20" fill="currentColor">
@@ -2857,6 +2929,20 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                       ) : null
                     ) : null}
                     {/* --- END RESUME BUTTON LOGIC --- */}
+                    {!processing && (selectedRunMeta?.batch_total || 0) > 1 && (
+                      <button
+                        className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-semibold shadow-sm disabled:bg-slate-300 disabled:cursor-not-allowed"
+                        onClick={() => {
+                          if (!densifyScheduleBlocked) {
+                            void handleContinueBatchFromSelected();
+                          }
+                        }}
+                        disabled={densifyScheduleBlocked}
+                      >
+                        <Play className="w-4 h-4" />
+                        Continue Batch Chain
+                      </button>
+                    )}
                   </>
                 )}
               </div>
