@@ -239,9 +239,9 @@
                   </tr>
                   <tr>
                     <td><code>core_ai_optimization</code></td>
-                    <td>Learning rates plus only <code>grow_grad2d</code>, with adaptive improvement gate</td>
+                    <td>Learning rates plus only <code>grow_grad2d</code>, with bounded adaptive schedule and slowdown guard</td>
                     <td>Medium</td>
-                    <td>Core-only behavior with smarter update timing based on recent improvement</td>
+                    <td>Core-only behavior with smarter update timing and protection from late over-densification</td>
                   </tr>
                   <tr>
                     <td><code>core_individual_plus_strategy</code></td>
@@ -380,13 +380,17 @@
 
               <h3>2.3 Timing parameters that govern adaptation</h3>
               <ul>
-                <li><code>tune_start_step</code>: first step where LR-side tuning is allowed.</li>
-                <li><code>tune_end_step</code>: last step where LR-side tuning is allowed.</li>
-                <li><code>tune_interval</code>: how often checks happen (every N steps).</li>
-                <li><code>tune_min_improvement</code>: required relative improvement gate.</li>
+                <li><code>tune_start_step</code>: first step where LR-side tuning is allowed. In <code>core_ai_optimization</code> this is adaptively learned but clamped to <code>[100, 1500]</code>.</li>
+                <li><code>tune_end_step</code>: last step where LR-side tuning is allowed. In <code>core_ai_optimization</code> this is adaptively learned and clamped to <code>[tune_start_step + 5000, max_steps]</code>.</li>
+                <li><code>tune_interval</code>: how often checks happen (every N steps). In <code>core_ai_optimization</code> this is adaptively learned and clamped to <code>[50, 400]</code>.</li>
+                <li><code>tune_min_improvement</code>: required relative improvement gate. In <code>core_ai_optimization</code> this is adaptively learned and clamped to <code>[0.001, 0.02]</code>.</li>
                 <li><code>densify_from_iter</code>: strategy tuning start (same as strategy window start).</li>
                 <li><code>densify_until_iter</code>: strategy tuning end (same as strategy window end).</li>
               </ul>
+              <p>
+                Runtime safety guard: if step-time rises sharply while gaussian count is still growing,
+                <code>core_ai_optimization</code> freezes strategy-side updates (<code>grow_grad2d</code>) to limit late-stage over-densification.
+              </p>
             </div>
           </section>
 
@@ -442,6 +446,8 @@
                 <li>Applies the same LR multipliers as other scopes.</li>
                 <li>Applies strategy only to <code>grow_grad2d</code> (same strategy coverage as <code>core_only</code>).</li>
                 <li>Uses the improvement gate logic (same gating family as <code>core_individual</code>).</li>
+                <li>Learns timing online with hard bounds: start <code>[100, 1500]</code>, end <code>[start+5000, max_steps]</code>, interval <code>[50, 400]</code>, min-improvement <code>[0.001, 0.02]</code>.</li>
+                <li>Includes slowdown protection that can freeze strategy updates when over-densification causes severe runtime inflation.</li>
               </ul>
 
               <h3>4.4 <code>core_individual_plus_strategy</code></h3>
@@ -521,7 +527,7 @@
                       <code>means</code>, <code>opacities</code>, <code>scales</code>,
                       <code>quats</code>, <code>sh0</code>, <code>shN</code>
                     </td>
-                    <td><code>grow_grad2d</code> only (adaptive-gated by <code>tune_min_improvement</code>)</td>
+                    <td><code>grow_grad2d</code> only (adaptive-gated by <code>tune_min_improvement</code>, with runtime slowdown freeze guard)</td>
                     <td><code>prune_opa</code>, <code>refine_every</code>, <code>reset_every</code></td>
                   </tr>
                   <tr>
@@ -627,8 +633,9 @@
               <h3>5.3 Adaptive core test</h3>
               <ul>
                 <li>Use <code>core_ai_optimization</code></li>
-                <li>Keep <code>tune_min_improvement</code> meaningful (for example 0.01 to 0.03)</li>
                 <li>Good when you want core-only strategy coverage with adaptive timing</li>
+                <li>Expect bounded schedule learning: start <code>[100, 1500]</code>, end <code>[start+5000, max_steps]</code>, interval <code>[50, 400]</code>, min-improvement <code>[0.001, 0.02]</code></li>
+                <li>If late runtime still expands, inspect slowdown-freeze messages in logs to confirm strategy guard activation</li>
               </ul>
 
               <h3>5.4 Advanced test</h3>

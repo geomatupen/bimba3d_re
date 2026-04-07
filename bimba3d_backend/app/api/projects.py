@@ -2279,7 +2279,7 @@ def create_project_run(project_id: str, payload: CreateRunRequest = Body(...)):
 
         project_status = status.get_status(project_id)
         base_session_id = project_status.get("base_session_id") if isinstance(project_status, dict) else None
-        if not _base_session_colmap_ready(project_dir, base_session_id):
+        if base_session_id and not _base_session_colmap_ready(project_dir, base_session_id):
             raise HTTPException(
                 status_code=409,
                 detail="Cannot create a new session until the base session has completed COLMAP sparse outputs.",

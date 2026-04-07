@@ -239,19 +239,50 @@ def run_training(
         "last_tuned_step": None,
         "last_checked_loss": None,
         "phase_complete_logged": False,
+        "adaptive_schedule": None,
+        "runtime_samples": [],
+        "last_callback_step": None,
+        "last_callback_elapsed": None,
+        "last_gaussians": None,
+        "strategy_frozen": False,
+        "strategy_frozen_reason": None,
     }
+
+    def _clamp_int(value: int, low: int, high: int) -> int:
+        return max(low, min(high, int(value)))
+
+    def _clamp_float(value: float, low: float, high: float) -> float:
+        return max(low, min(high, float(value)))
+
     core_ai_controller: CoreAIAdaptiveController | None = None
     if mode == "modified" and tune_scope == "core_ai_optimization":
+        bounded_start = _clamp_int(modified_tune_start_step, 100, 1500)
+        bounded_end = _clamp_int(modified_tune_end_step, bounded_start + 5000, max_steps)
+        bounded_interval = _clamp_int(modified_tune_interval, 50, 400)
+        bounded_min_improve = _clamp_float(tune_min_improvement, 0.001, 0.02)
+
+        modified_tune_start_step = bounded_start
+        modified_tune_end_step = bounded_end
+        modified_tune_interval = bounded_interval
+        tune_min_improvement = bounded_min_improve
+
+        tuning_state["adaptive_schedule"] = {
+            "start_step": int(bounded_start),
+            "end_step": int(bounded_end),
+            "interval": int(bounded_interval),
+            "min_improvement": float(bounded_min_improve),
+        }
+
         core_ai_controller = CoreAIAdaptiveController(
             project_dir=project_dir,
             run_id=run_session_id,
             max_steps=max_steps,
-            tune_start_step=modified_tune_start_step,
-            tune_end_step=modified_tune_end_step,
+            tune_start_step=bounded_start,
+            tune_end_step=bounded_end,
             strategy_start_step=strategy_tune_start_step,
             strategy_end_step=strategy_tune_end_step,
-            base_min_improvement=tune_min_improvement,
-            decision_interval=modified_tune_interval,
+            base_min_improvement=bounded_min_improve,
+            decision_interval=bounded_interval,
         )
     runner_ref: dict[str, object] = {"runner": None}
     last_snapshot_step: dict[str, int] = {"value": -1}
@@ -345,12 +376,19 @@ def run_training(
     def apply_modified_rules(step: int, loss: float) -> bool:
         if mode != "modified":
             return False
-        effective_tune_end = max(modified_tune_end_step, strategy_tune_end_step)
+
+        schedule = tuning_state.get("adaptive_schedule") if isinstance(tuning_state.get("adaptive_schedule"), dict) else None
+        tune_start = int(schedule.get("start_step")) if isinstance(schedule, dict) else int(modified_tune_start_step)
+        tune_end = int(schedule.get("end_step")) if isinstance(schedule, dict) else int(modified_tune_end_step)
+        tune_interval = int(schedule.get("interval")) if isinstance(schedule, dict) else int(modified_tune_interval)
+        min_improve = float(schedule.get("min_improvement")) if isinstance(schedule, dict) else float(tune_min_improvement)
+
+        effective_tune_end = max(tune_end, strategy_tune_end_step)
         if step > effective_tune_end:
             return False
-        if step < min(modified_tune_start_step, strategy_tune_start_step):
+        if step < min(tune_start, strategy_tune_start_step):
             return False
-        if step % modified_tune_interval != 0 and step not in {modified_tune_end_step, strategy_tune_end_step}:
+        if step % max(1, tune_interval) != 0 and step not in {tune_end, strategy_tune_end_step}:
             return False
         if tuning_state.get("last_tuned_step") == step:
             return False
@@ -378,15 +416,75 @@ def run_training(
             if tune_scope == "core_individual":
                 if relative_improvement is None:
                     return False
-                if float(relative_improvement) >= float(tune_min_improvement):
+                if float(relative_improvement) >= float(min_improve):
                     return False
 
-            apply_lr = modified_tune_start_step <= step <= modified_tune_end_step
+            apply_lr = tune_start <= step <= tune_end
             apply_strategy = strategy_tune_start_step <= step <= strategy_tune_end_step
+            if bool(tuning_state.get("strategy_frozen")):
+                apply_strategy = False
             if tune_scope == "core_individual":
                 apply_strategy = False
             if not apply_lr and not apply_strategy:
                 return False
+
+            def _learn_schedule() -> None:
+                if tune_scope != "core_ai_optimization" or not isinstance(schedule, dict):
+                    return
+
+                nonlocal tune_start, tune_end, tune_interval, min_improve
+
+                updated = False
+                if relative_improvement is not None:
+                    rel = float(relative_improvement)
+                    if rel < min_improve * 0.5 and step < tune_start:
+                        tune_start = _clamp_int(tune_start - 50, 100, 1500)
+                        updated = True
+
+                    if rel < min_improve * 0.4:
+                        tune_interval = _clamp_int(tune_interval - 10, 50, 400)
+                        min_improve = _clamp_float(min_improve * 0.95, 0.001, 0.02)
+                        updated = True
+                    elif rel > min_improve * 1.6:
+                        tune_interval = _clamp_int(tune_interval + 10, 50, 400)
+                        min_improve = _clamp_float(min_improve * 1.05, 0.001, 0.02)
+                        updated = True
+
+                    if rel < min_improve * 0.3 and step < tune_end - 500:
+                        tune_end = _clamp_int(tune_end - 100, tune_start + 5000, max_steps)
+                        updated = True
+                    elif rel > min_improve * 2.0 and step > tune_end - 2000:
+                        tune_end = _clamp_int(tune_end + 100, tune_start + 5000, max_steps)
+                        updated = True
+
+                runtime_samples = tuning_state.get("runtime_samples") if isinstance(tuning_state.get("runtime_samples"), list) else []
+                means_tensor = getattr(runner_obj, "splats", {}).get("means")
+                gaussians = int(means_tensor.shape[0]) if means_tensor is not None and hasattr(means_tensor, "shape") and len(means_tensor.shape) > 0 else 0
+                last_gaussians = tuning_state.get("last_gaussians")
+                tuning_state["last_gaussians"] = gaussians
+
+                if (
+                    not bool(tuning_state.get("strategy_frozen"))
+                    and len(runtime_samples) >= 6
+                    and gaussians >= 200000
+                    and isinstance(last_gaussians, (int, float))
+                ):
+                    baseline = sum(float(v) for v in runtime_samples[:3]) / 3.0
+                    recent = sum(float(v) for v in runtime_samples[-3:]) / 3.0
+                    growth = (float(gaussians) - float(last_gaussians)) / max(abs(float(last_gaussians)), 1.0)
+                    if baseline > 0 and recent >= baseline * 3.0 and growth > 0.02:
+                        tuning_state["strategy_frozen"] = True
+                        tuning_state["strategy_frozen_reason"] = (
+                            f"runtime_slowdown baseline={baseline:.4f}s/step recent={recent:.4f}s/step gaussians={gaussians}"
+                        )
+
+                if updated:
+                    schedule["start_step"] = int(tune_start)
+                    schedule["end_step"] = int(tune_end)
+                    schedule["interval"] = int(tune_interval)
+                    schedule["min_improvement"] = float(min_improve)
+
+            _learn_schedule()
 
             if tune_scope == "core_ai_optimization" and core_ai_controller is not None:
                 decision = core_ai_controller.decide_and_apply(
@@ -402,6 +500,12 @@ def run_training(
                     "previous_loss": float(previous_loss) if previous_loss is not None else None,
                     "relative_improvement": float(relative_improvement) if relative_improvement is not None else None,
                     "required_min_improvement": float(tune_min_improvement),
+                    "adaptive_schedule": {
+                        "start_step": int(tune_start),
+                        "end_step": int(tune_end),
+                        "interval": int(tune_interval),
+                        "min_improvement": float(min_improve),
+                    },
                     "apply_lr": bool(apply_lr),
                     "apply_strategy": bool(apply_strategy),
                     "profile": "ai_adaptive_light",
@@ -444,6 +548,14 @@ def run_training(
                         "scope": tune_scope,
                         "profile": "ai_adaptive_light",
                         "adjustments": [f"ai_action_{decision.action}"],
+                        "adaptive_schedule": {
+                            "start_step": int(tune_start),
+                            "end_step": int(tune_end),
+                            "interval": int(tune_interval),
+                            "min_improvement": float(min_improve),
+                        },
+                        "strategy_frozen": bool(tuning_state.get("strategy_frozen")),
+                        "strategy_frozen_reason": tuning_state.get("strategy_frozen_reason"),
                     },
                 )
                 logger.info(
@@ -527,6 +639,12 @@ def run_training(
                 "previous_loss": float(previous_loss) if previous_loss is not None else None,
                 "relative_improvement": float(relative_improvement) if relative_improvement is not None else None,
                 "required_min_improvement": float(tune_min_improvement),
+                "adaptive_schedule": {
+                    "start_step": int(tune_start),
+                    "end_step": int(tune_end),
+                    "interval": int(tune_interval),
+                    "min_improvement": float(min_improve),
+                },
                 "apply_lr": bool(apply_lr),
                 "apply_strategy": bool(apply_strategy),
                 "profile": profile,
@@ -558,6 +676,14 @@ def run_training(
                     "step": int(step),
                     "action": f"Rule-based {profile} update",
                     "reason": f"Modified mode rule check (LR {modified_tune_start_step}-{modified_tune_end_step}, strategy {strategy_tune_start_step}-{strategy_tune_end_step})",
+                    "adaptive_schedule": {
+                        "start_step": int(tune_start),
+                        "end_step": int(tune_end),
+                        "interval": int(tune_interval),
+                        "min_improvement": float(min_improve),
+                    },
+                    "strategy_frozen": bool(tuning_state.get("strategy_frozen")),
+                    "strategy_frozen_reason": tuning_state.get("strategy_frozen_reason"),
                     "scope": tune_scope,
                     "profile": profile,
                     "lr_changes": lr_change_details,
@@ -567,8 +693,8 @@ def run_training(
             logger.info(
                 "Modified rule update applied at step %d (lr_window=%d-%d, strategy_window=%d-%d, apply_lr=%s, apply_strategy=%s, loss=%.6f, prev_loss=%s, rel_improve=%s, min_improve=%.4f, profile=%s, scope=%s)",
                 step,
-                modified_tune_start_step,
-                modified_tune_end_step,
+                tune_start,
+                tune_end,
                 strategy_tune_start_step,
                 strategy_tune_end_step,
                 str(bool(apply_lr)),
@@ -576,7 +702,7 @@ def run_training(
                 loss_value,
                 f"{float(previous_loss):.6f}" if previous_loss is not None else "n/a",
                 f"{float(relative_improvement):.6f}" if relative_improvement is not None else "n/a",
-                tune_min_improvement,
+                min_improve,
                 profile,
                 tune_scope,
             )
@@ -620,8 +746,10 @@ def run_training(
                 max_steps_local = int(raw_max_steps)
             except Exception:
                 max_steps_local = int(max_steps)
-        if mode == "modified" and not tuning_state.get("phase_complete_logged") and step == modified_tune_end_step + 1:
-            tuning_state["phase_complete_logged"] = True
+            schedule = tuning_state.get("adaptive_schedule") if isinstance(tuning_state.get("adaptive_schedule"), dict) else None
+            tune_end_for_phase = int(schedule.get("end_step")) if isinstance(schedule, dict) else int(modified_tune_end_step)
+            if mode == "modified" and not tuning_state.get("phase_complete_logged") and step == tune_end_for_phase + 1:
+                tuning_state["phase_complete_logged"] = True
         apply_modified_rules(step, loss)
         requested_stop = stop_checker()
         status_text = "stopping" if requested_stop else "processing"
@@ -635,6 +763,22 @@ def run_training(
 
         now = time.time()
         elapsed = now - gsplat_start
+
+        last_step = tuning_state.get("last_callback_step")
+        last_elapsed = tuning_state.get("last_callback_elapsed")
+        if isinstance(last_step, int) and isinstance(last_elapsed, (int, float)) and step > last_step:
+            delta_steps = step - last_step
+            delta_time = float(elapsed - float(last_elapsed))
+            if delta_time > 0:
+                sec_per_step = delta_time / float(delta_steps)
+                samples = tuning_state.get("runtime_samples") if isinstance(tuning_state.get("runtime_samples"), list) else []
+                samples.append(float(sec_per_step))
+                if len(samples) > 20:
+                    del samples[:-20]
+                tuning_state["runtime_samples"] = samples
+        tuning_state["last_callback_step"] = int(step)
+        tuning_state["last_callback_elapsed"] = float(elapsed)
+
         eta = (
             (elapsed / progress_fraction) * (1 - progress_fraction)
             if progress_fraction > 0
@@ -649,7 +793,7 @@ def run_training(
             status_text,
             progress=60 + int(progress_fraction * 35),
             mode=mode,
-            tuning_active=(mode == "modified" and step <= max(modified_tune_end_step, strategy_tune_end_step)),
+            tuning_active=(mode == "modified" and step <= max(tune_end_for_phase, strategy_tune_end_step)),
             currentStep=step,
             maxSteps=max_steps_local,
             stop_requested=requested_stop,

@@ -307,10 +307,16 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
 
   const showCoreAiSessionControls =
     engine === "gsplat" && mode === "modified" && tuneScope === "core_ai_optimization";
+  const showManualModifiedTuneControls = engine === "gsplat" && mode === "modified" && !showCoreAiSessionControls;
+  const showManualDensificationControls = engine === "gsplat" && !showCoreAiSessionControls;
   const showBatchActions = showCoreAiSessionControls && runCount > 1;
 
-  const densifyScheduleBlocked = densificationInterval <= 0 || densifyFromIter >= densifyUntilIter;
+  const densifyScheduleBlocked =
+    !showCoreAiSessionControls && (densificationInterval <= 0 || densifyFromIter >= densifyUntilIter);
   const densifyBlockedReason = useMemo(() => {
+    if (showCoreAiSessionControls) {
+      return null;
+    }
     if (densificationInterval <= 0) {
       return "Set a positive densification interval so gsplat can schedule refinements.";
     }
@@ -318,7 +324,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       return `Start step (${densifyFromIter.toLocaleString()}) must be lower than the stop step (${densifyUntilIter.toLocaleString()}).`;
     }
     return null;
-  }, [densificationInterval, densifyFromIter, densifyUntilIter]);
+  }, [showCoreAiSessionControls, densificationInterval, densifyFromIter, densifyUntilIter]);
 
   const [colmapMaxImageSize, setColmapMaxImageSize] = useState<number | undefined>(cfg.colmap?.max_image_size ?? 1600);
   const [colmapPeakThreshold, setColmapPeakThreshold] = useState<number | undefined>(cfg.colmap?.peak_threshold ?? undefined);
@@ -2469,25 +2475,37 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   });
 
   const handleSaveConfig = async () => {
-    if (!selectedRunId) {
-      setError("Select a session before saving config.");
-      return;
-    }
-
     setIsSavingConfig(true);
     setError(null);
 
     try {
       const trainingParams = buildCurrentSessionTrainingParams();
+      let targetRunId = selectedRunId;
 
-      await api.patch(`/projects/${projectId}/runs/${selectedRunId}/config`, {
+      if (!targetRunId) {
+        const seedName = buildDefaultRunName(projectDisplayName, projectId, projectRuns);
+        const createRes = await api.post(`/projects/${projectId}/runs`, {
+          run_name: seedName,
+          resolved_params: trainingParams,
+        });
+        targetRunId = String(createRes.data?.run_id || seedName);
+
+        const runsRes = await api.get(`/projects/${projectId}/runs`);
+        const runs = Array.isArray(runsRes.data?.runs) ? (runsRes.data.runs as ProjectRunInfo[]) : [];
+        setProjectRuns(runs);
+        setBaseSessionId(typeof runsRes.data?.base_session_id === "string" ? runsRes.data.base_session_id : "");
+        setSelectedRunId(targetRunId);
+        setNewRunName(targetRunId);
+      }
+
+      await api.patch(`/projects/${projectId}/runs/${targetRunId}/config`, {
         requested_params: trainingParams,
         resolved_params: trainingParams,
       });
 
       if (canManageColmapImages) {
         await api.patch(`/projects/${projectId}/shared-config`, {
-          run_id: selectedRunId,
+          run_id: targetRunId,
           shared: buildCurrentSharedConfigPayload(),
         });
       }
@@ -3584,7 +3602,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                 </div>
                               </div>
                             )}
-                            {engine === "gsplat" && mode === "modified" && (
+                            {showManualModifiedTuneControls && (
                               <div>
                                 <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
                                   <span>Modified tuning start step</span>
@@ -3600,7 +3618,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                 />
                               </div>
                             )}
-                            {engine === "gsplat" && mode === "modified" && (
+                            {showManualModifiedTuneControls && (
                               <div>
                                 <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
                                   <span>Minimum improvement for update</span>
@@ -3622,7 +3640,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                 />
                               </div>
                             )}
-                            {engine === "gsplat" && mode === "modified" && (
+                            {showManualModifiedTuneControls && (
                               <div>
                                 <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
                                   <span>Modified tuning end step</span>
@@ -3638,7 +3656,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                 />
                               </div>
                             )}
-                            {engine === "gsplat" && mode === "modified" && (
+                            {showManualModifiedTuneControls && (
                               <div>
                                 <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
                                   <span>Modified tuning interval</span>
@@ -3894,7 +3912,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                           </div>
                         </div>
 
-                        {engine === "gsplat" && (
+                        {showManualDensificationControls && (
                           <div className="rounded-xl border border-slate-300 bg-slate-100 shadow-sm">
                             <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100">
                               <div>
