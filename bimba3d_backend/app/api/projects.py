@@ -3961,6 +3961,31 @@ def get_experiment_summary(
         if requested_run_id and (run_dir is None or not run_dir.exists()):
             raise HTTPException(status_code=404, detail="Run not found")
 
+        if requested_run_id and run_dir:
+            persisted_summary_path = run_dir / "comparison" / "experiment_summary.json"
+            persisted_summary = _read_json_if_exists(persisted_summary_path)
+            if not isinstance(persisted_summary, dict):
+                raise HTTPException(
+                    status_code=404,
+                    detail="Run comparison summary not found. Re-run the session to generate comparison artifacts.",
+                )
+
+            outputs = files.get_output_files(project_id, run_id=requested_run_id)
+            summary_engine = persisted_summary.get("engine")
+            preview_url = None
+            if isinstance(outputs.get("engines"), dict) and isinstance(summary_engine, str):
+                engine_bundle = outputs["engines"].get(summary_engine, {})
+                previews = engine_bundle.get("previews", {}) if isinstance(engine_bundle, dict) else {}
+                preview_url = previews.get("latest_url")
+
+            response_payload = dict(persisted_summary)
+            response_payload["project_id"] = project_id
+            response_payload["run_id"] = requested_run_id
+            if not response_payload.get("run_name"):
+                response_payload["run_name"] = requested_run_id
+            response_payload["preview_url"] = preview_url
+            return response_payload
+
         metadata_path, resolved_engine, _, _ = _find_existing_path(
             project_id,
             "metadata.json",
@@ -3984,11 +4009,15 @@ def get_experiment_summary(
         metadata = _read_json_if_exists(metadata_path)
         eval_history_raw = _read_json_if_exists(eval_history_path)
         eval_history = eval_history_raw if isinstance(eval_history_raw, list) else []
+        eval_history_sorted = sorted(
+            [item for item in eval_history if isinstance(item, dict)],
+            key=lambda item: float(item.get("step")) if isinstance(item.get("step"), (int, float)) else float("inf"),
+        )
         tuning_results = _read_json_if_exists(tuning_results_path)
         run_config = _read_json_if_exists(run_config_path)
 
-        latest_eval = eval_history[-1] if isinstance(eval_history, list) and eval_history else {}
-        first_eval = eval_history[0] if isinstance(eval_history, list) and eval_history else {}
+        latest_eval = eval_history_sorted[-1] if eval_history_sorted else {}
+        first_eval = eval_history_sorted[0] if eval_history_sorted else {}
 
         # Prefer eval history fields, then final metadata fallback.
         metrics = {
@@ -4000,20 +4029,20 @@ def get_experiment_summary(
             "total_time_seconds": None,
         }
         loss_milestones = {}
-        if isinstance(latest_eval, dict):
-            for k, v in latest_eval.items():
-                if isinstance(k, str) and k.startswith("loss_at_"):
-                    loss_milestones[k] = v
+        for point in eval_history_sorted:
+            for k, v in point.items():
+                if isinstance(k, str) and k.startswith("loss_at_") and isinstance(v, (int, float)):
+                    loss_milestones[k] = float(v)
 
         eval_series = []
         eval_time_series = []
         runtime_tuning_series = []
-        if isinstance(eval_history, list):
-            for point in eval_history:
-                if not isinstance(point, dict):
-                    continue
+        if eval_history_sorted:
+            for point in eval_history_sorted:
                 step_value = point.get("step")
                 loss_value = point.get("final_loss")
+                if not isinstance(loss_value, (int, float)):
+                    loss_value = point.get("lpips_mean")
                 if isinstance(step_value, (int, float)) and isinstance(loss_value, (int, float)):
                     eval_series.append({"step": int(step_value), "loss": float(loss_value)})
 
@@ -4024,77 +4053,19 @@ def get_experiment_summary(
                         "elapsed_seconds": float(step_value) / float(conv_speed),
                     })
 
-        # Fallback for older runs where eval_history contains step but null final_loss.
-        if not eval_series:
-            processing_log = (run_dir / "processing.log") if run_dir else (project_dir / "processing.log")
-            if processing_log.exists():
+        if len(eval_series) < 2 and loss_milestones:
+            milestone_points = []
+            for key, value in loss_milestones.items():
                 try:
-                    step_loss_map = {}
-                    step_param_map = {}
-                    pattern = re.compile(r"step=(\d+)/(?:\d+).*?loss=([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)")
-                    pattern_params = re.compile(r"step=(\d+)/(?:\d+).*?strategy=(\{[^\n]*?\})\s+lrs=(\{[^\n]*?\})")
-                    with open(processing_log, encoding="utf-8", errors="ignore") as f:
-                        lines = f.readlines()
-
-                    # Run-specific logs are already isolated under runs/<run_id>/processing.log.
-                    # For legacy project-level logs, keep parsing only the latest run segment.
-                    start_idx = 0
-                    end_idx = len(lines)
-                    if not run_dir:
-                        run_markers = [
-                            idx for idx, line in enumerate(lines)
-                            if "Running local worker:" in line and f" {project_id} " in line
-                        ]
-                        start_idx = run_markers[-1] if run_markers else 0
-                        for idx in range(start_idx + 1, len(lines)):
-                            line = lines[idx]
-                            if "Running local worker:" in line and f" {project_id} " not in line:
-                                end_idx = idx
-                                break
-
-                    for line in lines[start_idx:end_idx]:
-                            match = pattern.search(line)
-                            if not match:
-                                pass
-                            else:
-                                step_value = int(match.group(1))
-                                loss_value = float(match.group(2))
-                                step_loss_map[step_value] = loss_value
-
-                            match_params = pattern_params.search(line)
-                            if match_params:
-                                step_value = int(match_params.group(1))
-                                try:
-                                    strategy = ast.literal_eval(match_params.group(2))
-                                    lrs = ast.literal_eval(match_params.group(3))
-                                    if isinstance(strategy, dict) and isinstance(lrs, dict):
-                                        step_param_map[step_value] = {
-                                            "strategy": strategy,
-                                            "learning_rates": lrs,
-                                        }
-                                except Exception:
-                                    pass
-                    if step_loss_map:
-                        eval_series = [
-                            {"step": s, "loss": step_loss_map[s]}
-                            for s in sorted(step_loss_map.keys())
-                        ]
-                    if step_param_map:
-                        runtime_tuning_series = [
-                            {"step": s, "params": step_param_map[s]}
-                            for s in sorted(step_param_map.keys())
-                        ]
-                except Exception as exc:
-                    logger.warning("Failed to parse processing log for eval series %s: %s", processing_log, exc)
+                    step = int(str(key).replace("loss_at_", ""))
+                except Exception:
+                    continue
+                milestone_points.append({"step": step, "loss": float(value)})
+            if milestone_points:
+                eval_series = sorted(milestone_points, key=lambda p: p["step"])
 
         if metrics.get("final_loss") is None and eval_series:
             metrics["final_loss"] = eval_series[-1].get("loss")
-
-        timing = status_info.get("timing") if isinstance(status_info, dict) else None
-        if isinstance(timing, dict):
-            elapsed = timing.get("elapsed")
-            if isinstance(elapsed, (int, float)) and float(elapsed) >= 0:
-                metrics["total_time_seconds"] = float(elapsed)
 
         if metrics.get("total_time_seconds") is None and eval_time_series:
             try:
@@ -4105,6 +4076,13 @@ def get_experiment_summary(
                 )
             except ValueError:
                 pass
+
+        if metrics.get("total_time_seconds") is None and not requested_run_id:
+            timing = status_info.get("timing") if isinstance(status_info, dict) else None
+            if isinstance(timing, dict):
+                elapsed = timing.get("elapsed")
+                if isinstance(elapsed, (int, float)) and float(elapsed) >= 0:
+                    metrics["total_time_seconds"] = float(elapsed)
 
         if metadata and isinstance(metadata, dict):
             final_metrics = metadata.get("final_metrics") if isinstance(metadata.get("final_metrics"), dict) else {}

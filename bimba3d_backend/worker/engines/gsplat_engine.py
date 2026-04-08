@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -13,35 +12,6 @@ from ..modified_rule_scopes import (
     select_rule_profile,
 )
 from ..ai_adaptive_light import ACTION_KEEP, CoreAIAdaptiveController
-
-
-def _extract_final_loss_from_processing_log(project_dir: Path) -> float | None:
-    """Parse the latest loss value from processing.log for persistence in metadata.
-
-    Upstream eval stats files do not currently expose a loss field, so we capture
-    the last logged training loss once at export time and store it in JSON outputs.
-    """
-    processing_log = project_dir / "processing.log"
-    if not processing_log.exists():
-        return None
-
-    pattern = re.compile(r"loss=([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)")
-    latest: float | None = None
-
-    try:
-        with open(processing_log, "r", encoding="utf-8", errors="ignore") as handle:
-            for line in handle:
-                match = pattern.search(line)
-                if not match:
-                    continue
-                try:
-                    latest = float(match.group(1))
-                except Exception:
-                    continue
-    except Exception:
-        return None
-
-    return latest
 
 
 def _find_vswhere_exe() -> Path | None:
@@ -246,6 +216,8 @@ def run_training(
         "last_gaussians": None,
         "strategy_frozen": False,
         "strategy_frozen_reason": None,
+        "elapsed_by_step": {},
+        "loss_by_step": {},
     }
 
     def _clamp_int(value: int, low: int, high: int) -> int:
@@ -764,6 +736,13 @@ def run_training(
         now = time.time()
         elapsed = now - gsplat_start
 
+        elapsed_by_step = tuning_state.get("elapsed_by_step") if isinstance(tuning_state.get("elapsed_by_step"), dict) else {}
+        loss_by_step = tuning_state.get("loss_by_step") if isinstance(tuning_state.get("loss_by_step"), dict) else {}
+        elapsed_by_step[int(step)] = float(elapsed)
+        loss_by_step[int(step)] = float(loss)
+        tuning_state["elapsed_by_step"] = elapsed_by_step
+        tuning_state["loss_by_step"] = loss_by_step
+
         last_step = tuning_state.get("last_callback_step")
         last_elapsed = tuning_state.get("last_callback_elapsed")
         if isinstance(last_step, int) and isinstance(last_elapsed, (int, float)) and step > last_step:
@@ -1093,6 +1072,20 @@ def run_training(
 
     materialize_eval_previews(engine_output_dir)
     eval_history = collect_eval_history(engine_output_dir, p, mode)
+    elapsed_by_step = tuning_state.get("elapsed_by_step") if isinstance(tuning_state.get("elapsed_by_step"), dict) else {}
+    loss_by_step = tuning_state.get("loss_by_step") if isinstance(tuning_state.get("loss_by_step"), dict) else {}
+    if eval_history:
+        for row in eval_history:
+            if not isinstance(row, dict):
+                continue
+            step_value = row.get("step")
+            if not isinstance(step_value, (int, float)):
+                continue
+            step_int = int(step_value)
+            measured_loss = loss_by_step.get(step_int)
+            measured_elapsed = elapsed_by_step.get(step_int)
+            row["final_loss"] = float(measured_loss) if isinstance(measured_loss, (int, float)) else None
+            row["elapsed_seconds"] = float(measured_elapsed) if isinstance(measured_elapsed, (int, float)) else None
     if eval_history and mode == "modified":
         for row in eval_history:
             tuning_params = row.get("tuning_params") if isinstance(row, dict) else None
@@ -1102,11 +1095,6 @@ def run_training(
                     tuning_params["modified_last_rule_step"] = tuning_state["last_event"].get("step")
     if eval_history:
         final_eval = eval_history[-1]
-        if final_eval.get("final_loss") is None:
-            persisted_loss = _extract_final_loss_from_processing_log(project_dir)
-            if isinstance(persisted_loss, float):
-                final_eval["final_loss"] = persisted_loss
-                eval_history[-1]["final_loss"] = persisted_loss
         write_json_atomic(engine_output_dir / "eval_history.json", eval_history)
         final_metrics = {
             "lpips_score": final_eval.get("lpips_mean"),
@@ -1149,6 +1137,120 @@ def run_training(
         metadata["mode"] = mode
         metadata["tune_scope"] = tune_scope if mode == "modified" else None
         write_json_atomic(metadata_path, metadata)
+
+        loss_milestones: dict[str, float] = {}
+        eval_series: list[dict] = []
+        eval_time_series: list[dict] = []
+        for point in eval_history:
+            if not isinstance(point, dict):
+                continue
+            step_value = point.get("step")
+            if isinstance(step_value, (int, float)):
+                loss_value = point.get("final_loss")
+                if isinstance(loss_value, (int, float)):
+                    eval_series.append({"step": int(step_value), "loss": float(loss_value)})
+
+                elapsed_value = point.get("elapsed_seconds")
+                if isinstance(elapsed_value, (int, float)) and float(elapsed_value) >= 0:
+                    eval_time_series.append({
+                        "step": int(step_value),
+                        "elapsed_seconds": float(elapsed_value),
+                    })
+
+            for key, value in point.items():
+                if isinstance(key, str) and key.startswith("loss_at_") and isinstance(value, (int, float)):
+                    loss_milestones[key] = float(value)
+
+        runtime_tuning_series = [
+            {"step": item.get("step"), "params": item.get("params")}
+            for item in list(tuning_state.get("events") or [])
+            if isinstance(item, dict) and isinstance(item.get("step"), (int, float)) and isinstance(item.get("params"), dict)
+        ]
+
+        final_loss_value = final_eval.get("final_loss")
+        if not isinstance(final_loss_value, (int, float)):
+            final_loss_value = None
+
+        total_time_seconds = max(0.0, float(time.time() - gsplat_start))
+        run_name = str(p.get("run_name") or p.get("run_id") or project_dir.name)
+        run_id_value = str(p.get("run_id") or project_dir.name)
+
+        project_id = None
+        try:
+            if project_dir.parent.name == "runs":
+                project_id = project_dir.parent.parent.name
+        except Exception:
+            project_id = None
+
+        summary_payload = {
+            "project_id": project_id,
+            "run_id": run_id_value,
+            "run_name": run_name,
+            "name": project_id,
+            "status": "completed",
+            "mode": mode,
+            "engine": "gsplat",
+            "metrics": {
+                "convergence_speed": final_eval.get("convergence_speed"),
+                "final_loss": final_loss_value,
+                "lpips_mean": final_eval.get("lpips_mean"),
+                "sharpness_mean": final_eval.get("sharpness_mean"),
+                "num_gaussians": final_eval.get("num_gaussians"),
+                "total_time_seconds": total_time_seconds,
+            },
+            "tuning": {
+                "initial": (eval_history[0].get("tuning_params") if isinstance(eval_history[0], dict) else {}) or {},
+                "final": (final_eval.get("tuning_params") if isinstance(final_eval, dict) else {}) or {},
+                "end_params": (tuning_state.get("last_event") or {}).get("params", {}) if mode == "modified" else {},
+                "end_step": modified_tune_end_step if mode == "modified" else final_eval.get("step"),
+                "runs": metadata.get("tuning_runs") if isinstance(metadata, dict) else None,
+                "history_count": len(list(tuning_state.get("events") or [])),
+                "history": list(tuning_state.get("events") or []),
+                "tune_interval": p.get("tune_interval"),
+                "log_interval": p.get("log_interval"),
+                "runtime_series": runtime_tuning_series,
+            },
+            "major_params": {
+                "max_steps": p.get("max_steps"),
+                "total_steps_completed": final_eval.get("step"),
+                "densify_from_iter": p.get("densify_from_iter"),
+                "densify_until_iter": p.get("densify_until_iter"),
+                "densification_interval": p.get("densification_interval"),
+                "eval_interval": p.get("eval_interval"),
+                "save_interval": p.get("save_interval"),
+                "splat_export_interval": p.get("splat_export_interval"),
+                "batch_size": p.get("batch_size"),
+            },
+            "loss_milestones": loss_milestones,
+            "eval_series": eval_series,
+            "eval_time_series": eval_time_series,
+            "preview_url": None,
+            "eval_points": len(eval_history),
+        }
+
+        run_artifact_root = project_dir
+        if configured_run_id:
+            candidate_run_root = project_dir / "runs" / configured_run_id
+            if candidate_run_root.exists():
+                run_artifact_root = candidate_run_root
+
+        comparison_dir = run_artifact_root / "comparison"
+        comparison_dir.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(comparison_dir / "experiment_summary.json", summary_payload)
+
+        for artifact_name in ("eval_history.json", "adaptive_tuning_results.json", "metadata.json"):
+            source_path = engine_output_dir / artifact_name
+            if source_path.exists():
+                try:
+                    shutil.copy2(source_path, comparison_dir / artifact_name)
+                except Exception as exc:
+                    logger.warning("Failed to copy %s into comparison folder: %s", artifact_name, exc)
+        run_cfg_source = run_artifact_root / "run_config.json"
+        if run_cfg_source.exists():
+            try:
+                shutil.copy2(run_cfg_source, comparison_dir / "run_config.json")
+            except Exception as exc:
+                logger.warning("Failed to copy run_config.json into comparison folder: %s", exc)
 
     if stop_flag.exists():
         stop_flag.unlink()

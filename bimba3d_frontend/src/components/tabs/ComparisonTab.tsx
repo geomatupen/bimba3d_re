@@ -155,7 +155,7 @@ function extractStepFromPreviewName(name: string): number | null {
 }
 
 function getLossSeriesPoints(summary?: SummaryPayload | null): GraphPoint[] {
-  const fromEvalSeries = (summary?.eval_series ?? [])
+  return (summary?.eval_series ?? [])
     .map((item) => {
       if (!item || typeof item.step !== "number" || typeof item.loss !== "number") return null;
       if (!Number.isFinite(item.step) || !Number.isFinite(item.loss)) return null;
@@ -163,22 +163,10 @@ function getLossSeriesPoints(summary?: SummaryPayload | null): GraphPoint[] {
     })
     .filter((item): item is GraphPoint => item !== null)
     .sort((a, b) => a.x - b.x);
-
-  if (fromEvalSeries.length > 0) return fromEvalSeries;
-
-  if (!summary?.loss_milestones) return [];
-  return Object.entries(summary.loss_milestones)
-    .map(([k, v]) => {
-      const step = parseInt(k.replace("loss_at_", ""), 10);
-      if (!Number.isFinite(step) || typeof v !== "number" || !Number.isFinite(v)) return null;
-      return { x: step, y: v };
-    })
-    .filter((item): item is GraphPoint => item !== null)
-    .sort((a, b) => a.x - b.x);
 }
 
 function getTimeSeriesPoints(summary?: SummaryPayload | null): GraphPoint[] {
-  const fromApiSeries = (summary?.eval_time_series ?? [])
+  return (summary?.eval_time_series ?? [])
     .map((item) => {
       if (!item || typeof item.step !== "number" || typeof item.elapsed_seconds !== "number") return null;
       if (!Number.isFinite(item.step) || !Number.isFinite(item.elapsed_seconds)) return null;
@@ -186,13 +174,6 @@ function getTimeSeriesPoints(summary?: SummaryPayload | null): GraphPoint[] {
     })
     .filter((item): item is GraphPoint => item !== null)
     .sort((a, b) => a.x - b.x);
-
-  if (fromApiSeries.length > 0) return fromApiSeries;
-
-  const conv = summary?.metrics?.convergence_speed;
-  const lossSeries = getLossSeriesPoints(summary);
-  if (typeof conv !== "number" || !Number.isFinite(conv) || conv <= 0 || lossSeries.length === 0) return [];
-  return lossSeries.map((p) => ({ x: p.x, y: p.x / conv }));
 }
 
 function getTuningSeriesPoints(summary: SummaryPayload | null | undefined, path?: string[]): GraphPoint[] {
