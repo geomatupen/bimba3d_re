@@ -178,7 +178,6 @@ const getDefaultProcessConfig = () => ({
   tune_scope: "core_individual_plus_strategy" as TuneScope,
   run_count: 1,
   run_jitter_factor: 1,
-  run_name_prefix: "",
   continue_on_failure: true,
   start_model_mode: "scratch" as StartModelMode,
   source_model_id: "",
@@ -266,7 +265,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [tuneScope, setTuneScope] = useState<TuneScope>(cfg.tune_scope ?? "core_individual_plus_strategy");
   const [runCount, setRunCount] = useState<number>(cfg.run_count ?? 1);
   const [runJitterFactor, setRunJitterFactor] = useState<number>(cfg.run_jitter_factor ?? 1);
-  const [runNamePrefix, setRunNamePrefix] = useState<string>(cfg.run_name_prefix ?? "");
   const [continueOnFailure, setContinueOnFailure] = useState<boolean>(cfg.continue_on_failure ?? true);
   const [startModelMode, setStartModelMode] = useState<StartModelMode>(cfg.start_model_mode === "reuse" ? "reuse" : "scratch");
   const [sourceModelId, setSourceModelId] = useState<string>(cfg.source_model_id ?? "");
@@ -356,9 +354,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     tune_end_step: 'For Modified mode, this is the last step where rule-based tuning updates are allowed. The worker keeps applying rule checks until this step, then continues normal training.',
     tune_interval: 'For Modified mode, worker evaluates and applies rule-based updates every N steps during the tuning window.',
     tune_scope: 'Rule tuning scope: Core individual updates only LR groups. Core only updates LR groups + core strategy threshold. Core AI optimization runs a lightweight adaptive controller with gated actions and cross-run memory; it uses tune_min_improvement as the baseline anchor, then adapts thresholds over time. Core individual + strategy updates LR groups and full strategy controls.',
-    run_count: 'Number of sessions to run automatically in sequence. Default 1 keeps manual behavior.',
+    run_count: 'Total sessions in this batch, including the selected session as run 1. Default 1 keeps manual behavior.',
     run_jitter_factor: 'Per-run multiplier for LR-related params. 1 means no jitter across runs.',
-    run_name_prefix: 'Optional prefix used for auto-created batch session names.',
     continue_on_failure: 'If enabled, remaining runs continue even when one run fails/stops.',
     start_model_mode: 'Choose training initialization mode. Scratch starts a fresh run; Reuse warm-starts from a selected elevated model.',
     source_model_id: 'Reusable model used for warm-start. Available models come from elevated gsplat sessions.',
@@ -491,7 +488,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     setTuneScope(defaults.tune_scope ?? "core_individual_plus_strategy");
     setRunCount(defaults.run_count ?? 1);
     setRunJitterFactor(defaults.run_jitter_factor ?? 1);
-    setRunNamePrefix(defaults.run_name_prefix ?? "");
     setContinueOnFailure(defaults.continue_on_failure ?? true);
     setStartModelMode(defaults.start_model_mode ?? "scratch");
     setSourceModelId(defaults.source_model_id ?? "");
@@ -551,7 +547,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       if (resolved.tune_scope) setTuneScope(resolved.tune_scope as TuneScope);
       if (typeof resolved.run_count === "number") setRunCount(Math.max(1, Math.floor(resolved.run_count)));
       if (typeof resolved.run_jitter_factor === "number") setRunJitterFactor(Math.max(0.1, resolved.run_jitter_factor));
-      if (typeof resolved.run_name_prefix === "string") setRunNamePrefix(resolved.run_name_prefix);
       if (typeof resolved.continue_on_failure === "boolean") setContinueOnFailure(resolved.continue_on_failure);
       if (resolved.start_model_mode === "scratch" || resolved.start_model_mode === "reuse") setStartModelMode(resolved.start_model_mode);
       if (typeof resolved.source_model_id === "string") setSourceModelId(resolved.source_model_id);
@@ -651,7 +646,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       tune_scope: tuneScope,
       run_count: runCount,
       run_jitter_factor: runJitterFactor,
-      run_name_prefix: runNamePrefix,
       continue_on_failure: continueOnFailure,
       start_model_mode: startModelMode,
       source_model_id: sourceModelId,
@@ -674,7 +668,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       litegs_alpha_shrink: litegsAlphaShrink,
     };
     localStorage.setItem(getTrainingConfigStorageKey(selectedRunId), JSON.stringify(config));
-  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, runCount, runJitterFactor, runNamePrefix, continueOnFailure, startModelMode, sourceModelId, engine, maxSteps, logInterval, splatInterval, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
+  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, runCount, runJitterFactor, continueOnFailure, startModelMode, sourceModelId, engine, maxSteps, logInterval, splatInterval, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2083,7 +2077,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         tune_scope: effectiveMode === "modified" ? tuneScope : undefined,
         run_count: includeBatchControls ? runCount : 1,
         run_jitter_factor: includeBatchControls ? runJitterFactor : undefined,
-        run_name_prefix: includeBatchControls ? (runNamePrefix?.trim() || undefined) : undefined,
         continue_on_failure: includeBatchControls ? continueOnFailure : undefined,
         start_model_mode: includeSessionControls ? startModelMode : undefined,
         source_model_id: includeSessionControls && startModelMode === "reuse" ? sourceModelId || undefined : undefined,
@@ -2206,7 +2199,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         tune_scope: effectiveMode === "modified" ? tuneScope : undefined,
         run_count: includeSessionControls ? runCount : undefined,
         run_jitter_factor: includeSessionControls ? runJitterFactor : undefined,
-        run_name_prefix: includeSessionControls ? (runNamePrefix?.trim() || undefined) : undefined,
         continue_on_failure: includeSessionControls ? continueOnFailure : undefined,
         start_model_mode: includeSessionControls ? startModelMode : undefined,
         source_model_id: includeSessionControls && startModelMode === "reuse" ? sourceModelId || undefined : undefined,
@@ -2367,7 +2359,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       tune_scope: tuneScope,
       run_count: runCount,
       run_jitter_factor: runJitterFactor,
-      run_name_prefix: runNamePrefix?.trim() || undefined,
       continue_on_failure: continueOnFailure,
       start_model_mode: startModelMode,
       source_model_id: sourceModelId || undefined,
@@ -2402,7 +2393,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       tune_scope: tuneScope,
       run_count: runCount,
       run_jitter_factor: runJitterFactor,
-      run_name_prefix: runNamePrefix,
       continue_on_failure: continueOnFailure,
       start_model_mode: startModelMode,
       source_model_id: sourceModelId,
@@ -2557,7 +2547,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           tune_scope: defaults.tune_scope,
           run_count: includeSessionControls ? defaults.run_count : undefined,
           run_jitter_factor: includeSessionControls ? defaults.run_jitter_factor : undefined,
-          run_name_prefix: includeSessionControls ? defaults.run_name_prefix : undefined,
           continue_on_failure: includeSessionControls ? defaults.continue_on_failure : undefined,
           start_model_mode: includeSessionControls ? defaults.start_model_mode : undefined,
           source_model_id:
@@ -3504,6 +3493,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                       onChange={(e) => setRunCount(Math.max(1, parseInt(e.target.value || "1") || 1))}
                                       className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                     />
+                                    <p className="mt-1 text-[10px] text-slate-500">Includes selected session as run 1; creates {Math.max(0, runCount - 1)} additional sessions.</p>
                                   </div>
                                   <div>
                                     <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
@@ -3521,19 +3511,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                           setRunJitterFactor(Math.max(0.1, value));
                                         }
                                       }}
-                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                    />
-                                  </div>
-                                  <div className="md:col-span-2">
-                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                      <span>Run name prefix</span>
-                                      <button onClick={() => setSelectedInfoKey("run_name_prefix")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                    </label>
-                                    <input
-                                      type="text"
-                                      value={runNamePrefix}
-                                      onChange={(e) => setRunNamePrefix(e.target.value)}
-                                      placeholder="Optional prefix for auto-created runs"
                                       className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                     />
                                   </div>

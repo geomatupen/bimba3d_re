@@ -377,7 +377,6 @@ def _run_batch_process(
     project_id: str,
     base_params: dict,
     run_count: int,
-    run_name_prefix: str | None,
     jitter_factor: float,
     continue_on_failure: bool,
     start_index: int = 1,
@@ -392,10 +391,17 @@ def _run_batch_process(
         previous_success_run_id: str | None = str(initial_previous_success_run_id or "") or None
         successful_run_ids: list[str] = []
         last_started_run_id: str | None = None
-        prefix = _sanitize_run_token(run_name_prefix or "") if run_name_prefix else ""
         run_count_int = max(1, int(run_count))
         start_idx = max(1, min(int(start_index), run_count_int))
         batch_plan_id = _sanitize_run_token(str(base_params.get("batch_plan_id") or ""))
+        seed_run_name = _sanitize_run_token(str(base_params.get("run_name") or "")) or None
+
+        def _build_followup_run_name(seed_name: str | None, ordinal: int) -> str:
+            if not seed_name:
+                return f"batch_run{ordinal}"
+            base_name = re.sub(r"[_-]run\d+$", "", seed_name, flags=re.IGNORECASE)
+            base_name = base_name or seed_name
+            return f"{base_name}_run{ordinal}"
 
         for idx in range(start_idx - 1, run_count_int):
             status.update_status(
@@ -418,9 +424,6 @@ def _run_batch_process(
             run_params["batch_index"] = idx + 1
             run_params["batch_total"] = run_count_int
             run_params["batch_continue_on_failure"] = bool(continue_on_failure)
-            if prefix:
-                run_params["batch_run_name_prefix"] = prefix
-
             if idx > 0:
                 run_params["stage"] = "train_only"
 
@@ -429,11 +432,10 @@ def _run_batch_process(
                 run_params["source_run_id"] = previous_success_run_id
                 run_params.pop("source_model_id", None)
 
-            if prefix:
-                run_params["run_name"] = f"{prefix}_session{idx + 1}"
-            elif run_params.get("run_name"):
-                base_name = _sanitize_run_token(str(run_params.get("run_name") or "batch")) or "batch"
-                run_params["run_name"] = f"{base_name}_{idx + 1}"
+            if idx == 0 and seed_run_name:
+                run_params["run_name"] = seed_run_name
+            else:
+                run_params["run_name"] = _build_followup_run_name(seed_run_name, idx + 1)
 
             run_params = _apply_run_jitter(run_params, idx, jitter_factor)
             logger.info("Batch %s/%s starting for %s (run_name=%s)", idx + 1, run_count_int, project_id, run_params.get("run_name"))
@@ -1506,28 +1508,17 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
                 raise HTTPException(status_code=400, detail="Batch resume is not supported. Use Batch Continue from a fresh start.")
 
             jitter_factor = float(requested_params.get("run_jitter_factor") or 1.0)
-            run_name_prefix = str(requested_params.get("run_name_prefix") or "").strip() or None
             continue_on_failure = bool(requested_params.get("continue_on_failure", True))
             batch_plan_id = f"batch_{uuid.uuid4().hex[:12]}"
 
-            # Drop selected non-base seed session before creating fresh batch sessions.
-            runs_root = project_dir / "runs"
-            runs_root.mkdir(parents=True, exist_ok=True)
+            batch_message = f"Batch queued: {run_count} runs (jitter={jitter_factor})."
             seed_run_raw = str(requested_params.get("run_name") or "").strip()
             seed_run_id = _sanitize_run_token(seed_run_raw)
-            seed_action_note = ""
-            if seed_run_id and (runs_root / seed_run_id).exists():
-                current_state = status.get_status(project_id)
-                base_session_id = str(current_state.get("base_session_id") or "") if isinstance(current_state, dict) else ""
-                if seed_run_id != base_session_id:
-                    try:
-                        _delete_path_strict(runs_root / seed_run_id)
-                        seed_action_note = f"Deleted selected seed session '{seed_run_id}' before batch."
-                    except Exception as exc:
-                        logger.warning("Failed to delete batch seed run %s for %s: %s", seed_run_id, project_id, exc)
-                        seed_action_note = f"Could not delete selected seed session '{seed_run_id}'; continuing with new batch sessions."
-
-            batch_message = f"Batch queued: {run_count} runs (jitter={jitter_factor})."
+            seed_action_note = (
+                f"Using selected session '{seed_run_id}' as batch run 1."
+                if seed_run_id
+                else ""
+            )
             if seed_action_note:
                 batch_message = f"{batch_message} {seed_action_note}"
 
@@ -1569,17 +1560,16 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
             batch_seed_params = dict(requested_params)
             batch_seed_params["run_count"] = 1
             batch_seed_params["run_jitter_factor"] = jitter_factor
-            batch_seed_params["run_name_prefix"] = run_name_prefix
             batch_seed_params["continue_on_failure"] = continue_on_failure
             batch_seed_params["batch_plan_id"] = batch_plan_id
             batch_seed_params["batch_total"] = int(run_count)
             batch_seed_params["batch_continue_on_failure"] = bool(continue_on_failure)
-            if run_name_prefix:
-                batch_seed_params["batch_run_name_prefix"] = _sanitize_run_token(run_name_prefix)
+            batch_seed_params.pop("run_name_prefix", None)
+            batch_seed_params.pop("batch_run_name_prefix", None)
 
             thread = threading.Thread(
                 target=_run_batch_process,
-                args=(project_id, batch_seed_params, run_count, run_name_prefix, jitter_factor, continue_on_failure),
+                args=(project_id, batch_seed_params, run_count, jitter_factor, continue_on_failure),
                 daemon=True,
             )
             thread.start()
@@ -1591,7 +1581,6 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
                 "run_count": run_count,
                 "jitter_factor": jitter_factor,
                 "continue_on_failure": continue_on_failure,
-                "run_name_prefix": run_name_prefix,
                 "seed_action_note": seed_action_note or None,
             }
 
@@ -2156,13 +2145,6 @@ def continue_batch_from_run(
         if batch_total < 2 or batch_index < 1 or batch_index > batch_total:
             raise HTTPException(status_code=409, detail="Selected run is not part of a valid batch chain.")
 
-        run_name_prefix = str(
-            resolved.get("batch_run_name_prefix")
-            or requested.get("batch_run_name_prefix")
-            or resolved.get("run_name_prefix")
-            or requested.get("run_name_prefix")
-            or ""
-        ).strip() or None
         continue_on_failure = bool(
             resolved.get("batch_continue_on_failure", requested.get("batch_continue_on_failure", resolved.get("continue_on_failure", requested.get("continue_on_failure", True))))
         )
@@ -2177,15 +2159,14 @@ def continue_batch_from_run(
         base_params = json.loads(json.dumps(requested if requested else resolved))
         base_params["run_name"] = run_id
         base_params["run_count"] = 1
-        base_params["run_name_prefix"] = run_name_prefix
         base_params["continue_on_failure"] = continue_on_failure
         base_params["batch_connect_runs"] = batch_connect_runs
         base_params["run_jitter_factor"] = jitter_factor
         base_params["batch_plan_id"] = batch_plan_id
         base_params["batch_total"] = batch_total
         base_params["batch_index"] = batch_index
-        if run_name_prefix:
-            base_params["batch_run_name_prefix"] = _sanitize_run_token(run_name_prefix)
+        base_params.pop("run_name_prefix", None)
+        base_params.pop("batch_run_name_prefix", None)
 
         if restart_current:
             restart_params = dict(base_params)
@@ -2239,7 +2220,6 @@ def continue_batch_from_run(
                 project_id,
                 base_params,
                 batch_total,
-                run_name_prefix,
                 jitter_factor,
                 continue_on_failure,
                 next_index,
