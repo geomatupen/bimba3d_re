@@ -121,6 +121,7 @@ class ProcessParams(BaseModel):
     rotation_lr: Optional[float] = None  # [original]
     percent_dense: Optional[float] = None  # [original]
     splat_export_interval: Optional[int] = None  # [original]
+    best_splat_interval: Optional[int] = None  # [custom]
     png_export_interval: Optional[int] = None  # [original]
     # --- CUSTOM PARAMETERS ---
     auto_early_stop: Optional[bool] = None  # [custom]

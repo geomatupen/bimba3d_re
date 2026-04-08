@@ -192,6 +192,11 @@ def run_training(
         splat_interval = max(1, int(splat_interval)) if splat_interval is not None else None
     except Exception:
         splat_interval = None
+    best_splat_interval = p.get("best_splat_interval", 100)
+    try:
+        best_splat_interval = max(1, int(best_splat_interval))
+    except Exception:
+        best_splat_interval = 100
     log_interval = p.get("log_interval", 100)
     try:
         log_interval = max(1, int(log_interval))
@@ -218,6 +223,7 @@ def run_training(
         "strategy_frozen_reason": None,
         "elapsed_by_step": {},
         "loss_by_step": {},
+        "best_splat": {"step": None, "loss": None, "path": None},
     }
 
     def _clamp_int(value: int, low: int, high: int) -> int:
@@ -852,6 +858,7 @@ def run_training(
     save_steps = sorted(set(
         _build_steps(p.get("save_interval"), [7000, 30000])
         + _build_steps(p.get("splat_export_interval"), [7000, 30000])
+        + _build_steps(best_splat_interval, [7000, 30000])
     ))
 
     cfg = Config(
@@ -884,6 +891,7 @@ def run_training(
     progress_every = max(1, int(log_interval))
     if mode == "modified":
         progress_every = min(progress_every, max(1, int(modified_tune_interval)))
+    progress_every = min(progress_every, best_splat_interval)
     cfg.progress_every = progress_every
     if cfg.disable_tqdm:
         os.environ["TQDM_DISABLE"] = "1"
@@ -908,6 +916,35 @@ def run_training(
         materialize_eval_previews(engine_output_dir, eval_step=step)
 
     def checkpoint_callback(step: int, checkpoint_path: str) -> None:
+        if step % best_splat_interval == 0 or step == max_steps:
+            try:
+                loss_by_step = tuning_state.get("loss_by_step") if isinstance(tuning_state.get("loss_by_step"), dict) else {}
+                best_state = tuning_state.get("best_splat") if isinstance(tuning_state.get("best_splat"), dict) else {}
+                current_loss = loss_by_step.get(int(step))
+                best_loss = best_state.get("loss") if isinstance(best_state, dict) else None
+                should_update_best = isinstance(current_loss, (int, float)) and (
+                    not isinstance(best_loss, (int, float)) or float(current_loss) < float(best_loss)
+                )
+                if should_update_best:
+                    export_with_gsplat(
+                        Path(checkpoint_path),
+                        engine_output_dir,
+                        splat_name="best.splat",
+                        export_ply=False,
+                    )
+                    tuning_state["best_splat"] = {
+                        "step": int(step),
+                        "loss": float(current_loss),
+                        "path": str(engine_output_dir / "best.splat"),
+                    }
+                    logger.info(
+                        "Updated best.splat at step %d with loss %.6f",
+                        int(step),
+                        float(current_loss),
+                    )
+            except Exception as exc:
+                logger.warning("Failed to export best.splat at step %s: %s", step, exc)
+
         if splat_interval and step % splat_interval != 0 and step != max_steps:
             return
         snapshot_name = f"snapshot_step_{step:06d}.splat"
@@ -1136,6 +1173,7 @@ def run_training(
         metadata["num_gaussians"] = final_eval.get("num_gaussians")
         metadata["mode"] = mode
         metadata["tune_scope"] = tune_scope if mode == "modified" else None
+        metadata["best_splat"] = tuning_state.get("best_splat")
         write_json_atomic(metadata_path, metadata)
 
         loss_milestones: dict[str, float] = {}
@@ -1197,6 +1235,16 @@ def run_training(
                 "sharpness_mean": final_eval.get("sharpness_mean"),
                 "num_gaussians": final_eval.get("num_gaussians"),
                 "total_time_seconds": total_time_seconds,
+                "best_splat_step": (
+                    (tuning_state.get("best_splat") or {}).get("step")
+                    if isinstance(tuning_state.get("best_splat"), dict)
+                    else None
+                ),
+                "best_splat_loss": (
+                    (tuning_state.get("best_splat") or {}).get("loss")
+                    if isinstance(tuning_state.get("best_splat"), dict)
+                    else None
+                ),
             },
             "tuning": {
                 "initial": (eval_history[0].get("tuning_params") if isinstance(eval_history[0], dict) else {}) or {},

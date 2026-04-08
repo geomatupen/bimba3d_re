@@ -38,6 +38,8 @@ interface EngineOutputBundle {
   name: string;
   label: string;
   hasModel: boolean;
+  finalModelUrl: string | null;
+  bestModelUrl: string | null;
   previews: PreviewFile[];
   snapshots: SnapshotEntry[];
 }
@@ -185,6 +187,7 @@ const getDefaultProcessConfig = () => ({
   maxSteps: 15000,
   logInterval: 100,
   splatInterval: 2500,
+  bestSplatInterval: 100,
   pngInterval: 50,
   evalInterval: 1000,
   saveInterval: 2500,
@@ -275,6 +278,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [maxSteps, setMaxSteps] = useState<number>(cfg.maxSteps ?? 15000);
   const [logInterval, setLogInterval] = useState<number>(cfg.logInterval ?? 100);
   const [splatInterval, setSplatInterval] = useState<number>(cfg.splatInterval ?? 2500);
+  const [bestSplatInterval, setBestSplatInterval] = useState<number>(cfg.bestSplatInterval ?? cfg.best_splat_interval ?? 100);
   const [pngInterval, setPngInterval] = useState<number>(cfg.pngInterval ?? 50);
   const [evalInterval, setEvalInterval] = useState<number>(cfg.evalInterval ?? 1000);
   const [saveInterval, setSaveInterval] = useState<number>(cfg.saveInterval ?? 2500);
@@ -363,6 +367,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     maxSteps: 'Total training iterations. This value is sent from frontend in both baseline and modified modes. [original]',
     logInterval: 'How often (in steps) to print consolidated training snapshots in worker logs. Lower values are more verbose. [custom]',
     splatInterval: 'How often (in steps) to export intermediate .splat/.ply files during training. [original]',
+    bestSplatInterval: 'How often (in steps) to evaluate and update best.splat using measured training loss. Final export cadence remains controlled by Splat export interval. [custom]',
     pngInterval: 'Deprecated for gsplat: previews are generated on eval steps. Use eval interval to control preview cadence.',
     evalInterval: 'How often to run eval passes + metrics collection. Preview images are generated on each eval step. This value is configurable from frontend in both modes. [original]',
     saveInterval: 'Checkpoint frequency for gsplat. This value is configurable from frontend. [original]',
@@ -413,6 +418,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [selectedPng, setSelectedPng] = useState<string | null>(null);
   const [modelSnapshots, setModelSnapshots] = useState<SnapshotEntry[]>([]);
   const [selectedModelSnapshot, setSelectedModelSnapshot] = useState<string | null>(null);
+  const [selectedModelLayer, setSelectedModelLayer] = useState<"final" | "best">("final");
   const [basemap, setBasemap] = useState<"satellite" | "osm">("satellite");
   const [showImagesLayer, setShowImagesLayer] = useState(true);
   const [_showSparseLayer, setShowSparseLayer] = useState(true);
@@ -495,6 +501,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     setMaxSteps(defaults.maxSteps);
     setLogInterval(defaults.logInterval ?? 100);
     setSplatInterval(defaults.splatInterval);
+    setBestSplatInterval(defaults.bestSplatInterval ?? 100);
     setPngInterval(defaults.pngInterval);
     setEvalInterval(defaults.evalInterval);
     setSaveInterval(defaults.saveInterval);
@@ -554,6 +561,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       if (typeof resolved.max_steps === "number") setMaxSteps(resolved.max_steps);
       if (typeof resolved.log_interval === "number") setLogInterval(resolved.log_interval);
       if (typeof resolved.splat_export_interval === "number") setSplatInterval(resolved.splat_export_interval);
+      if (typeof resolved.best_splat_interval === "number") setBestSplatInterval(resolved.best_splat_interval);
       if (typeof resolved.eval_interval === "number") setEvalInterval(resolved.eval_interval);
       if (typeof resolved.save_interval === "number") setSaveInterval(resolved.save_interval);
       if (typeof resolved.densify_from_iter === "number") setDensifyFromIter(resolved.densify_from_iter);
@@ -603,6 +611,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     if (typeof normalized.max_steps !== "number" && typeof raw.maxSteps === "number") normalized.max_steps = raw.maxSteps;
     if (typeof normalized.log_interval !== "number" && typeof raw.logInterval === "number") normalized.log_interval = raw.logInterval;
     if (typeof normalized.splat_export_interval !== "number" && typeof raw.splatInterval === "number") normalized.splat_export_interval = raw.splatInterval;
+    if (typeof normalized.best_splat_interval !== "number" && typeof raw.bestSplatInterval === "number") normalized.best_splat_interval = raw.bestSplatInterval;
     if (typeof normalized.eval_interval !== "number" && typeof raw.evalInterval === "number") normalized.eval_interval = raw.evalInterval;
     if (typeof normalized.save_interval !== "number" && typeof raw.saveInterval === "number") normalized.save_interval = raw.saveInterval;
     if (typeof normalized.densify_from_iter !== "number" && typeof raw.densifyFromIter === "number") normalized.densify_from_iter = raw.densifyFromIter;
@@ -653,6 +662,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       max_steps: maxSteps,
       log_interval: logInterval,
       splat_export_interval: splatInterval,
+      best_splat_interval: bestSplatInterval,
       png_export_interval: pngInterval,
       eval_interval: evalInterval,
       save_interval: saveInterval,
@@ -668,7 +678,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       litegs_alpha_shrink: litegsAlphaShrink,
     };
     localStorage.setItem(getTrainingConfigStorageKey(selectedRunId), JSON.stringify(config));
-  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, runCount, runJitterFactor, continueOnFailure, startModelMode, sourceModelId, engine, maxSteps, logInterval, splatInterval, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
+  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, runCount, runJitterFactor, continueOnFailure, startModelMode, sourceModelId, engine, maxSteps, logInterval, splatInterval, bestSplatInterval, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -954,6 +964,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   useEffect(() => {
     setSelectedModelSnapshot(null);
     setModelSnapshots([]);
+    setSelectedModelLayer("final");
   }, [projectId]);
 
   useEffect(() => {
@@ -1067,10 +1078,14 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         Object.entries(enginesData).forEach(([engineName, bundle]: [string, any]) => {
           const previews = parsePreviewItems(bundle?.previews);
           const snapshots = buildSnapshotEntries(Array.isArray(bundle?.model_snapshots) ? bundle.model_snapshots : []);
+          const finalModelUrl = normalizeUrl(bundle?.splats?.url);
+          const bestModelUrl = normalizeUrl(bundle?.best_splat?.url);
           nextEngineMap[engineName] = {
             name: engineName,
             label: formatEngineLabel(engineName),
-            hasModel: Boolean(bundle?.splats),
+            hasModel: Boolean(finalModelUrl || bestModelUrl),
+            finalModelUrl,
+            bestModelUrl,
             previews,
             snapshots,
           };
@@ -2006,6 +2021,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     setSelectedPng(null);
     setModelSnapshots(bundle.snapshots);
     setSelectedModelSnapshot(null);
+    setSelectedModelLayer("final");
     setViewerOutput('model');
     setTopView('viewer');
   };
@@ -2085,6 +2101,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         max_steps: maxSteps,
         log_interval: logInterval,
         splat_export_interval: splatInterval,
+        best_splat_interval: bestSplatInterval,
         png_export_interval: evalInterval,
         eval_interval: evalInterval,
         save_interval: saveInterval,
@@ -2207,6 +2224,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         max_steps: maxSteps,
         log_interval: logInterval,
         splat_export_interval: splatInterval,
+        best_splat_interval: bestSplatInterval,
         png_export_interval: evalInterval,
         eval_interval: evalInterval,
         save_interval: saveInterval,
@@ -2367,6 +2385,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       max_steps: maxSteps,
       log_interval: logInterval,
       splat_export_interval: splatInterval,
+      best_splat_interval: bestSplatInterval,
       png_export_interval: evalInterval,
       eval_interval: evalInterval,
       save_interval: saveInterval,
@@ -2400,6 +2419,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       max_steps: maxSteps,
       log_interval: logInterval,
       splat_export_interval: splatInterval,
+      best_splat_interval: bestSplatInterval,
       png_export_interval: pngInterval,
       eval_interval: evalInterval,
       save_interval: saveInterval,
@@ -2557,6 +2577,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           max_steps: defaults.maxSteps,
           log_interval: defaults.logInterval,
           splat_export_interval: defaults.splatInterval,
+          best_splat_interval: defaults.bestSplatInterval,
           png_export_interval: defaults.evalInterval,
           eval_interval: defaults.evalInterval,
           save_interval: defaults.saveInterval,
@@ -2643,6 +2664,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const hasEngineOutputs = Object.keys(engineOutputMap).length > 0;
   const showEngineDropdown = engineOptions.length > 1;
   const activeEngineBundle = selectedEngineName ? engineOutputMap[selectedEngineName] : null;
+  const selectedLayerModelUrl = selectedModelLayer === "best"
+    ? (activeEngineBundle?.bestModelUrl || activeEngineBundle?.finalModelUrl || null)
+    : (activeEngineBundle?.finalModelUrl || activeEngineBundle?.bestModelUrl || null);
+  const selectedLayerModelLabel = selectedModelLayer === "best" ? "Best Splat" : "Final Splat";
   const finalModelAvailable = activeEngineBundle ? activeEngineBundle.hasModel : has3DModel;
   const viewerModelAvailable = finalModelAvailable || modelSnapshots.length > 0 || Boolean(selectedModelSnapshot);
   const selectedEngineLabel = activeEngineBundle?.label;
@@ -3130,6 +3155,30 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                         <span className="text-[11px] text-slate-500">Engine-specific outputs feed the 3D viewer</span>
                       </div>
                     </label>
+                    {viewerOutput === 'model' && finalModelAvailable && activeEngineBundle && (
+                      <div className="mt-2 space-y-1">
+                        <label className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs ${selectedModelLayer === 'final' ? 'bg-blue-50 border border-blue-200' : 'hover:bg-blue-50 border border-transparent'} ${!activeEngineBundle.finalModelUrl ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                          <input
+                            type="radio"
+                            name={`modelLayer_${projectId}`}
+                            checked={selectedModelLayer === 'final'}
+                            onChange={() => { if (activeEngineBundle.finalModelUrl) { setSelectedModelLayer('final'); setSelectedModelSnapshot(null); setTopView('viewer'); } }}
+                            disabled={!activeEngineBundle.finalModelUrl}
+                          />
+                          <span className="truncate">Final Splat</span>
+                        </label>
+                        <label className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs ${selectedModelLayer === 'best' ? 'bg-blue-50 border border-blue-200' : 'hover:bg-blue-50 border border-transparent'} ${!activeEngineBundle.bestModelUrl ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                          <input
+                            type="radio"
+                            name={`modelLayer_${projectId}`}
+                            checked={selectedModelLayer === 'best'}
+                            onChange={() => { if (activeEngineBundle.bestModelUrl) { setSelectedModelLayer('best'); setSelectedModelSnapshot(null); setTopView('viewer'); } }}
+                            disabled={!activeEngineBundle.bestModelUrl}
+                          />
+                          <span className="truncate">Best Splat</span>
+                        </label>
+                      </div>
+                    )}
                   </div>
 
                   <div className="border-t border-slate-200 pt-2 mt-2">
@@ -3245,7 +3294,13 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
             <div className="h-[560px] bg-slate-50 flex items-center justify-center p-4">
               <div className="w-full h-full rounded-lg overflow-hidden border border-slate-200 bg-black relative">
                 {viewerOutput === 'model' && viewerModelAvailable ? (
-                  <ViewerTab projectId={projectId} snapshotUrl={selectedModelSnapshot} engineOverride={selectedEngineName} />
+                  <ViewerTab
+                    projectId={projectId}
+                    snapshotUrl={selectedModelSnapshot}
+                    engineOverride={selectedEngineName}
+                    modelUrlOverride={selectedModelSnapshot ? null : selectedLayerModelUrl}
+                    modelLabelOverride={selectedModelSnapshot ? "Snapshot" : selectedLayerModelLabel}
+                  />
                 ) : viewerOutput === 'pointcloud' && hasSparseCloud ? (
                   <SparseViewer projectId={projectId} focusTarget={focusTarget} />
                 ) : (
@@ -3841,6 +3896,20 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                               </div>
                               {engine === "gsplat" && (
                               <>
+                                <div>
+                                <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                  <span>Best splat interval</span>
+                                  <button onClick={() => setSelectedInfoKey("bestSplatInterval")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                </label>
+                                <input
+                                  type="number"
+                                  value={bestSplatInterval}
+                                  onChange={(e) => setBestSplatInterval(parseInt(e.target.value) || 100)}
+                                  className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
+                                  min={10}
+                                  step={10}
+                                />
+                                </div>
                                 <div>
                                 <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
                                   <span>Log interval</span>

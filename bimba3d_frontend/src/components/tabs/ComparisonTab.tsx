@@ -78,6 +78,8 @@ const metricRows: Array<{ key: string; label: string; lowerIsBetter?: boolean }>
   { key: "total_time_seconds", label: "Total Time", lowerIsBetter: true },
   { key: "convergence_speed", label: "Convergence Speed" },
   { key: "final_loss", label: "Final Loss", lowerIsBetter: true },
+  { key: "best_splat_step", label: "Best Splat Step", lowerIsBetter: true },
+  { key: "best_splat_loss", label: "Best Splat Loss", lowerIsBetter: true },
   { key: "lpips_mean", label: "LPIPS", lowerIsBetter: true },
   { key: "sharpness_mean", label: "Sharpness" },
   { key: "num_gaussians", label: "Gaussian Count" },
@@ -133,6 +135,7 @@ function formatDuration(seconds: number): string {
 
 function fmtMetricValue(key: string, v: unknown): string {
   if (key === "total_time_seconds" && typeof v === "number") return formatDuration(v);
+  if (key === "best_splat_step" && typeof v === "number" && Number.isFinite(v)) return Math.round(v).toLocaleString();
   return fmt(v);
 }
 

@@ -96,6 +96,10 @@ def build_summary(project_id: str, run_id: str, run_dir: Path, engine: str = "gs
     if not isinstance(final_loss, (int, float)):
         final_loss = None
 
+    best_splat = metadata.get("best_splat") if isinstance(metadata.get("best_splat"), dict) else {}
+    best_splat_step = best_splat.get("step") if isinstance(best_splat.get("step"), (int, float)) else None
+    best_splat_loss = best_splat.get("loss") if isinstance(best_splat.get("loss"), (int, float)) else None
+
     return {
         "project_id": project_id,
         "run_id": run_id,
@@ -111,6 +115,8 @@ def build_summary(project_id: str, run_id: str, run_dir: Path, engine: str = "gs
             "sharpness_mean": latest_eval.get("sharpness_mean") if isinstance(latest_eval, dict) else None,
             "num_gaussians": latest_eval.get("num_gaussians") if isinstance(latest_eval, dict) else None,
             "total_time_seconds": total_time_seconds,
+            "best_splat_step": int(best_splat_step) if isinstance(best_splat_step, (int, float)) else None,
+            "best_splat_loss": float(best_splat_loss) if isinstance(best_splat_loss, (int, float)) else None,
         },
         "tuning": {
             "initial": first_eval.get("tuning_params") if isinstance(first_eval, dict) and isinstance(first_eval.get("tuning_params"), dict) else {},

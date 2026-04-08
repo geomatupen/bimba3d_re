@@ -39,12 +39,25 @@ def _collect_outputs(root_dir: Path, project_id: str, engine: str, run_id: str |
         bundle["splats"] = entry
         return entry
 
+    def add_best_splat_entry(candidate: Path):
+        if not candidate.exists():
+            return None
+        entry = {
+            "format": "splat",
+            "path": str(candidate),
+            "size": candidate.stat().st_size,
+            "url": f"/projects/{project_id}/download/best.splat{query_suffix}",
+        }
+        bundle["best_splat"] = entry
+        return entry
+
     # Final artifacts (splat/ply/bin)
     add_splats_entry(root_dir / "splats.splat", "splat")
     if "splats" not in bundle:
         add_splats_entry(root_dir / "splats.ply", "ply")
     if "splats" not in bundle:
         add_splats_entry(root_dir / "splats.bin", "bin")
+    add_best_splat_entry(root_dir / "best.splat")
 
     metadata_path = root_dir / "metadata.json"
     if metadata_path.exists():

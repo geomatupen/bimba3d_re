@@ -1409,6 +1409,7 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
         params_payload.setdefault("log_interval", 100)
         params_payload.setdefault("save_interval", 2500)
         params_payload.setdefault("splat_export_interval", 2500)
+        params_payload.setdefault("best_splat_interval", 100)
         params_payload.setdefault("tune_end_step", 15000)
         params_payload.setdefault("tune_interval", 100)
         params_payload.setdefault("batch_size", 1)
@@ -3009,6 +3010,60 @@ def head_splats_splat(project_id: str, engine: str | None = Query(None), run_id:
     raise HTTPException(status_code=404, detail=detail)
 
 
+@router.get("/{project_id}/download/best.splat")
+def download_best_splat(project_id: str, engine: str | None = Query(None), run_id: str | None = Query(None)):
+    """Download best model .splat file selected during training."""
+    try:
+        project_dir = DATA_DIR / project_id
+        if not project_dir.exists():
+            raise HTTPException(status_code=404, detail="Project not found")
+        best_path, _, sanitized_engine, inferred_engine = _find_existing_path(
+            project_id,
+            "best.splat",
+            engine,
+            run_id=(run_id.strip() if run_id else None),
+        )
+
+        if not best_path:
+            detail = "best.splat file not found. Best checkpoint may not be available yet."
+            missing_engine = sanitized_engine or inferred_engine
+            if missing_engine:
+                detail = f"best.splat file not found for engine '{missing_engine}'."
+            raise HTTPException(status_code=404, detail=detail)
+
+        return FileResponse(
+            path=best_path,
+            filename="best.splat",
+            media_type="application/octet-stream"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading best.splat: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to download best.splat")
+
+
+@router.head("/{project_id}/download/best.splat")
+def head_best_splat(project_id: str, engine: str | None = Query(None), run_id: str | None = Query(None)):
+    """HEAD probe for best.splat file."""
+    project_dir = DATA_DIR / project_id
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+    best_path, _, sanitized_engine, inferred_engine = _find_existing_path(
+        project_id,
+        "best.splat",
+        engine,
+        run_id=(run_id.strip() if run_id else None),
+    )
+    if best_path:
+        return FileResponse(path=best_path, filename="best.splat", media_type="application/octet-stream")
+    missing_engine = sanitized_engine or inferred_engine
+    detail = "best.splat file not found"
+    if missing_engine:
+        detail = f"best.splat file not found for engine '{missing_engine}'"
+    raise HTTPException(status_code=404, detail=detail)
+
+
 @router.get("/{project_id}/download/splats.ply")
 def download_splats_ply(project_id: str, engine: str | None = Query(None), run_id: str | None = Query(None)):
     """Download PLY splats file."""
@@ -3983,6 +4038,16 @@ def get_experiment_summary(
             response_payload["run_id"] = requested_run_id
             if not response_payload.get("run_name"):
                 response_payload["run_name"] = requested_run_id
+            metrics_payload = response_payload.get("metrics") if isinstance(response_payload.get("metrics"), dict) else {}
+            comparison_metadata = _read_json_if_exists(run_dir / "comparison" / "metadata.json")
+            if not isinstance(comparison_metadata, dict):
+                comparison_metadata = _read_json_if_exists(run_dir / "outputs" / "engines" / "gsplat" / "metadata.json")
+            best_splat = comparison_metadata.get("best_splat") if isinstance(comparison_metadata, dict) and isinstance(comparison_metadata.get("best_splat"), dict) else {}
+            if metrics_payload.get("best_splat_step") is None and isinstance(best_splat.get("step"), (int, float)):
+                metrics_payload["best_splat_step"] = int(best_splat.get("step"))
+            if metrics_payload.get("best_splat_loss") is None and isinstance(best_splat.get("loss"), (int, float)):
+                metrics_payload["best_splat_loss"] = float(best_splat.get("loss"))
+            response_payload["metrics"] = metrics_payload
             response_payload["preview_url"] = preview_url
             return response_payload
 
@@ -4096,6 +4161,11 @@ def get_experiment_summary(
                 metrics["sharpness_mean"] = final_metrics.get("sharpness_mean")
             if metrics["num_gaussians"] is None:
                 metrics["num_gaussians"] = metadata.get("num_gaussians")
+            best_splat = metadata.get("best_splat") if isinstance(metadata.get("best_splat"), dict) else {}
+            if metrics.get("best_splat_step") is None and isinstance(best_splat.get("step"), (int, float)):
+                metrics["best_splat_step"] = int(best_splat.get("step"))
+            if metrics.get("best_splat_loss") is None and isinstance(best_splat.get("loss"), (int, float)):
+                metrics["best_splat_loss"] = float(best_splat.get("loss"))
 
         final_tuning_params = {}
         initial_tuning_params = {}
@@ -4152,6 +4222,7 @@ def get_experiment_summary(
             "eval_interval": resolved_cfg.get("eval_interval"),
             "save_interval": resolved_cfg.get("save_interval"),
             "splat_export_interval": resolved_cfg.get("splat_export_interval"),
+            "best_splat_interval": resolved_cfg.get("best_splat_interval"),
             "batch_size": resolved_cfg.get("batch_size"),
         }
 
