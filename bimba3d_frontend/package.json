@@ -14,6 +14,8 @@
     "@react-three/drei": "^9.88.0",
     "@react-three/fiber": "^8.13.0",
     "axios": "^1.13.2",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.7",
     "maplibre-gl": "^4.6.0",
     "puppeteer": "^24.34.0",
     "react": "^18.3.1",
