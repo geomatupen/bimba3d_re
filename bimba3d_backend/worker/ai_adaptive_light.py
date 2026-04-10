@@ -11,6 +11,8 @@ from typing import Any
 import numpy as np
 
 
+# Action space used by the lightweight controller.
+# Keep actions are intentionally explicit to simplify event logs and analysis.
 ACTION_KEEP = "keep"
 ACTION_LR_UP = "lr_up_3pct"
 ACTION_LR_DOWN = "lr_down_3pct"
@@ -30,6 +32,8 @@ ACTIONS = [
 
 @dataclass
 class AdaptiveDecision:
+    """Single controller decision returned to the training loop."""
+
     action: str
     reason: str
     gate_threshold: float
@@ -40,6 +44,12 @@ class AdaptiveDecision:
 
 
 class TinyMLP:
+    """Small fully-connected policy/value approximator used online during training.
+
+    The network predicts one score per action. The selected action's score is then
+    nudged toward the observed reward from the next decision step.
+    """
+
     def __init__(self, input_dim: int, hidden1: int = 64, hidden2: int = 64, output_dim: int = len(ACTIONS), seed: int = 7):
         rng = np.random.default_rng(seed)
         self.W1 = rng.normal(0.0, 0.08, size=(input_dim, hidden1)).astype(np.float64)
@@ -50,6 +60,7 @@ class TinyMLP:
         self.b3 = np.zeros((output_dim,), dtype=np.float64)
 
     def forward(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        # Return hidden activations as well so backprop can reuse them.
         h1_pre = x @ self.W1 + self.b1
         h1 = np.tanh(h1_pre)
         h2_pre = h1 @ self.W2 + self.b2
@@ -58,6 +69,7 @@ class TinyMLP:
         return h1, h2, logits
 
     def train_selected_action(self, x: np.ndarray, action_idx: int, reward: float, learning_rate: float = 0.001) -> None:
+        # One-step supervised target: selected action score should match observed reward.
         h1, h2, logits = self.forward(x)
         pred = float(logits[action_idx])
         grad_out = np.zeros_like(logits)
@@ -108,6 +120,15 @@ class TinyMLP:
 
 
 class CoreAIAdaptiveController:
+    """Lightweight adaptive controller that tunes LR/strategy during gsplat runs.
+
+    Main loop:
+    1) Build features from recent loss/gaussian/optimizer state.
+    2) Score actions with TinyMLP.
+    3) Apply safety gates/cooldowns and (optionally) apply action.
+    4) Train previous transition using newly observed reward.
+    """
+
     def __init__(
         self,
         *,
@@ -139,6 +160,7 @@ class CoreAIAdaptiveController:
         if self.trend_scope not in {"run", "phase"}:
             self.trend_scope = "run"
 
+        # Policy safety and stability knobs.
         self.cooldown_intervals = 2
         self.cooldown_left = 0
         self.gate_alpha = 0.6
@@ -173,6 +195,7 @@ class CoreAIAdaptiveController:
         }
 
         self._run_root_dir = self.project_dir / "runs" / self.run_id
+        # Per-run artifacts (events/summaries) and reusable model snapshots.
         self._storage_dir = self._run_root_dir / "adaptive_ai"
         self._runs_dir = self._storage_dir / "runs"
         self._project_model_dir = self.project_dir / "models" / "adaptive_ai"
@@ -195,6 +218,8 @@ class CoreAIAdaptiveController:
         self.model = self._load_model()
 
     def _load_model(self) -> TinyMLP:
+        # Load precedence: project active version -> project fallback -> global active version -> global fallback.
+        # This keeps project-level specialization while still allowing global warm starts.
         if self._registry_path.exists():
             try:
                 registry = json.loads(self._registry_path.read_text(encoding="utf-8"))
@@ -241,6 +266,7 @@ class CoreAIAdaptiveController:
         return TinyMLP(input_dim=self.feature_dim)
 
     def _save_model(self) -> None:
+        # Save immutable version + update active pointer + keep legacy single-file fallback.
         version_name = f"model_{int(time.time())}.json"
         version_path = self._versions_dir / version_name
         payload = {
@@ -272,6 +298,7 @@ class CoreAIAdaptiveController:
         return max(low, min(high, float(value)))
 
     def _phase_info(self, step: int) -> tuple[int, list[float], float]:
+        # 3-phase schedule: early (lr focus), middle (full adapt), late (quality-priority).
         if step < self.strategy_start_step:
             phase = 0
         elif step <= self.strategy_end_step:
@@ -283,6 +310,7 @@ class CoreAIAdaptiveController:
         return phase, one_hot, self._clamp(progress, 0.0, 1.0)
 
     def _window_stats(self) -> tuple[float, float, float]:
+        # Local trend/volatility metrics used by gates and features.
         if len(self.loss_history) < 3:
             return 0.0, 0.0, 0.0
         arr = np.asarray(self.loss_history, dtype=np.float64)
@@ -296,6 +324,7 @@ class CoreAIAdaptiveController:
         return slope, variance, recent_delta
 
     def _gaussian_growth(self) -> float:
+        # Relative gaussian count change between the latest two observations.
         if len(self.gaussian_history) < 2:
             return 0.0
         prev = float(self.gaussian_history[-2])
@@ -304,12 +333,14 @@ class CoreAIAdaptiveController:
         return (cur - prev) / denom
 
     def _normalized_reward_weights(self) -> tuple[float, float]:
+        # Normalize to convex combination so reward mix is stable regardless of raw input scale.
         total = self.reward_step_weight + self.reward_trend_weight
         if total <= 1e-12:
             return 1.0, 0.0
         return self.reward_step_weight / total, self.reward_trend_weight / total
 
     def _update_run_trend_reward(self, loss: float) -> float:
+        # Online linear-regression slope over full run (O(1) update per step).
         self._trend_count += 1
         x = float(self._trend_count)
         y = float(loss)
@@ -333,6 +364,7 @@ class CoreAIAdaptiveController:
         return self._clamp(relative_slope, -0.05, 0.05)
 
     def _update_phase_trend_reward(self, *, phase: int, loss: float) -> float:
+        # Same slope reward as run scope, but reset per phase to avoid cross-phase dilution.
         stats = self._phase_trend_stats.get(int(phase))
         if stats is None:
             return 0.0
@@ -364,6 +396,7 @@ class CoreAIAdaptiveController:
         return self._clamp(relative_slope, -0.05, 0.05)
 
     def _extract_runner_stats(self, runner_obj: Any) -> tuple[dict[str, float], dict[str, float], float]:
+        # Read a compact state snapshot from runner optimizers/strategy/splats.
         lrs: dict[str, float] = {}
         for key in ("means", "opacities", "scales", "quats", "sh0", "shN"):
             optimizer = getattr(runner_obj, "optimizers", {}).get(key)
@@ -397,6 +430,7 @@ class CoreAIAdaptiveController:
         relative_improvement: float | None,
         runner_obj: Any,
     ) -> list[float]:
+        # Fixed feature vector contract consumed by TinyMLP.
         phase, phase_one_hot, progress = self._phase_info(step)
         slope, variance, recent_delta = self._window_stats()
         lrs, strategy_vals, gaussians = self._extract_runner_stats(runner_obj)
@@ -428,6 +462,7 @@ class CoreAIAdaptiveController:
         return features
 
     def _phase_base_threshold(self, phase: int, progress: float) -> float:
+        # Gate target becomes stricter in volatile/early phase and softer later.
         if phase == 0:
             base = self.base_min_improvement + 0.004
         elif phase == 1:
@@ -437,6 +472,7 @@ class CoreAIAdaptiveController:
         return self._clamp(base + 0.002 * progress, 0.0005, 0.05)
 
     def _adaptive_gate_threshold(self, phase: int, progress: float) -> float:
+        # Volatility-aware gate: higher recent sigma means we require stronger evidence to intervene.
         _, variance, _ = self._window_stats()
         sigma = math.sqrt(max(variance, 0.0))
         return self._clamp(self._phase_base_threshold(phase, progress) + self.gate_alpha * sigma, 0.0005, 0.08)
@@ -451,6 +487,7 @@ class CoreAIAdaptiveController:
         return False
 
     def _apply_action(self, runner_obj: Any, action: str, *, apply_lr: bool, apply_strategy: bool) -> tuple[dict[str, float], dict[str, float]]:
+        # Apply bounded multiplicative edits to avoid destructive jumps.
         lrs_before: dict[str, float] = {}
         strategy_before: dict[str, float] = {}
         if action == ACTION_KEEP:
@@ -489,6 +526,7 @@ class CoreAIAdaptiveController:
             f.write(json.dumps(payload) + "\n")
 
     def _update_summary(self) -> None:
+        # Small summary file used by UI/monitoring to display last controller state quickly.
         summary = {
             "run_id": self.run_id,
             "updated_at": time.time(),
@@ -510,6 +548,7 @@ class CoreAIAdaptiveController:
         apply_lr: bool,
         apply_strategy: bool,
     ) -> AdaptiveDecision:
+        # 1) Observe new loss and compute trend reward for this step.
         loss_value = float(loss)
         self.loss_history.append(loss_value)
         phase, _, _ = self._phase_info(step)
@@ -525,6 +564,8 @@ class CoreAIAdaptiveController:
             denom = max(abs(previous_loss), 1e-8)
             relative_improvement = (previous_loss - loss_value) / denom
 
+        # 2) If a previous transition exists, train it now using the newly observed reward.
+        # Reward = weighted blend of one-step improvement + trend signal.
         reward_from_previous = None
         step_reward_from_previous = None
         trend_reward_from_previous = None
@@ -554,6 +595,8 @@ class CoreAIAdaptiveController:
                 "trend_scope": self.trend_scope,
             }
 
+        # 3) Score current state and run policy gates.
+        #    Cooldown and quality-priority gates intentionally bias toward safe "keep" in uncertain regions.
         _, _, progress = self._phase_info(step)
         gate_threshold = self._adaptive_gate_threshold(phase, progress)
         strict_gate_threshold = self._clamp(
@@ -596,6 +639,7 @@ class CoreAIAdaptiveController:
                 action = ACTION_KEEP
                 reason = "stable_small_change"
 
+        # 4) Apply action if allowed by current window and feature schedule.
         if not self._action_allowed(action, apply_lr=apply_lr, apply_strategy=apply_strategy):
             action = ACTION_KEEP
             reason = "outside_window"
@@ -605,6 +649,7 @@ class CoreAIAdaptiveController:
         if action != ACTION_KEEP:
             self.cooldown_left = self.cooldown_intervals
 
+        # 5) Stash transition for next-step credit assignment.
         self.pending_transition = {
             "step": int(step),
             "features": features,
@@ -617,6 +662,7 @@ class CoreAIAdaptiveController:
         self.last_step = int(step)
         self.updates_since_save += 1
 
+        # 6) Persist event stream and periodic model checkpoints.
         event = {
             "time": time.time(),
             "step": int(step),
