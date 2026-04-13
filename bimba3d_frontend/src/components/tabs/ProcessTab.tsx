@@ -89,6 +89,16 @@ interface TelemetryPayload {
     total_elapsed_seconds?: number | null;
     row_count?: number | null;
   };
+  run_config?: {
+    requested_params?: Record<string, any>;
+    resolved_params?: Record<string, any>;
+    shared_config_version?: number | null;
+    active_sparse_shared_version?: number | null;
+    run_shared_config_version?: number | null;
+    shared_outdated?: boolean | null;
+    base_session_id?: string | null;
+    effective_shared_config?: Record<string, any> | null;
+  } | null;
   status?: {
     stage?: string | null;
     message?: string | null;
@@ -3169,6 +3179,30 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         yPos += wrapped.length * (size / 2.8) + 1;
       };
 
+      const formatConfigValue = (value: any) => {
+        if (value === null || value === undefined) return "-";
+        if (typeof value === "boolean") return value ? "Yes" : "No";
+        return String(value);
+      };
+
+      const addConfigTable = (title: string, entries: Array<[string, any]>) => {
+        if (entries.length === 0) return;
+        addSection(title);
+        autoTable(pdf, {
+          startY: yPos,
+          margin: { left: margin, right: margin, top: margin, bottom: margin },
+          head: [["Field", "Value"]],
+          body: entries.map(([key, value]) => [key, formatConfigValue(value)]),
+          columnStyles: {
+            0: { cellWidth: 45 },
+            1: { cellWidth: contentWidth - 45 },
+          },
+          headStyles: { fontSize: 8, textColor: [255, 255, 255], fillColor: [25, 55, 120] },
+          bodyStyles: { fontSize: 7 },
+        });
+        yPos = ((pdf as any).lastAutoTable?.finalY ?? yPos) + 5;
+      };
+
       const addSection = (title: string) => {
         if (yPos + 8 > pageHeight - 10) {
           pdf.addPage();
@@ -3221,6 +3255,56 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         addKeyValue("Message", telemetryPayload.status.message || "-");
         yPos += 2;
       }
+
+      const runConfig = telemetryPayload.run_config;
+      const resolvedConfig = runConfig?.resolved_params || {};
+      const requestedConfig = runConfig?.requested_params || {};
+
+      addConfigTable("Run Configuration (resolved)", [
+        ["mode", resolvedConfig.mode],
+        ["engine", resolvedConfig.engine],
+        ["stage", resolvedConfig.stage],
+        ["tune_scope", resolvedConfig.tune_scope],
+        ["trend_scope", resolvedConfig.trend_scope],
+        ["max_steps", resolvedConfig.max_steps],
+        ["log_interval", resolvedConfig.log_interval],
+        ["eval_interval", resolvedConfig.eval_interval],
+        ["save_interval", resolvedConfig.save_interval],
+        ["splat_export_interval", resolvedConfig.splat_export_interval],
+        ["best_splat_interval", resolvedConfig.best_splat_interval],
+        ["best_splat_start_step", resolvedConfig.best_splat_start_step],
+        ["densify_from_iter", resolvedConfig.densify_from_iter],
+        ["densify_until_iter", resolvedConfig.densify_until_iter],
+        ["densification_interval", resolvedConfig.densification_interval],
+        ["batch_size", resolvedConfig.batch_size],
+        ["tune_start_step", resolvedConfig.tune_start_step],
+        ["tune_end_step", resolvedConfig.tune_end_step],
+        ["tune_interval", resolvedConfig.tune_interval],
+        ["tune_min_improvement", resolvedConfig.tune_min_improvement],
+        ["ai_lr_up_multiplier", resolvedConfig.ai_lr_up_multiplier],
+        ["ai_lr_down_multiplier", resolvedConfig.ai_lr_down_multiplier],
+        ["ai_gate_alpha", resolvedConfig.ai_gate_alpha],
+        ["ai_cooldown_intervals", resolvedConfig.ai_cooldown_intervals],
+        ["ai_small_change_band", resolvedConfig.ai_small_change_band],
+        ["ai_reward_step_weight", resolvedConfig.ai_reward_step_weight],
+        ["ai_reward_trend_weight", resolvedConfig.ai_reward_trend_weight],
+      ]);
+
+      addConfigTable("Run Configuration (requested)", [
+        ["mode", requestedConfig.mode],
+        ["engine", requestedConfig.engine],
+        ["stage", requestedConfig.stage],
+        ["trend_scope", requestedConfig.trend_scope],
+        ["tune_interval", requestedConfig.tune_interval],
+        ["tune_min_improvement", requestedConfig.tune_min_improvement],
+        ["ai_lr_up_multiplier", requestedConfig.ai_lr_up_multiplier],
+        ["ai_lr_down_multiplier", requestedConfig.ai_lr_down_multiplier],
+        ["ai_gate_alpha", requestedConfig.ai_gate_alpha],
+        ["ai_cooldown_intervals", requestedConfig.ai_cooldown_intervals],
+        ["ai_small_change_band", requestedConfig.ai_small_change_band],
+        ["ai_reward_step_weight", requestedConfig.ai_reward_step_weight],
+        ["ai_reward_trend_weight", requestedConfig.ai_reward_trend_weight],
+      ]);
 
       // Latest Eval
       if (telemetryPayload.latest_eval) {

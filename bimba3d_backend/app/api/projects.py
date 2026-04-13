@@ -2213,6 +2213,13 @@ def get_project_telemetry(
                 "eval_rows": [],
                 "latest_eval": None,
                 "training_summary": _build_training_summary([]),
+                "run_config": None,
+                "effective_shared_config": None,
+                "shared_config_version": None,
+                "active_sparse_shared_version": None,
+                "run_shared_config_version": None,
+                "shared_outdated": None,
+                "base_session_id": None,
                 "status": {
                     "stage": project_status.get("stage"),
                     "message": project_status.get("message"),
@@ -2225,12 +2232,40 @@ def get_project_telemetry(
         run_dir = project_dir / "runs" / resolved_run_id
         run_log_path = run_dir / "processing.log"
         stats_dir = run_dir / "outputs" / "engines" / "gsplat" / "stats"
+        run_config_path = run_dir / "run_config.json"
 
         text_lines = _read_text_lines(run_log_path, max_lines=log_limit, from_start=bool(from_start))
         training_rows = _extract_training_rows(text_lines, row_limit=log_limit, from_start=bool(from_start))
         event_rows = _extract_event_rows(text_lines, row_limit=max(10, min(100, log_limit)))
         eval_rows = _extract_eval_rows(stats_dir, eval_limit=eval_limit)
         training_summary = _build_training_summary(training_rows)
+        run_config = _read_json_if_exists(run_config_path)
+        if not isinstance(run_config, dict):
+            run_config = None
+
+        project_base_session_id = project_status.get("base_session_id") if isinstance(project_status, dict) else None
+        shared_doc = _read_project_shared_config(project_dir, str(project_base_session_id) if project_base_session_id else None)
+        current_shared_version = int(shared_doc.get("version") or 1)
+        active_sparse_version = shared_doc.get("active_sparse_version") if isinstance(shared_doc.get("active_sparse_version"), int) else None
+
+        run_shared_version = None
+        shared_outdated = None
+        effective_shared = None
+        if isinstance(run_config, dict):
+            raw_run_shared_version = run_config.get("shared_config_version")
+            if isinstance(raw_run_shared_version, int):
+                run_shared_version = raw_run_shared_version
+
+            run_shared_snapshot = run_config.get("shared_config_snapshot")
+            if not isinstance(run_shared_snapshot, dict):
+                run_shared_snapshot = {}
+
+            effective_shared = shared_doc.get("shared") if isinstance(shared_doc.get("shared"), dict) else run_shared_snapshot
+            shared_outdated = bool(
+                active_sparse_version is not None
+                and run_shared_version is not None
+                and run_shared_version < active_sparse_version
+            )
 
         return {
             "project_id": project_id,
@@ -2242,6 +2277,13 @@ def get_project_telemetry(
             "eval_rows": eval_rows,
             "latest_eval": eval_rows[-1] if eval_rows else None,
             "training_summary": training_summary,
+            "run_config": run_config,
+            "effective_shared_config": effective_shared,
+            "shared_config_version": current_shared_version,
+            "active_sparse_shared_version": active_sparse_version,
+            "run_shared_config_version": run_shared_version,
+            "shared_outdated": shared_outdated,
+            "base_session_id": project_base_session_id,
             "status": {
                 "stage": project_status.get("stage"),
                 "message": project_status.get("message"),
