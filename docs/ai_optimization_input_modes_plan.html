@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Optimization Input Modes Specification</title>
+  <style>
+    :root {
+      --paper: #f7f6f2;
+      --ink: #1f2328;
+      --muted: #5f666d;
+      --accent: #2457a6;
+      --accent-soft: #eaf1ff;
+      --card: #ffffff;
+      --line: #d9e1ec;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% -10%, #eef4ff 0%, transparent 34%),
+        radial-gradient(circle at 92% 2%, #f2f7ef 0%, transparent 28%),
+        var(--paper);
+      font-family: Georgia, "Times New Roman", Times, serif;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    .frame {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px 18px 80px;
+    }
+
+    .book {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--card);
+      box-shadow: 0 20px 40px rgba(27, 38, 58, 0.08);
+      overflow: hidden;
+    }
+
+    .cover {
+      padding: 36px 28px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(120deg, #f9fbff 0%, #eef4ff 100%);
+    }
+
+    .cover h1 {
+      margin: 0 0 8px;
+      font-size: 1.8rem;
+      letter-spacing: 0.2px;
+    }
+
+    .cover p {
+      margin: 0;
+      color: var(--muted);
+      max-width: 78ch;
+    }
+
+    .content {
+      display: grid;
+      grid-template-columns: 270px 1fr;
+      gap: 0;
+    }
+
+    .toc {
+      border-right: 1px solid var(--line);
+      padding: 22px 16px 28px;
+      background: #fbfdff;
+      position: sticky;
+      top: 0;
+      align-self: start;
+      max-height: 100vh;
+      overflow: auto;
+    }
+
+    .toc h2 {
+      margin: 0 0 10px;
+      font-size: 1.05rem;
+      color: var(--accent);
+    }
+
+    .toc a {
+      display: block;
+      color: var(--ink);
+      text-decoration: none;
+      margin: 7px 0;
+      padding-left: 4px;
+      border-left: 2px solid transparent;
+      font-size: 0.95rem;
+    }
+
+    .toc a:hover {
+      color: var(--accent);
+      border-left-color: var(--accent);
+    }
+
+    main {
+      padding: 24px 26px 34px;
+    }
+
+    .chapter {
+      margin: 0 0 26px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #fffefc;
+    }
+
+    .chapter-head {
+      padding: 14px 14px;
+      background: var(--accent-soft);
+      border-bottom: 1px solid var(--line);
+      color: #18396f;
+      font-weight: 700;
+      font-size: 1.08rem;
+    }
+
+    .chapter-body {
+      padding: 12px;
+    }
+
+    h3 {
+      margin: 32px 0 6px;
+      font-size: 1.08rem;
+    }
+
+    p { margin: 6px 0; }
+
+    ul, ol {
+      margin: 6px 0 6px 20px;
+      padding: 0;
+    }
+
+    li { margin: 2px 0; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 8px 0;
+      font-size: 0.9rem;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 6px 7px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #1d4f91;
+      color: #ffffff;
+    }
+
+    td:first-child {
+      font-weight: 700;
+    }
+
+    th:first-child {
+      font-weight: 800;
+    }
+
+    .chapter table tr:nth-child(even) > td {
+      background: #dadfe6 !important;
+    }
+
+    .chapter table tr:nth-child(odd) > td {
+      background: #ffffff !important;
+    }
+
+    code {
+      background: #eef4ff;
+      border: 1px solid #d5e0f4;
+      border-radius: 6px;
+      padding: 1px 6px;
+      font-family: "Cascadia Code", Consolas, Monaco, monospace;
+      font-size: 0.9em;
+    }
+
+    .equation {
+      margin: 8px 0;
+      padding: 8px 10px;
+      border: 1px solid #d8dde6;
+      border-radius: 8px;
+      background: #ffffff;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .equation .eq-main {
+      font-family: "Cambria Math", "Times New Roman", Times, serif;
+      font-size: 1rem;
+      font-style: normal;
+      text-align: center;
+      flex: 1 1 auto;
+      overflow-x: auto;
+      white-space: normal;
+      line-height: 1.35;
+    }
+
+    .equation .eq-main .v { font-style: italic; }
+
+    .equation .eq-main sub,
+    .equation .eq-main sup {
+      font-size: 0.82em;
+    }
+
+    .equation .eq-no {
+      font-family: "Times New Roman", Times, serif;
+      font-size: 0.88rem;
+      color: #4b5563;
+      white-space: nowrap;
+    }
+
+    .method-steps {
+      margin: 6px 0 6px 20px;
+      padding: 0;
+    }
+
+    .method-steps > li {
+      margin: 10px 0;
+    }
+
+    .step-title {
+      font-weight: 700;
+    }
+
+    .tip {
+      margin: 8px 0;
+      padding: 8px 10px;
+      border: 1px solid #c7d6ef;
+      border-radius: 10px;
+      background: #f6f9ff;
+    }
+
+    .warn {
+      margin: 8px 0;
+      padding: 8px 10px;
+      border: 1px solid #ead39d;
+      border-radius: 10px;
+      background: #fff9e7;
+    }
+
+    @media (max-width: 900px) {
+      .content { grid-template-columns: 1fr; }
+      .toc {
+        position: static;
+        max-height: none;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      main { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <article class="book">
+      <header class="cover">
+        <h1>AI Optimization Input Modes Specification</h1>
+        <p>
+          This document defines the implemented three-mode input pipeline for modified-mode AI optimization.
+          The purpose is to select the best initial learning-rate preset from scene and flight signals,
+          while keeping feature extraction fast and reliable from uploaded images.
+        </p>
+      </header>
+
+      <div class="content">
+        <nav class="toc" aria-label="Table of contents">
+          <h2>Contents</h2>
+          <a href="#chapter-1">Chapter 1 - Purpose and Scope</a>
+          <a href="#chapter-2">Chapter 2 - The Three Modes</a>
+          <a href="#chapter-3">Chapter 3 - What Goes Into x</a>
+          <a href="#chapter-4">Chapter 4 - What y and yhat Mean</a>
+          <a href="#chapter-4b">Chapter 4B - Learning Loop After yhat</a>
+          <a href="#chapter-5">Chapter 5 - Example Cases</a>
+          <a href="#chapter-6">Chapter 6 - Implementation Summary</a>
+          <a href="#chapter-7">Chapter 7 - Implementation Constraints</a>
+          <a href="#chapter-8">Chapter 8 - Data Strategy</a>
+        </nav>
+
+        <main>
+          <section id="chapter-1" class="chapter">
+            <div class="chapter-head">Chapter 1 - Purpose and Scope</div>
+            <div class="chapter-body">
+              <p>
+                This specification defines an input-driven initialization strategy for modified-mode AI optimization with two practical targets: first, reduce the time required to match or beat the loss reached by the baseline run; second, improve final reconstruction quality whenever possible after that point. In this document, baseline explicitly means the normal gsplat run without modified-mode optimization. Evaluation is therefore performed on both time and quality, while feature extraction remains lightweight so most compute stays focused on training.
+              </p>
+
+              <h3>Evaluation Method</h3>
+              <p>
+                The evaluation procedure is designed to verify both target factors, time and quality, in a repeatable way.
+              </p>
+              <ol>
+                <li>Run a baseline reference first using normal gsplat with no modified-mode optimization.</li>
+                <li>Record baseline metrics: time-to-target-loss, loss at fixed checkpoints (for example 1k, 3k, 5k), and final loss at the selected stop step.</li>
+                <li>Run modified mode 1 (<code>exif_only</code>) in a batch sequence (for example 10 runs) so the model can keep learning and propose different initial learning-rate presets across runs.</li>
+                <li>Keep comparison conditions fixed across baseline and modified runs: same project data, same max steps, same compute environment, and comparable seed policy.</li>
+                <li>For each run, record both anchors: best-loss anchor (first eval at or after <code>t_best</code>) and end-step anchor.</li>
+                <li>Compute quality score and time score at both anchors, then compute the run decision score using the larger anchor score.</li>
+                <li>Compare baseline against intermediate checkpoints (for example run 5 and run 6) and the later checkpoint (run 10) using the same scoring policy.</li>
+                <li>Mark the approach successful when time-to-baseline-quality is reduced; treat additional quality improvement beyond baseline as an additional gain.</li>
+              </ol>
+              <div class="tip">
+                Suggested reporting format: baseline vs run 5 vs run 6 vs run 10, with columns for time-to-target-loss,
+                best-loss step, best-anchored quality, end-step quality, and final run decision score.
+                For detailed equations and operator-level decision logic, see Chapter 4B.
+              </div>
+            </div>
+          </section>
+
+          <section id="chapter-2" class="chapter">
+            <div class="chapter-head">Chapter 2 - The Three Modes</div>
+            <div class="chapter-body">
+              <p>
+                Modified mode uses three stacked input modes in config.
+              </p>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Mode</th>
+                    <th>Input Policy</th>
+                    <th>Use Case</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>exif_only</code></td>
+                    <td>Use only direct EXIF and file metadata from the uploaded images.</td>
+                    <td>Fastest AI-only mode. Suitable for minimal processing and no scene inference.</td>
+                  </tr>
+                  <tr>
+                    <td><code>exif_plus_flight_plan</code></td>
+                    <td>Use EXIF plus cheap sequence-derived flight-plan features from the same images.</td>
+                    <td>Best balance between accuracy and cost when the image set already contains GPS/time/orientation data.</td>
+                  </tr>
+                  <tr>
+                    <td><code>exif_plus_flight_plan_plus_external</code></td>
+                    <td>Use EXIF + flight-plan features + extra cheap image features like vegetation proxy and roughness proxy.</td>
+                    <td>Best for richer scene understanding without requiring manual external inputs.</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="tip">
+                The three modes are stacked. Mode 2 adds on top of Mode 1. Mode 3 adds on top of Mode 2.
+              </div>
+            </div>
+          </section>
+
+          <section id="chapter-3" class="chapter">
+            <div class="chapter-head">Chapter 3 - What Goes Into x</div>
+            <div class="chapter-body">
+              <p>
+                <code>x</code> is the feature vector built from the uploaded image set. The key rule is that every feature
+                should be easy to read from the uploaded images or easy to derive quickly from them. No manual input.
+              </p>
+              <div class="tip">
+                Fallback rule used in all three modes: if a value is missing, fill it and set a missing flag.
+                "Dataset middle value" means the middle value seen in training data for that field.
+              </div>
+
+              <h3>3.1 Direct EXIF features</h3>
+              <p>
+                These are the cheapest and most reliable inputs because they come straight from image metadata.
+              </p>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Feature</th>
+                    <th>Why it helps</th>
+                    <th>Example</th>
+                    <th>Fallback when missing</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Camera make/model</td>
+                    <td>Different sensors and optics often converge differently.</td>
+                    <td><code>DJI</code>, <code>Zenmuse X7</code></td>
+                    <td><code>unknown_make</code> and <code>unknown_model</code>; <code>camera_meta_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Lens model</td>
+                    <td>Lens behavior affects sharpness, distortion, and view geometry.</td>
+                    <td><code>24mm</code>, <code>28mm equivalent</code></td>
+                    <td><code>unknown_lens</code>; <code>lens_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Focal length</td>
+                    <td>Changes field of view and overlap sensitivity.</td>
+                    <td><code>8.8mm</code></td>
+                    <td>Dataset middle focal length; <code>focal_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Aperture, shutter speed, ISO</td>
+                    <td>Proxy for exposure quality and motion blur risk.</td>
+                    <td><code>f/2.8</code>, <code>1/500</code>, <code>ISO 100</code></td>
+                    <td>Defaults: <code>f/2.8</code>, <code>1/250</code>, <code>ISO 100</code>; <code>aperture_missing=1</code>, <code>shutter_missing=1</code>, <code>iso_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Camera angle (if available)</td>
+                    <td>Very important for reconstruction behavior: nadir and oblique runs behave differently.</td>
+                    <td>Gimbal pitch near -90 (nadir) or near -70 (oblique)</td>
+                    <td><code>unknown_angle_bucket</code>; <code>angle_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>GPS lat/lon/alt</td>
+                    <td>Helps estimate flight path and scene coverage. Not mandatory, but very useful.</td>
+                    <td>Project-wide coordinate spread</td>
+                    <td>Set GPS-derived values to neutral defaults and set <code>gps_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Timestamp sequence</td>
+                    <td>The order in which photos were captured. Helps estimate path direction and speed changes.</td>
+                    <td>Photo 001 -> 002 -> 003 by capture time</td>
+                    <td>Use filename order; <code>timestamp_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Image size / orientation</td>
+                    <td>Useful for load estimation and capture consistency.</td>
+                    <td><code>4000x3000</code></td>
+                    <td>Dataset middle width/height; <code>img_size_missing=1</code></td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <h3>3.2 Flight-plan features derived from the image set</h3>
+              <p>
+                Flight plan is usually not a single EXIF field. It is inferred cheaply from the image set by combining
+                GPS, time, and heading/orientation patterns across images.
+              </p>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Derived feature</th>
+                    <th>How to derive it cheaply</th>
+                    <th>What it tells the model</th>
+                    <th>Fallback when missing</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Flight type</td>
+                    <td>Classify GPS path pattern as grid, corridor, orbit, oblique, or mixed.</td>
+                    <td>Scene geometry and motion style.</td>
+                    <td><code>unknown_flight_type</code>; <code>flight_type_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Camera angle profile</td>
+                    <td>Use per-image camera angle stats (mean and spread), from metadata if present.</td>
+                    <td>Separates nadir-heavy missions from oblique-heavy missions.</td>
+                    <td>Use unknown-angle profile; <code>angle_profile_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Average altitude</td>
+                    <td>Average EXIF GPS altitude when present.</td>
+                    <td>Scale of the reconstruction problem.</td>
+                    <td>Dataset middle altitude; <code>altitude_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Heading consistency</td>
+                    <td>Measure how stable the movement direction is across image order.</td>
+                    <td>Whether the flight is a straight mission or a turning mission.</td>
+                    <td><code>0.5</code> neutral; <code>heading_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Coverage spread</td>
+                    <td>Compute GPS bounding box and track spread.</td>
+                    <td>How broad and diverse the sampled scene is.</td>
+                    <td><code>0.0</code>; <code>coverage_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Overlap proxy</td>
+                    <td>Use distance between successive captures relative to estimated footprint.</td>
+                    <td>How dense the image sampling is.</td>
+                    <td><code>0.5</code> neutral; <code>overlap_missing=1</code></td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <h3>3.3 External features derived from the images themselves</h3>
+              <p>
+                These are still internal to the dataset. They are not manual inputs; they are cheap summaries computed
+                from the images after upload.
+              </p>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Feature</th>
+                    <th>Why it matters</th>
+                    <th>Cheap derivation idea</th>
+                    <th>Fallback when missing</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Vegetation cover percentage</td>
+                    <td>Vegetation scenes often converge differently from built scenes.</td>
+                    <td>Green-area proxy from RGB images.</td>
+                    <td><code>0.0</code>; <code>green_area_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Vegetation complexity score</td>
+                    <td>Dense and irregular vegetation is harder than simple flat green regions.</td>
+                    <td>Combine green texture entropy and edge density into one score.</td>
+                    <td><code>0.5</code> neutral; <code>veg_complexity_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Terrain roughness / slope proxy</td>
+                    <td>Rough terrain often needs more conservative geometry updates.</td>
+                    <td>Use image overlap geometry and local visual variance.</td>
+                    <td><code>0.5</code> neutral; <code>roughness_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Texture density</td>
+                    <td>Rich texture usually supports faster pose/geometry learning.</td>
+                    <td>Edge density or frequency-energy proxy.</td>
+                    <td><code>0.5</code> neutral; <code>texture_missing=1</code></td>
+                  </tr>
+                  <tr>
+                    <td>Blur / motion risk</td>
+                    <td>Blurred data often needs safer initial settings.</td>
+                    <td>Sharpness score from a fast Laplacian measure.</td>
+                    <td><code>0.5</code> neutral; <code>blur_missing=1</code></td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div class="warn">
+                External vegetation input is defined as green-area proxy from RGB images.
+              </div>
+            </div>
+          </section>
+
+          <section id="chapter-4" class="chapter">
+            <div class="chapter-head">Chapter 4 - What y and yhat Mean</div>
+            <div class="chapter-body">
+              <p>
+                The model learns which initial learning-rate preset gives the best result after a short trial,
+                such as 5k steps.
+              </p>
+
+              <table>
+                <thead>
+                  <tr>
+                    <th>Term</th>
+                    <th>Meaning</th>
+                    <th>Example</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>x</code></td>
+                    <td>Feature vector from EXIF and cheap derived scene summaries.</td>
+                    <td>Camera model, focal length, flight type, vegetation cover</td>
+                  </tr>
+                  <tr>
+                    <td><code>y</code></td>
+                    <td>Ground-truth best preset after running all candidate presets for 5k steps.</td>
+                    <td><code>balanced</code> or <code>geometry_fast</code></td>
+                  </tr>
+                  <tr>
+                    <td><code>yhat</code></td>
+                    <td>Model prediction for which preset should win.</td>
+                    <td>Highest score assigned to <code>balanced</code></td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <p>
+                A simple setup is to define a small preset set and let the model score those presets. That keeps training
+                stable and makes evaluation easy.
+              </p>
+
+              <table>
+                <thead>
+                  <tr>
+                    <th>Preset</th>
+                    <th>Typical behavior</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>conservative</code></td>
+                    <td>Lower initial LR, safer when scene quality is uncertain or blur/vegetation is high.</td>
+                  </tr>
+                  <tr>
+                    <td><code>balanced</code></td>
+                    <td>Middle ground for mixed scenes and general-purpose flights.</td>
+                  </tr>
+                  <tr>
+                    <td><code>geometry_fast</code></td>
+                    <td>Higher geometry-related LR, useful for clean structured scenes and corridor/grid missions.</td>
+                  </tr>
+                  <tr>
+                    <td><code>appearance_fast</code></td>
+                    <td>More aggressive appearance learning, useful when color/detail fitting is the bottleneck.</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div class="tip">
+                If a later version requires a continuous target, y can become a regression target over LR multipliers.
+                For the first version, classification over presets is simpler and cheaper.
+              </div>
+            </div>
+          </section>
+
+          <section id="chapter-4b" class="chapter">
+            <div class="chapter-head">Chapter 4B - Learning Loop After yhat</div>
+            <div class="chapter-body">
+              <p>
+                This section defines how the AI decides after <code>yhat</code> is produced. The flow is fixed and repeatable.
+                It compares quality and time against the normal gsplat baseline.
+              </p>
+              <ol class="method-steps">
+                <li>
+                  <span class="step-title">Step 1. Predict and pick one preset.</span>
+                  The model outputs scores over all preset candidates and selects the highest score.
+                  <div class="equation"><span class="eq-main"><span class="v">k</span><sup>*</sup> = argmax<sub><span class="v">k</span></sub>(<span class="v">s</span><sub><span class="v">k</span></sub>), with <span class="v">y</span><sub>hat</sub> = [<span class="v">s</span><sub>1</sub>, <span class="v">s</span><sub>2</sub>, ..., <span class="v">s</span><sub><span class="v">K</span></sub>]</span><span class="eq-no">(4B.1)</span></div>
+                  Meaning: <code>argmax</code> means "pick the index of the largest value". <code>yhat</code> is the model score vector, <code>s_k</code> is the score of preset <code>k</code>, and <code>k*</code> is the selected preset index.
+                  Example: if <code>yhat = [0.12, 0.41, 0.33, 0.14]</code>, then <code>k* = 2</code> because <code>0.41</code> is the largest score.
+                </li>
+                <li>
+                  <span class="step-title">Step 2. Run training and find the best-loss step.</span>
+                  Training runs with preset <code>k^*</code>. The best-loss step is the step with minimum training loss.
+                  <div class="equation"><span class="eq-main"><span class="v">t</span><sub>best</sub> = argmin<sub><span class="v">t</span></sub> <span class="v">L</span>(<span class="v">t</span>)</span><span class="eq-no">(4B.2)</span></div>
+                  Meaning: <code>argmin</code> means "pick the index of the smallest value". <code>L(t)</code> is training loss at step <code>t</code>. <code>t_best</code> is the step where loss is lowest.
+                  Example: if loss at steps <code>[1000, 1200, 1400, 1600]</code> is <code>[0.081, 0.073, 0.069, 0.071]</code>, then <code>t_best = 1400</code>.
+                </li>
+                <li>
+                  <span class="step-title">Step 3. Select the best-anchored evaluation checkpoint.</span>
+                  The checkpoint is the first eval step at or after <code>t_best</code>. If that does not exist, the last eval step is used.
+                  <div class="equation"><span class="eq-main"><span class="v">t</span><sub>eval,best</sub> = min { <span class="v">t</span> &isin; <span class="v">E</span> | <span class="v">t</span> &ge; <span class="v">t</span><sub>best</sub> }; else <span class="v">t</span><sub>eval,best</sub> = max(<span class="v">E</span>)</span><span class="eq-no">(4B.3)</span></div>
+                  Meaning: <code>E</code> is the set of eval steps. <code>min{...}</code> means "the smallest value that satisfies the condition". <code>max(E)</code> means "the largest eval step".
+                  Example: if <code>E = [1000, 2000, 3000]</code> and <code>t_best = 1400</code>, then <code>t_eval,best = 2000</code>.
+                </li>
+                <li>
+                  <span class="step-title">Step 4. Compute quality score and time score.</span>
+                  Quality uses normalized PSNR, SSIM, and LPIPS. Time uses normalized runtime to a reference.
+                  <div class="equation"><span class="eq-main"><span class="v">Q</span>(<span class="v">t</span>) = <span class="v">w</span><sub>psnr</sub> PSNR<sub>norm</sub>(<span class="v">t</span>) + <span class="v">w</span><sub>ssim</sub> SSIM<sub>norm</sub>(<span class="v">t</span>) + <span class="v">w</span><sub>lpips</sub> (1 - LPIPS<sub>norm</sub>(<span class="v">t</span>))</span><span class="eq-no">(4B.4)</span></div>
+                  <div class="equation"><span class="eq-main"><span class="v">T</span>(<span class="v">t</span>) = 1 - clamp( time_to_step(<span class="v">t</span>) / time<sub>ref</sub>, 0, 1 )</span><span class="eq-no">(4B.5)</span></div>
+                  Meaning: <code>Q(t)</code> is quality score and <code>T(t)</code> is time score. <code>clamp(x,0,1)</code> means force <code>x</code> into the range <code>[0,1]</code>. LPIPS is inverted by <code>(1 - LPIPS_norm)</code> so larger is better, like PSNR and SSIM.
+                  Example: if <code>time_to_step(t)/time_ref = 1.2</code>, then <code>clamp = 1</code> and <code>T(t) = 0</code>. If ratio is <code>0.6</code>, then <code>T(t) = 0.4</code>.
+                </li>
+                <li>
+                  <span class="step-title">Step 5. Compute composite score at both anchors.</span>
+                  The score at any checkpoint combines quality and time, with higher weight on quality.
+                  <div class="equation"><span class="eq-main"><span class="v">S</span>(<span class="v">t</span>) = <span class="v">w</span><sub>q</sub> <span class="v">Q</span>(<span class="v">t</span>) + <span class="v">w</span><sub>t</sub> <span class="v">T</span>(<span class="v">t</span>), where <span class="v">w</span><sub>q</sub> + <span class="v">w</span><sub>t</sub> = 1 and <span class="v">w</span><sub>q</sub> &gt; <span class="v">w</span><sub>t</sub></span><span class="eq-no">(4B.6)</span></div>
+                  Meaning: <code>S(t)</code> is one final score at step <code>t</code>. <code>w_q</code> is quality weight and <code>w_t</code> is time weight.
+                  Example: with <code>w_q=0.7</code>, <code>w_t=0.3</code>, <code>Q=0.80</code>, <code>T=0.40</code>, then <code>S=0.7*0.80 + 0.3*0.40 = 0.68</code>.
+                </li>
+                <li>
+                  <span class="step-title">Step 6. Decide run score from best-anchor and end-step.</span>
+                  One score is computed at <code>t_eval,best</code>. Another score is computed at <code>t_end</code>. The larger one is used.
+                  <div class="equation"><span class="eq-main"><span class="v">S</span><sub>run</sub> = max( <span class="v">S</span>(<span class="v">t</span><sub>eval,best</sub>), <span class="v">S</span>(<span class="v">t</span><sub>end</sub>) )</span><span class="eq-no">(4B.7)</span></div>
+                  Meaning: <code>max(a,b)</code> means choose the larger value. <code>S_run</code> is the final run decision score and <code>t_end</code> is the final training step.
+                  Example: if <code>S(t_eval,best)=0.68</code> and <code>S(t_end)=0.63</code>, then <code>S_run=0.68</code>.
+                </li>
+                <li>
+                  <span class="step-title">Step 7. Write transition and update the model.</span>
+                  Baseline is always the normal gsplat run without modified mode. The transition
+                  <code>(x, yhat, k^*, outcomes, S_{run})</code> is saved, and model weights are updated from accumulated transitions.
+                  Example: one stored row can be <code>(x_project_021, [0.12,0.41,0.33,0.14], 2, outcomes_run10, 0.68)</code>.
+                </li>
+              </ol>
+
+              <div class="tip">
+                <code>yhat</code> is the decision signal. Observed run outcomes and baseline-relative scores are the learning signal.
+              </div>
+            </div>
+          </section>
+
+          <section id="chapter-5" class="chapter">
+            <div class="chapter-head">Chapter 5 - Example Cases</div>
+            <div class="chapter-body">
+              <h3>5.1 EXIF-only example</h3>
+              <p>
+                Input images show a DJI camera, fixed focal length, stable shutter speed, and similar exposure values.
+                There is little or no GPS variation, so the model only sees capture hardware and exposure behavior.
+              </p>
+              <p>
+                Example x:
+              </p>
+              <ul>
+                <li>Camera make: DJI</li>
+                <li>Camera model: X7</li>
+                <li>Lens: 24mm equivalent</li>
+                <li>Focal length: 8.8mm</li>
+                <li>ISO: 100</li>
+                <li>Shutter: 1/500</li>
+                <li>Aperture: f/2.8</li>
+              </ul>
+              <p>
+                Example y: <code>balanced</code> if the run is general-purpose.
+                Example yhat: the model places the highest score on <code>balanced</code>.
+              </p>
+
+              <h3>5.2 Flight-plan embedded example</h3>
+              <p>
+                The same EXIF data plus GPS order reveals a corridor-like mission with steady headings and high overlap.
+              </p>
+              <p>
+                Example x adds:
+              </p>
+              <ul>
+                <li>Flight type: corridor</li>
+                <li>Heading consistency: high</li>
+                <li>Camera angle profile: mostly oblique (~70 degree)</li>
+                <li>Coverage spread: narrow</li>
+                <li>Altitude mean: 120m</li>
+                <li>Overlap proxy: high</li>
+              </ul>
+              <p>
+                Example y: <code>geometry_fast</code> if geometry stabilizes fastest.
+                Example yhat: the model predicts <code>geometry_fast</code> as top score.
+              </p>
+
+              <h3>5.3 External-features example</h3>
+              <p>
+                The image set is mostly vegetation with visible blur risk and uneven terrain proxy.
+              </p>
+              <p>
+                Example x adds:
+              </p>
+              <ul>
+                <li>Vegetation cover: 78%</li>
+                <li>Texture density: medium</li>
+                <li>Blur risk: medium-high</li>
+                <li>Terrain roughness proxy: high</li>
+              </ul>
+              <p>
+                Example y: <code>conservative</code>.
+                Example yhat: the model assigns the highest score to <code>conservative</code>.
+              </p>
+            </div>
+          </section>
+
+          <section id="chapter-6" class="chapter">
+            <div class="chapter-head">Chapter 6 - Implementation Summary</div>
+            <div class="chapter-body">
+              <ol>
+                <li>Use the three explicit stacked modes in config.</li>
+                <li>Keep the feature extractor cheap and deterministic.</li>
+                <li>Cache per-project summaries so the input vector is built once, not repeatedly.</li>
+                <li>Use a small preset set first, then train the selector to pick the best preset after the 5k-step trial.</li>
+                <li>Use a data strategy with a 10-project cap and balanced coverage across camera profile, flight geometry, scene content, and capture conditions.</li>
+                <li>Apply 7 train projects and 3 final test projects as the primary split for this phase.</li>
+                <li>Only add more features if they improve test behavior on unseen scenes.</li>
+              </ol>
+              <p>
+                This provides a low-cost system that can still learn which kind of scene prefers which initial learning
+                rate pattern.
+              </p>
+            </div>
+          </section>
+
+          <section id="chapter-7" class="chapter">
+            <div class="chapter-head">Chapter 7 - Implementation Constraints</div>
+            <div class="chapter-body">
+              <ul>
+                <li>EXIF alone can give camera and exposure data, but not a full flight plan.</li>
+                <li>Flight plan must be inferred from the sequence of images, usually using GPS and timestamps.</li>
+                <li>External vegetation input is green-area proxy from RGB imagery.</li>
+                <li>Use only cheap preprocessing in the first version so feature extraction does not become the bottleneck.</li>
+                <li>Camera angle should be included with flight type; flight type alone is not enough.</li>
+              </ul>
+              <div class="tip">
+                Mode stack: <code>exif_only</code> -> <code>exif_plus_flight_plan</code> -> <code>exif_plus_flight_plan_plus_external</code>.
+              </div>
+            </div>
+          </section>
+
+          <section id="chapter-8" class="chapter">
+            <div class="chapter-head">Chapter 8 - Data Strategy</div>
+            <div class="chapter-body">
+              <p>
+                Data design for this phase prioritizes diversity over volume. With a capped dataset size,
+                coverage across scene and flight conditions is more important than adding near-duplicate projects.
+              </p>
+
+              <h3>Dataset Size (Current Phase)</h3>
+              <ul>
+                <li>Maximum in this phase: 10 projects.</li>
+                <li>Minimum workable set: 8 projects.</li>
+                <li>Target set for this phase: 10 projects with strong variety.</li>
+              </ul>
+
+              <h3>Required Variety Groups</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Group</th>
+                    <th>What to vary</th>
+                    <th>Target coverage</th>
+                    <th>Why this matters</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Group A - Camera Profile</td>
+                    <td>Different camera models, focal lengths, and exposure ranges.</td>
+                    <td>At least 2 camera families.</td>
+                    <td>Initial LR behavior can change with optics and sensor response.</td>
+                  </tr>
+                  <tr>
+                    <td>Group B - Flight Geometry</td>
+                    <td>Grid, corridor, mixed paths, plus angle mix (nadir and oblique).</td>
+                    <td>At least 4 projects with strong oblique coverage.</td>
+                    <td>Path shape and angle directly affect convergence dynamics.</td>
+                  </tr>
+                  <tr>
+                    <td>Group C - Scene Content</td>
+                    <td>Built-up areas, dense vegetation, sparse vegetation, and mixed scenes.</td>
+                    <td>At least 2 built-up, 2 vegetation, 2 mixed scenes.</td>
+                    <td>Scene complexity shifts the best preset and learning speed.</td>
+                  </tr>
+                  <tr>
+                    <td>Group D - Capture Conditions</td>
+                    <td>Stable lighting, high contrast, mild blur, and challenging weather/light.</td>
+                    <td>At least 2 challenging-condition projects.</td>
+                    <td>Robustness requires exposure to non-ideal capture conditions.</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <h3>Evaluation Split (Primary)</h3>
+              <ul>
+                <li>Primary split: 7 train projects + 3 final test projects.</li>
+                <li>Project-level validation split is optional in this phase when in-run validation metrics are already used during training.</li>
+                <li>If explicit holdout validation is required, use 6 train + 1 validation + 3 final test.</li>
+              </ul>
+
+              <h3>Continual Learning With Limited Data</h3>
+              <p>
+                One persistent model is used and updated across runs. The model can keep learning even with a small number of projects.
+                Re-running the same project multiple times is valid and helps the model learn run-level policy behavior.
+              </p>
+              <ul>
+                <li>Repeated runs on one project provide valid policy-learning signal and can improve project-specific convergence behavior.</li>
+                <li>Project-specific gains do not guarantee cross-project performance; multi-project diversity is required for generalization.</li>
+                <li>Heavy reuse of one project increases overfitting risk, so repeated same-project runs should remain in development and be excluded from final test evidence.</li>
+              </ul>
+
+              <div class="tip">
+                With a 10-project cap, prioritize diversity of camera profile, flight geometry, and scene type over project count.
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </article>
+  </div>
+</body>
+</html>
