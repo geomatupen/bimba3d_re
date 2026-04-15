@@ -1804,6 +1804,64 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
             raise HTTPException(status_code=400, detail=f"Invalid training engine: {engine}")
         params_payload["engine"] = engine
 
+        # Optional AI input mode for initial presets in core_ai_optimization.
+        mode_value = str(params_payload.get("mode") or "baseline").strip().lower()
+        tune_scope_value = str(params_payload.get("tune_scope") or "").strip().lower()
+        requested_ai_input_mode = str(requested_params.get("ai_input_mode") or "").strip().lower()
+        valid_ai_input_modes = {
+            "exif_only",
+            "exif_plus_flight_plan",
+            "exif_plus_flight_plan_plus_external",
+        }
+        if requested_ai_input_mode and requested_ai_input_mode not in valid_ai_input_modes:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "ai_input_mode must be one of: exif_only, exif_plus_flight_plan, "
+                    "exif_plus_flight_plan_plus_external"
+                ),
+            )
+
+        if engine == "gsplat" and mode_value == "modified" and tune_scope_value == "core_ai_optimization":
+            chosen_mode = requested_ai_input_mode or str(params_payload.get("ai_input_mode") or "").strip().lower()
+            if chosen_mode not in valid_ai_input_modes:
+                chosen_mode = "exif_plus_flight_plan"
+            params_payload["ai_input_mode"] = chosen_mode
+
+            baseline_session_id = str(requested_params.get("baseline_session_id") or "").strip()
+            if not baseline_session_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="baseline_session_id is required for core_ai_optimization with ai_input_mode.",
+                )
+
+            baseline_run_dir = project_dir / "runs" / baseline_session_id
+            if not baseline_run_dir.exists() or not baseline_run_dir.is_dir():
+                raise HTTPException(status_code=404, detail="Selected baseline session not found")
+
+            baseline_eval_path = baseline_run_dir / "outputs" / "engines" / "gsplat" / "eval_history.json"
+            if not baseline_eval_path.exists():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Selected baseline session has no gsplat eval history",
+                )
+
+            baseline_run_cfg = _read_json_if_exists(baseline_run_dir / "run_config.json")
+            baseline_mode = str(
+                (baseline_run_cfg.get("resolved_params") or {}).get("mode")
+                or (baseline_run_cfg.get("requested_params") or {}).get("mode")
+                or ""
+            ).strip().lower()
+            if baseline_mode and baseline_mode != "baseline":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Selected baseline session must be a baseline-mode run",
+                )
+            params_payload["baseline_session_id"] = baseline_session_id
+        else:
+            params_payload.pop("ai_input_mode", None)
+            params_payload.pop("baseline_session_id", None)
+
         # Optional warm-start from globally elevated model.
         start_model_mode = str(requested_params.get("start_model_mode") or "scratch").strip().lower()
         if start_model_mode not in {"scratch", "reuse"}:

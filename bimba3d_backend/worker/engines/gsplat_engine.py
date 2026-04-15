@@ -13,6 +13,8 @@ from ..modified_rule_scopes import (
     select_rule_profile,
 )
 from ..ai_adaptive_light import ACTION_KEEP, CoreAIAdaptiveController
+from ..ai_input_modes import apply_initial_preset
+from ..ai_input_modes.learner import update_from_run
 
 
 def _find_vswhere_exe() -> Path | None:
@@ -152,7 +154,16 @@ def run_training(
     (engine_output_dir / "previews").mkdir(parents=True, exist_ok=True)
     (engine_output_dir / "snapshots").mkdir(parents=True, exist_ok=True)
 
-    p = params or {}
+    p = dict(params or {})
+
+    # Optional initial preset for core-ai runs; leaves legacy behavior unchanged
+    # when ai_input_mode is not selected.
+    preset_summary = apply_initial_preset(
+        p,
+        image_dir=Path(image_dir),
+        colmap_dir=Path(colmap_dir),
+        logger=logger,
+    )
     mode = p.get("mode", "baseline")
     max_steps = int(p.get("max_steps", 15_000))
     raw_tune_start_step = p.get("tune_start_step", 100)
@@ -271,6 +282,7 @@ def run_training(
         "elapsed_by_step": {},
         "loss_by_step": {},
         "best_splat": {"step": None, "loss": None, "path": None},
+        "input_mode_preset": preset_summary,
         "early_stop": {
             "enabled": bool(auto_early_stop),
             "candidate": False,
@@ -286,6 +298,11 @@ def run_training(
             "eval_volatility_ratio": None,
         },
     }
+    use_html_input_mode_flow = (
+        mode == "modified"
+        and tune_scope == "core_ai_optimization"
+        and bool(isinstance(preset_summary, dict) and preset_summary.get("applied"))
+    )
 
     def _clamp_int(value: int, low: int, high: int) -> int:
         return max(low, min(high, int(value)))
@@ -294,7 +311,7 @@ def run_training(
         return max(low, min(high, float(value)))
 
     core_ai_controller: CoreAIAdaptiveController | None = None
-    if mode == "modified" and tune_scope == "core_ai_optimization":
+    if mode == "modified" and tune_scope == "core_ai_optimization" and not use_html_input_mode_flow:
         bounded_start = _clamp_int(modified_tune_start_step, 100, 1500)
         bounded_end = _clamp_int(modified_tune_end_step, bounded_start + 5000, max_steps)
         bounded_interval = _clamp_int(modified_tune_interval, 50, 400)
@@ -466,6 +483,8 @@ def run_training(
 
     def apply_modified_rules(step: int, loss: float) -> bool:
         if mode != "modified":
+            return False
+        if use_html_input_mode_flow and tune_scope == "core_ai_optimization":
             return False
 
         schedule = tuning_state.get("adaptive_schedule") if isinstance(tuning_state.get("adaptive_schedule"), dict) else None
@@ -1457,12 +1476,55 @@ def run_training(
             "lpips_mean": final_eval.get("lpips_mean"),
             "sharpness_mean": final_eval.get("sharpness_mean"),
         }
+
+        input_mode_learning_payload = None
+        if use_html_input_mode_flow:
+            selected_preset = str((preset_summary or {}).get("selected_preset") or "")
+            yhat_scores = dict((preset_summary or {}).get("yhat_scores") or {})
+            mode_name = str((preset_summary or {}).get("mode") or "")
+            baseline_eval_history: list[dict] = []
+            baseline_session_id = str(p.get("baseline_session_id") or "").strip()
+            if baseline_session_id:
+                baseline_eval_path = (
+                    project_dir / "runs" / baseline_session_id / "outputs" / "engines" / "gsplat" / "eval_history.json"
+                )
+                if baseline_eval_path.exists():
+                    try:
+                        raw = json.loads(baseline_eval_path.read_text(encoding="utf-8"))
+                        if isinstance(raw, list):
+                            baseline_eval_history = [row for row in raw if isinstance(row, dict)]
+                    except Exception as exc:
+                        logger.warning("Failed loading baseline eval history from %s: %s", baseline_eval_path, exc)
+            if selected_preset and mode_name:
+                try:
+                    input_mode_learning_payload = update_from_run(
+                        project_dir=project_dir,
+                        mode=mode_name,
+                        selected_preset=selected_preset,
+                        yhat_scores=yhat_scores,
+                        eval_history=eval_history,
+                        baseline_eval_history=baseline_eval_history,
+                        loss_by_step={int(k): float(v) for k, v in (loss_by_step or {}).items()},
+                        elapsed_by_step={int(k): float(v) for k, v in (elapsed_by_step or {}).items()},
+                        x_features=dict((preset_summary or {}).get("features") or {}),
+                        run_id=run_session_id,
+                        logger=logger,
+                    )
+                    write_json_atomic(
+                        engine_output_dir / "input_mode_learning_results.json",
+                        input_mode_learning_payload,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed input-mode learner update: %s", exc)
+
         metadata["num_gaussians"] = final_eval.get("num_gaussians")
         metadata["mode"] = mode
         metadata["tune_scope"] = tune_scope if mode == "modified" else None
         metadata["best_splat"] = tuning_state.get("best_splat")
         metadata["early_stop"] = tuning_state.get("early_stop")
         metadata["stop_reason"] = stop_flag_reason or (f"runner_stop_step={stop_reason}" if isinstance(stop_reason, int) else None)
+        if input_mode_learning_payload is not None:
+            metadata["input_mode_learning"] = input_mode_learning_payload
         write_json_atomic(metadata_path, metadata)
 
         loss_milestones: dict[str, float] = {}

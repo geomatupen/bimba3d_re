@@ -104,6 +104,8 @@ class ProcessParams(BaseModel):
     start_model_mode: Optional[str] = None  # "scratch" | "reuse"
     source_model_id: Optional[str] = None
     source_run_id: Optional[str] = None
+    ai_input_mode: Optional[str] = None  # "exif_only" | "exif_plus_flight_plan" | "exif_plus_flight_plan_plus_external"
+    baseline_session_id: Optional[str] = None  # completed baseline gsplat session for comparison
     # --- ORIGINAL KERBL PARAMETERS ---
     max_steps: Optional[int] = None  # [original]
     log_interval: Optional[int] = None  # [custom]

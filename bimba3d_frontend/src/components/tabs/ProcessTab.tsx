@@ -155,6 +155,12 @@ type NewSessionConfigSource = "current" | "defaults";
 type TrainingEngine = "gsplat" | "litegs";
 type TuneScope = "core_individual" | "core_only" | "core_ai_optimization" | "core_individual_plus_strategy";
 type TrendScope = "run" | "phase";
+type AiInputMode = "exif_only" | "exif_plus_flight_plan" | "exif_plus_flight_plan_plus_external";
+type TuneScopeDropdownValue =
+  | TuneScope
+  | "core_ai_optimization__exif_only"
+  | "core_ai_optimization__exif_plus_flight_plan"
+  | "core_ai_optimization__exif_plus_flight_plan_plus_external";
 type StartModelMode = "scratch" | "reuse";
 
 interface ReusableModelEntry {
@@ -265,6 +271,8 @@ const getDefaultProcessConfig = () => ({
   tune_interval: 100,
   tune_scope: "core_individual_plus_strategy" as TuneScope,
   trend_scope: "run" as TrendScope,
+  ai_input_mode: "exif_plus_flight_plan" as AiInputMode,
+  baseline_session_id: "",
   run_count: 1,
   run_jitter_factor: 1,
   continue_on_failure: true,
@@ -364,6 +372,12 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [tuneInterval, setTuneInterval] = useState<number>(cfg.tune_interval ?? 100);
   const [tuneScope, setTuneScope] = useState<TuneScope>(cfg.tune_scope ?? "core_individual_plus_strategy");
   const [trendScope, setTrendScope] = useState<TrendScope>(cfg.trend_scope === "phase" ? "phase" : "run");
+  const [aiInputMode, setAiInputMode] = useState<AiInputMode>(
+    cfg.ai_input_mode === "exif_only" || cfg.ai_input_mode === "exif_plus_flight_plan_plus_external"
+      ? cfg.ai_input_mode
+      : "exif_plus_flight_plan"
+  );
+  const [baselineSessionIdForAi, setBaselineSessionIdForAi] = useState<string>(cfg.baseline_session_id ?? "");
   const [runCount, setRunCount] = useState<number>(cfg.run_count ?? 1);
   const [runJitterFactor, setRunJitterFactor] = useState<number>(cfg.run_jitter_factor ?? 1);
   const [continueOnFailure, setContinueOnFailure] = useState<boolean>(cfg.continue_on_failure ?? true);
@@ -421,6 +435,11 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const showManualDensificationControls = engine === "gsplat" && !showCoreAiSessionControls;
   const showBatchActions = showCoreAiSessionControls && runCount > 1;
 
+  const tuneScopeDropdownValue: TuneScopeDropdownValue =
+    tuneScope === "core_ai_optimization"
+      ? (`core_ai_optimization__${aiInputMode}` as TuneScopeDropdownValue)
+      : tuneScope;
+
   const densifyScheduleBlocked =
     !showCoreAiSessionControls && (densificationInterval <= 0 || densifyFromIter >= densifyUntilIter);
   const densifyBlockedReason = useMemo(() => {
@@ -462,11 +481,13 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const trainingInfo: Record<string, string> = {
     mode: 'Training profile. Baseline keeps default behavior; Modified applies rule-based or adaptive tuning during training depending on selected scope.',
     tune_start_step: 'For Modified mode, this is the first step where tuning checks are allowed. Before this step, no rule-based LR updates are applied.',
-    tune_min_improvement: 'For Core individual and Core AI optimization scopes, this is the baseline minimum-improvement anchor (example: 0.005 = 0.5%). In Core AI optimization, the controller then adjusts effective thresholds by phase/progress and loss stability at runtime, so this value is a starting reference, not a fixed threshold on every step.',
+    tune_min_improvement: 'For Core individual and Core AI optimization scopes, this is the baseline minimum-improvement anchor (example: 0.005 = 0.5%).',
     tune_end_step: 'For Modified mode, this is the last step where rule-based tuning updates are allowed. The worker keeps applying rule checks until this step, then continues normal training.',
     tune_interval: 'For Modified mode, worker evaluates and applies rule-based updates every N steps during the tuning window.',
-    tune_scope: 'Rule tuning scope: Core individual updates only LR groups. Core only updates LR groups + core strategy threshold. Core AI optimization runs a lightweight adaptive controller with gated actions and cross-run memory; it uses tune_min_improvement as the baseline anchor, then adapts thresholds over time. Core individual + strategy updates LR groups and full strategy controls.',
-    trend_scope: 'Core AI optimization trend scope for reward shaping: Run uses the whole current run trend, while Phase tracks trend independently inside each training phase. Phase is often more robust when early and late phases have different dynamics.',
+    tune_scope: 'Rule tuning scope: Core individual updates only LR groups. Core only updates LR groups + core strategy threshold. Core AI optimization uses AI input-mode preset selection and run-end best/end-anchor learning updates. Core individual + strategy updates LR groups and full strategy controls.',
+    trend_scope: 'Core AI optimization trend scope setting retained for compatibility with existing payloads.',
+    ai_input_mode: 'Initial preset mode for Core AI optimization. EXIF only uses image metadata, EXIF + flight plan adds sequence-derived flight features, and + external adds cheap image-derived scene features (no manual external inputs).',
+    baseline_session_id: 'Completed baseline gsplat session used as reference for baseline-relative scoring in Core AI optimization modes.',
     run_count: 'Total sessions in this batch, including the selected session as run 1. Default 1 keeps manual behavior.',
     run_jitter_factor: 'Per-run multiplier for LR-related params. 1 means no jitter across runs.',
     continue_on_failure: 'If enabled, remaining runs continue even when one run fails/stops.',
@@ -605,9 +626,28 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     () => projectRuns.find((r) => r.run_id === selectedRunId) || null,
     [projectRuns, selectedRunId],
   );
+  const baselineCandidateRuns = useMemo(
+    () => projectRuns.filter((r) => {
+      const modeVal = String(r.mode || "").trim().toLowerCase();
+      const statusVal = String(r.session_status || "").trim().toLowerCase();
+      const engineVal = String(r.engine || "").trim().toLowerCase();
+      const completed = statusVal === "completed" || statusVal === "succeeded";
+      const baselineMode = modeVal === "baseline" || (r.is_base === true && !modeVal);
+      return completed && baselineMode && (!engineVal || engineVal === "gsplat");
+    }),
+    [projectRuns],
+  );
   const selectedRunIsProcessing = Boolean(processingRunId) && selectedRunId === processingRunId;
   const canManageColmapImages = !selectedRunId || selectedRunMeta?.is_base === true;
   const selectedRunSharedOutdated = Boolean(!canManageColmapImages && selectedRunMeta?.shared_outdated);
+
+  useEffect(() => {
+    if (!showCoreAiSessionControls) return;
+    const valid = baselineCandidateRuns.some((r) => r.run_id === baselineSessionIdForAi);
+    if (!valid) {
+      setBaselineSessionIdForAi(baselineCandidateRuns[0]?.run_id || "");
+    }
+  }, [showCoreAiSessionControls, baselineCandidateRuns, baselineSessionIdForAi]);
 
   const applyTrainingDefaults = (defaults: ReturnType<typeof getDefaultProcessConfig>) => {
     setMode(defaults.mode ?? "baseline");
@@ -617,6 +657,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     setTuneInterval(defaults.tune_interval ?? 100);
     setTuneScope(defaults.tune_scope ?? "core_individual_plus_strategy");
     setTrendScope(defaults.trend_scope === "phase" ? "phase" : "run");
+    setAiInputMode(defaults.ai_input_mode ?? "exif_plus_flight_plan");
+    setBaselineSessionIdForAi(defaults.baseline_session_id ?? "");
     setRunCount(defaults.run_count ?? 1);
     setRunJitterFactor(defaults.run_jitter_factor ?? 1);
     setContinueOnFailure(defaults.continue_on_failure ?? true);
@@ -688,6 +730,14 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       if (typeof resolved.tune_interval === "number") setTuneInterval(resolved.tune_interval);
       if (resolved.tune_scope) setTuneScope(resolved.tune_scope as TuneScope);
       if (resolved.trend_scope === "run" || resolved.trend_scope === "phase") setTrendScope(resolved.trend_scope as TrendScope);
+      if (
+        resolved.ai_input_mode === "exif_only" ||
+        resolved.ai_input_mode === "exif_plus_flight_plan" ||
+        resolved.ai_input_mode === "exif_plus_flight_plan_plus_external"
+      ) {
+        setAiInputMode(resolved.ai_input_mode as AiInputMode);
+      }
+      if (typeof resolved.baseline_session_id === "string") setBaselineSessionIdForAi(resolved.baseline_session_id);
       if (typeof resolved.run_count === "number") setRunCount(Math.max(1, Math.floor(resolved.run_count)));
       if (typeof resolved.run_jitter_factor === "number") setRunJitterFactor(Math.max(0.1, resolved.run_jitter_factor));
       if (typeof resolved.continue_on_failure === "boolean") setContinueOnFailure(resolved.continue_on_failure);
@@ -811,6 +861,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       tune_interval: tuneInterval,
       tune_scope: tuneScope,
       trend_scope: trendScope,
+      ai_input_mode: aiInputMode,
+      baseline_session_id: baselineSessionIdForAi,
       run_count: runCount,
       run_jitter_factor: runJitterFactor,
       continue_on_failure: continueOnFailure,
@@ -846,7 +898,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       litegs_alpha_shrink: litegsAlphaShrink,
     };
     localStorage.setItem(getTrainingConfigStorageKey(selectedRunId), JSON.stringify(config));
-  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, trendScope, runCount, runJitterFactor, continueOnFailure, startModelMode, sourceModelId, engine, maxSteps, logInterval, splatInterval, bestSplatInterval, bestSplatStartStep, autoEarlyStop, earlyStopMonitorInterval, earlyStopDecisionPoints, earlyStopMinEvalPoints, earlyStopMinStepRatio, earlyStopMonitorMinRelativeImprovement, earlyStopEvalMinRelativeImprovement, earlyStopMaxVolatilityRatio, earlyStopEmaAlpha, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
+  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, trendScope, aiInputMode, baselineSessionIdForAi, runCount, runJitterFactor, continueOnFailure, startModelMode, sourceModelId, engine, maxSteps, logInterval, splatInterval, bestSplatInterval, bestSplatStartStep, autoEarlyStop, earlyStopMonitorInterval, earlyStopDecisionPoints, earlyStopMinEvalPoints, earlyStopMinStepRatio, earlyStopMonitorMinRelativeImprovement, earlyStopEvalMinRelativeImprovement, earlyStopMaxVolatilityRatio, earlyStopEmaAlpha, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2350,6 +2402,11 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       setProcessing(false);
       return;
     }
+    if (showCoreAiSessionControls && !baselineSessionIdForAi) {
+      setError("Select a completed baseline session for comparison.");
+      setProcessing(false);
+      return;
+    }
 
     resetProgressDisplayForNewRun();
 
@@ -2382,6 +2439,14 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         trend_scope:
           effectiveMode === "modified" && tuneScope === "core_ai_optimization"
             ? trendScope
+            : undefined,
+        ai_input_mode:
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+            ? aiInputMode
+            : undefined,
+        baseline_session_id:
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+            ? (baselineSessionIdForAi || undefined)
             : undefined,
         run_count: includeBatchControls ? runCount : 1,
         run_jitter_factor: includeBatchControls ? runJitterFactor : undefined,
@@ -2495,6 +2560,11 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       setProcessing(false);
       return;
     }
+    if (showCoreAiSessionControls && !baselineSessionIdForAi) {
+      setError("Select a completed baseline session for comparison.");
+      setProcessing(false);
+      return;
+    }
     try {
       // Decide which stage to request for resume based on where the worker stopped
       let resumeStage: "full" | "colmap_only" | "train_only" = "train_only";
@@ -2521,6 +2591,14 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         trend_scope:
           effectiveMode === "modified" && tuneScope === "core_ai_optimization"
             ? trendScope
+            : undefined,
+        ai_input_mode:
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+            ? aiInputMode
+            : undefined,
+        baseline_session_id:
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+            ? (baselineSessionIdForAi || undefined)
             : undefined,
         run_count: includeSessionControls ? runCount : undefined,
         run_jitter_factor: includeSessionControls ? runJitterFactor : undefined,
@@ -2694,6 +2772,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       tune_interval: tuneInterval,
       tune_scope: tuneScope,
       trend_scope: tuneScope === "core_ai_optimization" ? trendScope : undefined,
+      ai_input_mode: tuneScope === "core_ai_optimization" ? aiInputMode : undefined,
+      baseline_session_id: tuneScope === "core_ai_optimization" ? (baselineSessionIdForAi || undefined) : undefined,
       run_count: runCount,
       run_jitter_factor: runJitterFactor,
       continue_on_failure: continueOnFailure,
@@ -2740,6 +2820,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       tune_interval: tuneInterval,
       tune_scope: tuneScope,
       trend_scope: tuneScope === "core_ai_optimization" ? trendScope : undefined,
+      ai_input_mode: tuneScope === "core_ai_optimization" ? aiInputMode : undefined,
+      baseline_session_id: tuneScope === "core_ai_optimization" ? (baselineSessionIdForAi || undefined) : undefined,
       run_count: runCount,
       run_jitter_factor: runJitterFactor,
       continue_on_failure: continueOnFailure,
@@ -2908,6 +2990,14 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           trend_scope:
             defaults.tune_scope === "core_ai_optimization"
               ? (defaults.trend_scope === "phase" ? "phase" : "run")
+              : undefined,
+          ai_input_mode:
+            defaults.tune_scope === "core_ai_optimization"
+              ? (defaults.ai_input_mode || "exif_plus_flight_plan")
+              : undefined,
+          baseline_session_id:
+            defaults.tune_scope === "core_ai_optimization"
+              ? (defaults.baseline_session_id || undefined)
               : undefined,
           run_count: includeSessionControls ? defaults.run_count : undefined,
           run_jitter_factor: includeSessionControls ? defaults.run_jitter_factor : undefined,
@@ -4464,13 +4554,33 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                   <button onClick={() => setSelectedInfoKey("tune_scope")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
                                 </label>
                                 <select
-                                  value={tuneScope}
-                                  onChange={(e) => setTuneScope((e.target.value as TuneScope) || "core_individual_plus_strategy")}
+                                  value={tuneScopeDropdownValue}
+                                  onChange={(e) => {
+                                    const value = (e.target.value as TuneScopeDropdownValue) || "core_individual_plus_strategy";
+                                    if (value === "core_ai_optimization__exif_only") {
+                                      setTuneScope("core_ai_optimization");
+                                      setAiInputMode("exif_only");
+                                      return;
+                                    }
+                                    if (value === "core_ai_optimization__exif_plus_flight_plan") {
+                                      setTuneScope("core_ai_optimization");
+                                      setAiInputMode("exif_plus_flight_plan");
+                                      return;
+                                    }
+                                    if (value === "core_ai_optimization__exif_plus_flight_plan_plus_external") {
+                                      setTuneScope("core_ai_optimization");
+                                      setAiInputMode("exif_plus_flight_plan_plus_external");
+                                      return;
+                                    }
+                                    setTuneScope((value as TuneScope) || "core_individual_plus_strategy");
+                                  }}
                                   className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                 >
                                   <option value="core_individual">Core individual</option>
                                   <option value="core_only">Core only</option>
-                                  <option value="core_ai_optimization">Core AI optimization</option>
+                                  <option value="core_ai_optimization__exif_only">Core AI optimization (EXIF only)</option>
+                                  <option value="core_ai_optimization__exif_plus_flight_plan">Core AI optimization (EXIF + flight-plan)</option>
+                                  <option value="core_ai_optimization__exif_plus_flight_plan_plus_external">Core AI optimization (EXIF + flight-plan + external)</option>
                                   <option value="core_individual_plus_strategy">Core individual + strategy</option>
                                 </select>
                               </div>
@@ -4482,6 +4592,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                   <span className="text-[10px] text-blue-700">Core AI optimization only</span>
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                  {/* Always show trend scope and baseline session */}
                                   <div className="md:col-span-2">
                                     <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
                                       <span>Trend scope</span>
@@ -4497,102 +4608,127 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                     </select>
                                     <p className="mt-1 text-[10px] text-slate-500">Run = one trend across all steps. Phase = separate trend per phase.</p>
                                   </div>
-                                  <div>
-                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                      <span>Run count</span>
-                                      <button onClick={() => setSelectedInfoKey("run_count")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                    </label>
-                                    <input
-                                      type="number"
-                                      min={1}
-                                      step={1}
-                                      value={runCount}
-                                      onChange={(e) => setRunCount(Math.max(1, parseInt(e.target.value || "1") || 1))}
-                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                    />
-                                    <p className="mt-1 text-[10px] text-slate-500">Includes selected session as run 1; creates {Math.max(0, runCount - 1)} additional sessions.</p>
-                                  </div>
-                                  <div>
-                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                      <span>Jitter factor</span>
-                                      <button onClick={() => setSelectedInfoKey("run_jitter_factor")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                    </label>
-                                    <input
-                                      type="number"
-                                      min={0.1}
-                                      step={0.01}
-                                      value={runJitterFactor}
-                                      onChange={(e) => {
-                                        const value = parseFloat(e.target.value);
-                                        if (Number.isFinite(value)) {
-                                          setRunJitterFactor(Math.max(0.1, value));
-                                        }
-                                      }}
-                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                    />
-                                  </div>
                                   <div className="md:col-span-2">
-                                    <label className="inline-flex items-center gap-2 text-[11px] font-medium text-slate-700">
-                                      <input
-                                        type="checkbox"
-                                        className="w-4 h-4"
-                                        checked={continueOnFailure}
-                                        onChange={(e) => setContinueOnFailure(e.target.checked)}
-                                      />
-                                      <span className="flex items-center gap-1">
-                                        Continue remaining runs on failure
-                                        <button type="button" onClick={() => setSelectedInfoKey("continue_on_failure")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                      </span>
-                                    </label>
-                                  </div>
-                                  <div>
                                     <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                      <span>Start mode</span>
-                                      <button onClick={() => setSelectedInfoKey("start_model_mode")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                      <span>Baseline session (required)</span>
+                                      <button onClick={() => setSelectedInfoKey("baseline_session_id")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
                                     </label>
                                     <select
-                                      value={startModelMode}
-                                      onChange={(e) => {
-                                        const next = (e.target.value as StartModelMode) || "scratch";
-                                        setStartModelMode(next);
-                                        if (next !== "reuse") {
-                                          setSourceModelId("");
-                                        }
-                                      }}
+                                      value={baselineSessionIdForAi}
+                                      onChange={(e) => setBaselineSessionIdForAi(e.target.value || "")}
                                       className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                     >
-                                      <option value="scratch">Start from scratch</option>
-                                      <option value="reuse">Warm-start from reusable model</option>
-                                    </select>
-                                  </div>
-                                  <div>
-                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                      <span>Reusable model</span>
-                                      <button onClick={() => setSelectedInfoKey("source_model_id")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                    </label>
-                                    <select
-                                      value={sourceModelId}
-                                      onChange={(e) => setSourceModelId(e.target.value)}
-                                      disabled={startModelMode !== "reuse" || reusableModelsLoading || reusableModels.length === 0}
-                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-slate-100 disabled:text-slate-500"
-                                    >
-                                      <option value="">
-                                        {reusableModelsLoading
-                                          ? "Loading models..."
-                                          : reusableModels.length > 0
-                                            ? "Select reusable model"
-                                            : "No elevated models available"}
-                                      </option>
-                                      {reusableModels.map((item) => (
-                                        <option key={item.model_id} value={item.model_id}>
-                                          {item.model_name || item.model_id}
+                                      {baselineCandidateRuns.length === 0 && <option value="">No completed baseline sessions found</option>}
+                                      {baselineCandidateRuns.map((run) => (
+                                        <option key={run.run_id} value={run.run_id}>
+                                          {run.run_name || run.run_id} ({run.run_id})
                                         </option>
                                       ))}
                                     </select>
-                                    {reusableModelsError && (
-                                      <p className="mt-1 text-[10px] text-red-600">{reusableModelsError}</p>
-                                    )}
+                                    <p className="mt-1 text-[10px] text-slate-500">Used as reference for baseline-relative scoring.</p>
                                   </div>
+                                  {/* Only show run count, jitter, continueOnFailure, start model, and reusable model for modes that support them */}
+                                  {(aiInputMode === "exif_plus_flight_plan" || aiInputMode === "exif_plus_flight_plan_plus_external") && (
+                                    <>
+                                      <div>
+                                        <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                          <span>Run count</span>
+                                          <button onClick={() => setSelectedInfoKey("run_count")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                        </label>
+                                        <input
+                                          type="number"
+                                          min={1}
+                                          step={1}
+                                          value={runCount}
+                                          onChange={(e) => setRunCount(Math.max(1, parseInt(e.target.value || "1") || 1))}
+                                          className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                        />
+                                        <p className="mt-1 text-[10px] text-slate-500">Includes selected session as run 1; creates {Math.max(0, runCount - 1)} additional sessions.</p>
+                                      </div>
+                                      <div>
+                                        <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                          <span>Jitter factor</span>
+                                          <button onClick={() => setSelectedInfoKey("run_jitter_factor")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                        </label>
+                                        <input
+                                          type="number"
+                                          min={0.1}
+                                          step={0.01}
+                                          value={runJitterFactor}
+                                          onChange={(e) => {
+                                            const value = parseFloat(e.target.value);
+                                            if (Number.isFinite(value)) {
+                                              setRunJitterFactor(Math.max(0.1, value));
+                                            }
+                                          }}
+                                          className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                        />
+                                      </div>
+                                      <div className="md:col-span-2">
+                                        <label className="inline-flex items-center gap-2 text-[11px] font-medium text-slate-700">
+                                          <input
+                                            type="checkbox"
+                                            className="w-4 h-4"
+                                            checked={continueOnFailure}
+                                            onChange={(e) => setContinueOnFailure(e.target.checked)}
+                                          />
+                                          <span className="flex items-center gap-1">
+                                            Continue remaining runs on failure
+                                            <button type="button" onClick={() => setSelectedInfoKey("continue_on_failure")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                          </span>
+                                        </label>
+                                      </div>
+                                      <div>
+                                        <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                          <span>Start mode</span>
+                                          <button onClick={() => setSelectedInfoKey("start_model_mode")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                        </label>
+                                        <select
+                                          value={startModelMode}
+                                          onChange={(e) => {
+                                            const next = (e.target.value as StartModelMode) || "scratch";
+                                            setStartModelMode(next);
+                                            if (next !== "reuse") {
+                                              setSourceModelId("");
+                                            }
+                                          }}
+                                          className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                        >
+                                          <option value="scratch">Start from scratch</option>
+                                          <option value="reuse">Warm-start from reusable model</option>
+                                        </select>
+                                      </div>
+                                      <div>
+                                        <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                          <span>Reusable model</span>
+                                          <button onClick={() => setSelectedInfoKey("source_model_id")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                        </label>
+                                        <select
+                                          value={sourceModelId}
+                                          onChange={(e) => setSourceModelId(e.target.value)}
+                                          disabled={startModelMode !== "reuse" || reusableModelsLoading || reusableModels.length === 0}
+                                          className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-slate-100 disabled:text-slate-500"
+                                        >
+                                          <option value="">
+                                            {reusableModelsLoading
+                                              ? "Loading models..."
+                                              : reusableModels.length > 0
+                                                ? "Select reusable model"
+                                                : "No elevated models available"}
+                                          </option>
+                                          {reusableModels.map((item) => (
+                                            <option key={item.model_id} value={item.model_id}>
+                                              {item.model_name || item.model_id}
+                                            </option>
+                                          ))}
+                                        </select>
+                                        {reusableModelsError && (
+                                          <p className="mt-1 text-[10px] text-red-600">{reusableModelsError}</p>
+                                        )}
+                                      </div>
+                                    </>
+                                  )}
+                                  {/* For exif_only mode, hide all batch/external/manual fields */}
                                 </div>
                               </div>
                             )}
