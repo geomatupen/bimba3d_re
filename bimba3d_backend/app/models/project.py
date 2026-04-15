@@ -126,6 +126,7 @@ class ProcessParams(BaseModel):
     splat_export_interval: Optional[int] = None  # [original]
     best_splat_interval: Optional[int] = None  # [custom]
     best_splat_start_step: Optional[int] = None  # [custom]
+    save_best_splat: Optional[bool] = None  # [custom]
     png_export_interval: Optional[int] = None  # [original]
     # --- CUSTOM PARAMETERS ---
     auto_early_stop: Optional[bool] = None  # [custom]

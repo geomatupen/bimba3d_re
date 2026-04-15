@@ -155,7 +155,7 @@ type NewSessionConfigSource = "current" | "defaults";
 type TrainingEngine = "gsplat" | "litegs";
 type TuneScope = "core_individual" | "core_only" | "core_ai_optimization" | "core_individual_plus_strategy";
 type TrendScope = "run" | "phase";
-type AiInputMode = "exif_only" | "exif_plus_flight_plan" | "exif_plus_flight_plan_plus_external";
+type AiInputMode = "" | "exif_only" | "exif_plus_flight_plan" | "exif_plus_flight_plan_plus_external";
 type TuneScopeDropdownValue =
   | TuneScope
   | "core_ai_optimization__exif_only"
@@ -271,7 +271,7 @@ const getDefaultProcessConfig = () => ({
   tune_interval: 100,
   tune_scope: "core_individual_plus_strategy" as TuneScope,
   trend_scope: "run" as TrendScope,
-  ai_input_mode: "exif_plus_flight_plan" as AiInputMode,
+  ai_input_mode: "" as AiInputMode,
   baseline_session_id: "",
   run_count: 1,
   run_jitter_factor: 1,
@@ -284,7 +284,7 @@ const getDefaultProcessConfig = () => ({
   splatInterval: 31000,
   bestSplatInterval: 100,
   bestSplatStartStep: 2000,
-  saveBestSplat: true,
+  saveBestSplat: false,
   auto_early_stop: false,
   earlyStopMonitorInterval: 200,
   earlyStopDecisionPoints: 10,
@@ -374,9 +374,11 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [tuneScope, setTuneScope] = useState<TuneScope>(cfg.tune_scope ?? "core_individual_plus_strategy");
   const [trendScope, setTrendScope] = useState<TrendScope>(cfg.trend_scope === "phase" ? "phase" : "run");
   const [aiInputMode, setAiInputMode] = useState<AiInputMode>(
-    cfg.ai_input_mode === "exif_only" || cfg.ai_input_mode === "exif_plus_flight_plan_plus_external"
+    cfg.ai_input_mode === "exif_only" ||
+      cfg.ai_input_mode === "exif_plus_flight_plan" ||
+      cfg.ai_input_mode === "exif_plus_flight_plan_plus_external"
       ? cfg.ai_input_mode
-      : "exif_plus_flight_plan"
+      : ""
   );
   const [baselineSessionIdForAi, setBaselineSessionIdForAi] = useState<string>(cfg.baseline_session_id ?? "");
   const [runCount, setRunCount] = useState<number>(cfg.run_count ?? 1);
@@ -392,7 +394,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [logInterval, setLogInterval] = useState<number>(cfg.logInterval ?? 100);
   const [splatInterval, setSplatInterval] = useState<number>(cfg.splatInterval ?? cfg.splat_export_interval ?? 31000);
   const [bestSplatInterval, setBestSplatInterval] = useState<number>(cfg.bestSplatInterval ?? cfg.best_splat_interval ?? 100);
-    const [saveBestSplat, setSaveBestSplat] = useState<boolean>(cfg.saveBestSplat ?? cfg.save_best_splat ?? true);
+    const [saveBestSplat, setSaveBestSplat] = useState<boolean>(cfg.saveBestSplat ?? cfg.save_best_splat ?? false);
   const [bestSplatStartStep, setBestSplatStartStep] = useState<number>(cfg.bestSplatStartStep ?? cfg.best_splat_start_step ?? 2000);
   const [autoEarlyStop, setAutoEarlyStop] = useState<boolean>(cfg.auto_early_stop ?? false);
   const [earlyStopMonitorInterval, setEarlyStopMonitorInterval] = useState<number>(cfg.earlyStopMonitorInterval ?? cfg.early_stop_monitor_interval ?? 200);
@@ -433,13 +435,17 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
 
   const showCoreAiSessionControls =
     engine === "gsplat" && mode === "modified" && tuneScope === "core_ai_optimization";
+  const hasAiInputModeFlow = showCoreAiSessionControls && Boolean(aiInputMode);
+  const hasLegacyControllerFlow = showCoreAiSessionControls && !aiInputMode;
   const showManualModifiedTuneControls = engine === "gsplat" && mode === "modified" && !showCoreAiSessionControls;
   const showManualDensificationControls = engine === "gsplat" && !showCoreAiSessionControls;
   const showBatchActions = showCoreAiSessionControls && runCount > 1;
 
   const tuneScopeDropdownValue: TuneScopeDropdownValue =
     tuneScope === "core_ai_optimization"
-      ? (`core_ai_optimization__${aiInputMode}` as TuneScopeDropdownValue)
+      ? (aiInputMode
+          ? (`core_ai_optimization__${aiInputMode}` as TuneScopeDropdownValue)
+          : "core_ai_optimization")
       : tuneScope;
 
   const densifyScheduleBlocked =
@@ -488,7 +494,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     tune_interval: 'For Modified mode, worker evaluates and applies rule-based updates every N steps during the tuning window.',
     tune_scope: 'Rule tuning scope: Core individual updates only LR groups. Core only updates LR groups + core strategy threshold. Core AI optimization uses AI input-mode preset selection and run-end best/end-anchor learning updates. Core individual + strategy updates LR groups and full strategy controls.',
     trend_scope: 'Core AI optimization trend scope setting retained for compatibility with existing payloads.',
-    ai_input_mode: 'Initial preset mode for Core AI optimization. EXIF only uses image metadata, EXIF + flight plan adds sequence-derived flight features, and + external adds cheap image-derived scene features (no manual external inputs).',
+    ai_input_mode: 'Initial preset mode for Core AI optimization. Leave empty to use the legacy controller-only flow. EXIF only uses image metadata, EXIF + flight plan adds sequence-derived flight features, and + external adds cheap image-derived scene features (no manual external inputs).',
     baseline_session_id: 'Completed baseline gsplat session used as reference for baseline-relative scoring in Core AI optimization modes.',
     run_count: 'Total sessions in this batch, including the selected session as run 1. Default 1 keeps manual behavior.',
     run_jitter_factor: 'Per-run multiplier for LR-related params. 1 means no jitter across runs.',
@@ -644,15 +650,15 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const selectedRunSharedOutdated = Boolean(!canManageColmapImages && selectedRunMeta?.shared_outdated);
 
   useEffect(() => {
-    if (!showCoreAiSessionControls) return;
+    if (!hasAiInputModeFlow) return;
     const valid = baselineCandidateRuns.some((r) => r.run_id === baselineSessionIdForAi);
     if (!valid) {
       setBaselineSessionIdForAi(baselineCandidateRuns[0]?.run_id || "");
     }
-  }, [showCoreAiSessionControls, baselineCandidateRuns, baselineSessionIdForAi]);
+  }, [hasAiInputModeFlow, baselineCandidateRuns, baselineSessionIdForAi]);
 
   const applyTrainingDefaults = (defaults: ReturnType<typeof getDefaultProcessConfig>) => {
-      setSaveBestSplat(typeof defaults.saveBestSplat === "boolean" ? defaults.saveBestSplat : true);
+      setSaveBestSplat(typeof defaults.saveBestSplat === "boolean" ? defaults.saveBestSplat : false);
     setMode(defaults.mode ?? "baseline");
     setTuneStartStep(defaults.tune_start_step ?? 100);
     setTuneMinImprovement(defaults.tune_min_improvement ?? 0.005);
@@ -660,7 +666,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     setTuneInterval(defaults.tune_interval ?? 100);
     setTuneScope(defaults.tune_scope ?? "core_individual_plus_strategy");
     setTrendScope(defaults.trend_scope === "phase" ? "phase" : "run");
-    setAiInputMode(defaults.ai_input_mode ?? "exif_plus_flight_plan");
+    setAiInputMode(defaults.ai_input_mode ?? "");
     setBaselineSessionIdForAi(defaults.baseline_session_id ?? "");
     setRunCount(defaults.run_count ?? 1);
     setRunJitterFactor(defaults.run_jitter_factor ?? 1);
@@ -1462,8 +1468,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         const batchRunIsActive = Boolean(
           ((typeof status?.batch_total === "number" && status.batch_total > 1) ||
             (typeof status?.batch_current_index === "number" && status.batch_current_index > 0)) &&
-          (status?.status === "processing" || status?.status === "stopping") &&
-          status?.current_run_id,
+          (status?.status === "processing" || status?.status === "stopping"),
         );
         const statusContextActive = selectedRunIsActive || batchRunIsActive;
         
@@ -2412,7 +2417,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       setProcessing(false);
       return;
     }
-    if (showCoreAiSessionControls && !baselineSessionIdForAi) {
+    if (hasAiInputModeFlow && !baselineSessionIdForAi) {
       setError("Select a completed baseline session for comparison.");
       setProcessing(false);
       return;
@@ -2447,15 +2452,15 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         tune_interval: effectiveMode === "modified" ? tuneInterval : undefined,
         tune_scope: effectiveMode === "modified" ? tuneScope : undefined,
         trend_scope:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && !aiInputMode
             ? trendScope
             : undefined,
         ai_input_mode:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode
             ? aiInputMode
             : undefined,
         baseline_session_id:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode
             ? (baselineSessionIdForAi || undefined)
             : undefined,
         run_count: includeBatchControls ? runCount : 1,
@@ -2571,7 +2576,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       setProcessing(false);
       return;
     }
-    if (showCoreAiSessionControls && !baselineSessionIdForAi) {
+    if (hasAiInputModeFlow && !baselineSessionIdForAi) {
       setError("Select a completed baseline session for comparison.");
       setProcessing(false);
       return;
@@ -2600,15 +2605,15 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         tune_interval: effectiveMode === "modified" ? tuneInterval : undefined,
         tune_scope: effectiveMode === "modified" ? tuneScope : undefined,
         trend_scope:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && !aiInputMode
             ? trendScope
             : undefined,
         ai_input_mode:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode
             ? aiInputMode
             : undefined,
         baseline_session_id:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode
             ? (baselineSessionIdForAi || undefined)
             : undefined,
         run_count: includeSessionControls ? runCount : undefined,
@@ -2783,9 +2788,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       tune_end_step: tuneEndStep,
       tune_interval: tuneInterval,
       tune_scope: tuneScope,
-      trend_scope: tuneScope === "core_ai_optimization" ? trendScope : undefined,
-      ai_input_mode: tuneScope === "core_ai_optimization" ? aiInputMode : undefined,
-      baseline_session_id: tuneScope === "core_ai_optimization" ? (baselineSessionIdForAi || undefined) : undefined,
+      trend_scope: tuneScope === "core_ai_optimization" && !aiInputMode ? trendScope : undefined,
+      ai_input_mode: tuneScope === "core_ai_optimization" && aiInputMode ? aiInputMode : undefined,
+      baseline_session_id:
+        tuneScope === "core_ai_optimization" && aiInputMode ? (baselineSessionIdForAi || undefined) : undefined,
       run_count: runCount,
       run_jitter_factor: runJitterFactor,
       continue_on_failure: continueOnFailure,
@@ -2832,9 +2838,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       tune_end_step: tuneEndStep,
       tune_interval: tuneInterval,
       tune_scope: tuneScope,
-      trend_scope: tuneScope === "core_ai_optimization" ? trendScope : undefined,
-      ai_input_mode: tuneScope === "core_ai_optimization" ? aiInputMode : undefined,
-      baseline_session_id: tuneScope === "core_ai_optimization" ? (baselineSessionIdForAi || undefined) : undefined,
+      trend_scope: tuneScope === "core_ai_optimization" && !aiInputMode ? trendScope : undefined,
+      ai_input_mode: tuneScope === "core_ai_optimization" && aiInputMode ? aiInputMode : undefined,
+      baseline_session_id:
+        tuneScope === "core_ai_optimization" && aiInputMode ? (baselineSessionIdForAi || undefined) : undefined,
       run_count: runCount,
       run_jitter_factor: runJitterFactor,
       continue_on_failure: continueOnFailure,
@@ -3002,15 +3009,15 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           tune_interval: defaults.tune_interval,
           tune_scope: defaults.tune_scope,
           trend_scope:
-            defaults.tune_scope === "core_ai_optimization"
+            defaults.tune_scope === "core_ai_optimization" && !defaults.ai_input_mode
               ? (defaults.trend_scope === "phase" ? "phase" : "run")
               : undefined,
           ai_input_mode:
             defaults.tune_scope === "core_ai_optimization"
-              ? (defaults.ai_input_mode || "exif_plus_flight_plan")
+              ? (defaults.ai_input_mode || undefined)
               : undefined,
           baseline_session_id:
-            defaults.tune_scope === "core_ai_optimization"
+            defaults.tune_scope === "core_ai_optimization" && defaults.ai_input_mode
               ? (defaults.baseline_session_id || undefined)
               : undefined,
           run_count: includeSessionControls ? defaults.run_count : undefined,
@@ -4595,6 +4602,11 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                   value={tuneScopeDropdownValue}
                                   onChange={(e) => {
                                     const value = (e.target.value as TuneScopeDropdownValue) || "core_individual_plus_strategy";
+                                    if (value === "core_ai_optimization") {
+                                      setTuneScope("core_ai_optimization");
+                                      setAiInputMode("");
+                                      return;
+                                    }
                                     if (value === "core_ai_optimization__exif_only") {
                                       setTuneScope("core_ai_optimization");
                                       setAiInputMode("exif_only");
@@ -4616,6 +4628,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                 >
                                   <option value="core_individual">Core individual</option>
                                   <option value="core_only">Core only</option>
+                                  <option value="core_ai_optimization">Core AI optimization (controller)</option>
                                   <option value="core_ai_optimization__exif_only">Core AI optimization (EXIF only)</option>
                                   <option value="core_ai_optimization__exif_plus_flight_plan">Core AI optimization (EXIF + flight-plan)</option>
                                   <option value="core_ai_optimization__exif_plus_flight_plan_plus_external">Core AI optimization (EXIF + flight-plan + external)</option>
@@ -4631,43 +4644,45 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                                   {/* Always show trend scope and baseline session */}
-                                  <div className="md:col-span-2">
-                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                      <span>Trend scope</span>
-                                      <button onClick={() => setSelectedInfoKey("trend_scope")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                    </label>
-                                    <select
-                                      value={trendScope}
-                                      onChange={(e) => setTrendScope((e.target.value as TrendScope) === "phase" ? "phase" : "run")}
-                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                    >
-                                      <option value="run">Whole current run trend</option>
-                                      <option value="phase">Phase-wise trend</option>
-                                    </select>
-                                    <p className="mt-1 text-[10px] text-slate-500">Run = one trend across all steps. Phase = separate trend per phase.</p>
-                                  </div>
-                                  <div className="md:col-span-2">
-                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                      <span>Baseline session (required)</span>
-                                      <button onClick={() => setSelectedInfoKey("baseline_session_id")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                    </label>
-                                    <select
-                                      value={baselineSessionIdForAi}
-                                      onChange={(e) => setBaselineSessionIdForAi(e.target.value || "")}
-                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                    >
-                                      {baselineCandidateRuns.length === 0 && <option value="">No completed baseline sessions found</option>}
-                                      {baselineCandidateRuns.map((run) => (
-                                        <option key={run.run_id} value={run.run_id}>
-                                          {run.run_name || run.run_id} ({run.run_id})
-                                        </option>
-                                      ))}
-                                    </select>
-                                    <p className="mt-1 text-[10px] text-slate-500">Used as reference for baseline-relative scoring.</p>
-                                  </div>
-                                  {/* Only show run count, jitter, continueOnFailure, start model, and reusable model for modes that support them */}
-                                  {(aiInputMode === "exif_plus_flight_plan" || aiInputMode === "exif_plus_flight_plan_plus_external") && (
-                                    <>
+                                  {hasLegacyControllerFlow && (
+                                    <div className="md:col-span-2">
+                                      <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                        <span>Trend scope</span>
+                                        <button onClick={() => setSelectedInfoKey("trend_scope")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                      </label>
+                                      <select
+                                        value={trendScope}
+                                        onChange={(e) => setTrendScope((e.target.value as TrendScope) === "phase" ? "phase" : "run")}
+                                        className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                      >
+                                        <option value="run">Whole current run trend</option>
+                                        <option value="phase">Phase-wise trend</option>
+                                      </select>
+                                      <p className="mt-1 text-[10px] text-slate-500">Run = one trend across all steps. Phase = separate trend per phase.</p>
+                                    </div>
+                                  )}
+                                  {hasAiInputModeFlow && (
+                                    <div className="md:col-span-2">
+                                      <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                        <span>Baseline session (required)</span>
+                                        <button onClick={() => setSelectedInfoKey("baseline_session_id")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                      </label>
+                                      <select
+                                        value={baselineSessionIdForAi}
+                                        onChange={(e) => setBaselineSessionIdForAi(e.target.value || "")}
+                                        className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                      >
+                                        {baselineCandidateRuns.length === 0 && <option value="">No completed baseline sessions found</option>}
+                                        {baselineCandidateRuns.map((run) => (
+                                          <option key={run.run_id} value={run.run_id}>
+                                            {run.run_name || run.run_id} ({run.run_id})
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <p className="mt-1 text-[10px] text-slate-500">Used as reference for baseline-relative scoring.</p>
+                                    </div>
+                                  )}
+                                  <>
                                       <div>
                                         <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
                                           <span>Run count</span>
@@ -4765,8 +4780,6 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                         )}
                                       </div>
                                     </>
-                                  )}
-                                  {/* For exif_only mode, hide all batch/external/manual fields */}
                                 </div>
                               </div>
                             )}

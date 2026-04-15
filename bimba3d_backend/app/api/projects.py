@@ -798,13 +798,27 @@ def _run_batch_process(
                 previous_success_run_id = run_id
                 successful_run_ids.append(run_id)
 
+            is_last_run = (idx + 1) >= run_count_int
+            halted_by_stop = final_state == "stopped"
+            halted_by_failure = final_state == "failed" and not continue_on_failure
+            will_continue = not is_last_run and not halted_by_stop and not halted_by_failure
+
+            status_value = (
+                "processing"
+                if will_continue
+                else (final_state if final_state in {"processing", "stopping", "completed", "done", "failed", "stopped"} else "processing")
+            )
+            message_value = f"Batch progress: {completed_runs}/{run_count_int} sessions completed."
+            if will_continue:
+                message_value = f"{message_value} Starting next session..."
+
             status.update_status(
                 project_id,
-                final_state if final_state in {"processing", "stopping", "completed", "done", "failed", "stopped"} else "processing",
+                status_value,
                 batch_total=run_count_int,
                 batch_completed=completed_runs,
                 batch_current_index=idx + 1,
-                message=f"Batch progress: {completed_runs}/{run_count_int} sessions completed.",
+                message=message_value,
             )
 
             # A user stop must always terminate the remaining batch chain.
@@ -1761,6 +1775,7 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
         params_payload.setdefault("splat_export_interval", 31000)
         params_payload.setdefault("best_splat_interval", 100)
         params_payload.setdefault("best_splat_start_step", 2000)
+        params_payload.setdefault("save_best_splat", False)
         params_payload.setdefault("auto_early_stop", False)
         params_payload.setdefault("early_stop_monitor_interval", 200)
         params_payload.setdefault("early_stop_decision_points", 10)
@@ -1824,40 +1839,50 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
 
         if engine == "gsplat" and mode_value == "modified" and tune_scope_value == "core_ai_optimization":
             chosen_mode = requested_ai_input_mode or str(params_payload.get("ai_input_mode") or "").strip().lower()
-            if chosen_mode not in valid_ai_input_modes:
-                chosen_mode = "exif_plus_flight_plan"
-            params_payload["ai_input_mode"] = chosen_mode
+            if chosen_mode:
+                if chosen_mode not in valid_ai_input_modes:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "ai_input_mode must be one of: exif_only, exif_plus_flight_plan, "
+                            "exif_plus_flight_plan_plus_external"
+                        ),
+                    )
+                params_payload["ai_input_mode"] = chosen_mode
 
-            baseline_session_id = str(requested_params.get("baseline_session_id") or "").strip()
-            if not baseline_session_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="baseline_session_id is required for core_ai_optimization with ai_input_mode.",
-                )
+                baseline_session_id = str(requested_params.get("baseline_session_id") or "").strip()
+                if not baseline_session_id:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="baseline_session_id is required for core_ai_optimization with ai_input_mode.",
+                    )
 
-            baseline_run_dir = project_dir / "runs" / baseline_session_id
-            if not baseline_run_dir.exists() or not baseline_run_dir.is_dir():
-                raise HTTPException(status_code=404, detail="Selected baseline session not found")
+                baseline_run_dir = project_dir / "runs" / baseline_session_id
+                if not baseline_run_dir.exists() or not baseline_run_dir.is_dir():
+                    raise HTTPException(status_code=404, detail="Selected baseline session not found")
 
-            baseline_eval_path = baseline_run_dir / "outputs" / "engines" / "gsplat" / "eval_history.json"
-            if not baseline_eval_path.exists():
-                raise HTTPException(
-                    status_code=400,
-                    detail="Selected baseline session has no gsplat eval history",
-                )
+                baseline_eval_path = baseline_run_dir / "outputs" / "engines" / "gsplat" / "eval_history.json"
+                if not baseline_eval_path.exists():
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Selected baseline session has no gsplat eval history",
+                    )
 
-            baseline_run_cfg = _read_json_if_exists(baseline_run_dir / "run_config.json")
-            baseline_mode = str(
-                (baseline_run_cfg.get("resolved_params") or {}).get("mode")
-                or (baseline_run_cfg.get("requested_params") or {}).get("mode")
-                or ""
-            ).strip().lower()
-            if baseline_mode and baseline_mode != "baseline":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Selected baseline session must be a baseline-mode run",
-                )
-            params_payload["baseline_session_id"] = baseline_session_id
+                baseline_run_cfg = _read_json_if_exists(baseline_run_dir / "run_config.json")
+                baseline_mode = str(
+                    (baseline_run_cfg.get("resolved_params") or {}).get("mode")
+                    or (baseline_run_cfg.get("requested_params") or {}).get("mode")
+                    or ""
+                ).strip().lower()
+                if baseline_mode and baseline_mode != "baseline":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Selected baseline session must be a baseline-mode run",
+                    )
+                params_payload["baseline_session_id"] = baseline_session_id
+            else:
+                params_payload.pop("ai_input_mode", None)
+                params_payload.pop("baseline_session_id", None)
         else:
             params_payload.pop("ai_input_mode", None)
             params_payload.pop("baseline_session_id", None)

@@ -221,7 +221,7 @@ def run_training(
         best_splat_start_step = int(best_splat_start_step) if best_splat_start_step is not None else None
     except Exception:
         best_splat_start_step = None
-    save_best_splat_raw = p.get("save_best_splat", p.get("saveBestSplat", True))
+    save_best_splat_raw = p.get("save_best_splat", p.get("saveBestSplat", False))
     if isinstance(save_best_splat_raw, str):
         save_best_splat = save_best_splat_raw.strip().lower() not in {"0", "false", "no", "off"}
     else:
