@@ -280,6 +280,7 @@
           <a href="#chapter-3">Chapter 3 - What Goes Into x</a>
           <a href="#chapter-4">Chapter 4 - What y and yhat Mean</a>
           <a href="#chapter-4b">Chapter 4B - Learning Loop After yhat</a>
+          <a href="#chapter-4c">Chapter 4C - Parameters Learned and Updated</a>
           <a href="#chapter-5">Chapter 5 - Example Cases</a>
           <a href="#chapter-6">Chapter 6 - Implementation Summary</a>
           <a href="#chapter-7">Chapter 7 - Implementation Constraints</a>
@@ -697,6 +698,133 @@
               <div class="tip">
                 <code>yhat</code> is the decision signal. Observed run outcomes and baseline-relative scores are the learning signal.
               </div>
+            </div>
+          </section>
+
+          <section id="chapter-4c" class="chapter">
+            <div class="chapter-head">Chapter 4C - Parameters Learned and Updated</div>
+            <div class="chapter-body">
+              <p>
+                This chapter clarifies the implemented behavior for the three input modes
+                (<code>exif_only</code>, <code>exif_plus_flight_plan</code>, and
+                <code>exif_plus_flight_plan_plus_external</code>). The system has two update stages.
+              </p>
+
+              <ol>
+                <li>
+                  <strong>Stage A (before training):</strong> a preset is selected and concrete training parameters are applied
+                  to the run config.
+                </li>
+                <li>
+                  <strong>Stage B (after training):</strong> the selector model is updated so the next run can choose a better preset.
+                </li>
+              </ol>
+
+              <h3>4C.1 Parameters applied to the run (Stage A)</h3>
+              <p>
+                Once the selected preset is known, these parameters are written into the current run settings.
+              </p>
+
+              <table>
+                <thead>
+                  <tr>
+                    <th>Parameter</th>
+                    <th>How it is updated</th>
+                    <th>Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>feature_lr</code></td>
+                    <td>Multiplied by preset-specific factor and clamped.</td>
+                    <td>Affects SH/appearance feature learning speed.</td>
+                  </tr>
+                  <tr>
+                    <td><code>position_lr_init</code></td>
+                    <td>Multiplied by preset-specific factor and clamped.</td>
+                    <td>Controls initial position optimization aggressiveness.</td>
+                  </tr>
+                  <tr>
+                    <td><code>scaling_lr</code></td>
+                    <td>Multiplied by preset-specific factor and clamped.</td>
+                    <td>Controls gaussian scale updates.</td>
+                  </tr>
+                  <tr>
+                    <td><code>opacity_lr</code></td>
+                    <td>Multiplied by preset-specific factor and clamped.</td>
+                    <td>Controls opacity adaptation speed.</td>
+                  </tr>
+                  <tr>
+                    <td><code>rotation_lr</code></td>
+                    <td>Multiplied by preset-specific factor and clamped.</td>
+                    <td>Controls quaternion/rotation updates.</td>
+                  </tr>
+                  <tr>
+                    <td><code>tune_interval</code></td>
+                    <td>Scaled by preset-specific factor and clamped to integer range.</td>
+                    <td>Modifies tuning cadence in modified mode.</td>
+                  </tr>
+                  <tr>
+                    <td><code>tune_min_improvement</code></td>
+                    <td>Scaled by preset-specific factor and clamped.</td>
+                    <td>Modifies minimum relative-improvement threshold.</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div class="tip">
+                Important: in the input-mode learner path, updates are preset-based at run start.
+                The learner does not directly rewrite arbitrary gsplat parameters at run end.
+              </div>
+
+              <h3>4C.2 Values learned/updated after the run (Stage B)</h3>
+              <p>
+                After eval history is available, the selector state for that mode is updated. These values are persisted
+                and influence the next preset selection.
+              </p>
+
+              <table>
+                <thead>
+                  <tr>
+                    <th>Stored field</th>
+                    <th>Update rule</th>
+                    <th>Purpose</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>modes[mode].runs</code></td>
+                    <td><code>runs = runs + 1</code></td>
+                    <td>Tracks number of learned transitions for the mode.</td>
+                  </tr>
+                  <tr>
+                    <td><code>modes[mode].reward_mean</code></td>
+                    <td><code>reward_mean = reward_mean + alpha * (reward_signal - reward_mean)</code>, with <code>alpha = 1/(runs+1)</code></td>
+                    <td>Maintains running reward baseline per mode.</td>
+                  </tr>
+                  <tr>
+                    <td><code>modes[mode].bias[preset]</code></td>
+                    <td>
+                      Selected preset: <code>+0.10 * delta</code>.<br />
+                      Non-selected presets: <code>-0.10 * 0.15 * delta</code>.<br />
+                      Clamp each bias to <code>[-3.0, 3.0]</code>.
+                    </td>
+                    <td>Shifts future <code>yhat</code> scores toward better-performing presets.</td>
+                  </tr>
+                  <tr>
+                    <td><code>modes[mode].last</code></td>
+                    <td>Overwrite with latest run snapshot: <code>run_id</code>, <code>selected_preset</code>, anchor steps, scores, transition, and reward.</td>
+                    <td>Audit trail for the most recent learning event.</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <h3>4C.3 Practical interpretation</h3>
+              <ul>
+                <li>The three input modes learn by improving preset selection, not by directly training a large parameter regressor.</li>
+                <li>The immediate run receives the seven preset-driven parameter updates from Section 4C.1.</li>
+                <li>After the run, bias/reward statistics are updated, which changes the next run's selected preset and therefore next run's parameters.</li>
+              </ul>
             </div>
           </section>
 

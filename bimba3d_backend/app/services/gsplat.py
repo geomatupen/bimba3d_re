@@ -44,7 +44,7 @@ def run_gsplat(image_dir: Path, colmap_sparse: Path, output_dir: Path, params: d
             "--max_steps", str(p.get("max_steps", 15000)),
             "--batch_size", str(p.get("batch_size", 1)),
             "--eval_interval", str(p.get("eval_interval", 1000)),
-            "--save_interval", str(p.get("save_interval", 2500)),
+            "--save_interval", str(p.get("save_interval", 31000)),
             "--densify_from_iter", str(p.get("densify_from_iter", 500)),
             "--densify_until_iter", str(p.get("densify_until_iter", 10000)),
             "--densification_interval", str(p.get("densification_interval", 100)),
@@ -96,7 +96,7 @@ def create_output_artifacts(output_dir: Path, colmap_model_dir: Path, params: di
         "max_steps": int(p.get("max_steps", 15000)),  # [original]
         "batch_size": int(p.get("batch_size", 1)),  # [original]
         "eval_interval": int(p.get("eval_interval", 1000)),  # [original]
-        "save_interval": int(p.get("save_interval", 2500)),  # [original]
+        "save_interval": int(p.get("save_interval", 31000)),  # [original]
         "densify_from_iter": int(p.get("densify_from_iter", 500)),  # [original]
         "densify_until_iter": int(p.get("densify_until_iter", 10000)),  # [original]
         "densification_interval": int(p.get("densification_interval", 100)),  # [original]
@@ -311,7 +311,7 @@ def create_metadata(colmap_model_dir: Path) -> dict:
                 "max_steps": 15000,
                 "batch_size": 1,
                 "densification_interval": 100,
-                "splat_export_interval": 2500,
+                "splat_export_interval": 31000,
                 "png_export_interval": 50,
             }
         }

@@ -201,11 +201,16 @@ def run_training(
         strategy_tune_end_step = max(strategy_tune_start_step, int(raw_densify_end))
     except Exception:
         strategy_tune_end_step = max(strategy_tune_start_step, 10000)
-    splat_interval = p.get("splat_export_interval")
+    splat_interval = p.get("splat_export_interval", 31000)
     try:
-        splat_interval = max(1, int(splat_interval)) if splat_interval is not None else None
+        splat_interval = max(1, int(splat_interval))
     except Exception:
-        splat_interval = None
+        splat_interval = 31000
+    checkpoint_interval = p.get("save_interval", 31000)
+    try:
+        checkpoint_interval = max(1, int(checkpoint_interval))
+    except Exception:
+        checkpoint_interval = 31000
     best_splat_interval = p.get("best_splat_interval", 100)
     try:
         best_splat_interval = max(1, int(best_splat_interval))
@@ -216,12 +221,17 @@ def run_training(
         best_splat_start_step = int(best_splat_start_step) if best_splat_start_step is not None else None
     except Exception:
         best_splat_start_step = None
+    save_best_splat_raw = p.get("save_best_splat", p.get("saveBestSplat", True))
+    if isinstance(save_best_splat_raw, str):
+        save_best_splat = save_best_splat_raw.strip().lower() not in {"0", "false", "no", "off"}
+    else:
+        save_best_splat = bool(save_best_splat_raw)
     log_interval = p.get("log_interval", 100)
     try:
         log_interval = max(1, int(log_interval))
     except Exception:
         log_interval = 100
-    auto_early_stop = bool(p.get("auto_early_stop", True))
+    auto_early_stop = bool(p.get("auto_early_stop", False))
     try:
         early_stop_monitor_interval = max(1, int(p.get("early_stop_monitor_interval", 200)))
     except Exception:
@@ -1137,8 +1147,8 @@ def run_training(
     feature_lr = float(p.get("feature_lr", 2.5e-3))
     eval_steps = _build_steps(p.get("eval_interval"), [7000, 30000])
     save_steps = sorted(set(
-        _build_steps(p.get("save_interval"), [7000, 30000])
-        + _build_steps(p.get("splat_export_interval"), [7000, 30000])
+        _build_steps(checkpoint_interval, [31000])
+        + _build_steps(splat_interval, [31000])
         + _build_steps(best_splat_interval, [7000, 30000])
     ))
 
@@ -1210,28 +1220,37 @@ def run_training(
                 )
                 if should_update_best:
                     previous_best = float(best_loss) if isinstance(best_loss, (int, float)) else None
-                    export_with_gsplat(
-                        Path(checkpoint_path),
-                        engine_output_dir,
-                        splat_name="best.splat",
-                        export_ply=False,
-                        log_details=False,
-                    )
-                    tuning_state["best_splat"] = {
-                        "step": int(step),
-                        "loss": float(current_loss),
-                        "path": str(engine_output_dir / "best.splat"),
-                    }
-                    best_path = engine_output_dir / "best.splat"
-                    best_size = best_path.stat().st_size if best_path.exists() else None
+                    if save_best_splat:
+                        export_with_gsplat(
+                            Path(checkpoint_path),
+                            engine_output_dir,
+                            splat_name="best.splat",
+                            export_ply=False,
+                            log_details=False,
+                        )
+                        tuning_state["best_splat"] = {
+                            "step": int(step),
+                            "loss": float(current_loss),
+                            "path": str(engine_output_dir / "best.splat"),
+                        }
+                        best_path = engine_output_dir / "best.splat"
+                        best_size = best_path.stat().st_size if best_path.exists() else None
+                    else:
+                        tuning_state["best_splat"] = {
+                            "step": int(step),
+                            "loss": float(current_loss),
+                            "path": None,
+                        }
+                        best_size = None
                     improvement = (previous_best - float(current_loss)) if previous_best is not None else None
                     logger.info(
-                        "BEST_SPLAT_UPDATE step=%d loss=%.6f prev_best=%s improvement=%s bytes=%s",
+                        "BEST_SPLAT_UPDATE step=%d loss=%.6f prev_best=%s improvement=%s bytes=%s save=%s",
                         int(step),
                         float(current_loss),
                         f"{previous_best:.6f}" if previous_best is not None else "n/a",
                         f"{improvement:.6f}" if improvement is not None else "n/a",
                         str(best_size) if best_size is not None else "n/a",
+                        str(save_best_splat),
                     )
             except Exception as exc:
                 logger.warning("Failed to export best.splat at step %s: %s", step, exc)

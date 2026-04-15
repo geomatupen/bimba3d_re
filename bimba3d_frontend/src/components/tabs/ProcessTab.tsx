@@ -281,10 +281,11 @@ const getDefaultProcessConfig = () => ({
   engine: "gsplat" as TrainingEngine,
   maxSteps: 15000,
   logInterval: 100,
-  splatInterval: 2500,
+  splatInterval: 31000,
   bestSplatInterval: 100,
   bestSplatStartStep: 2000,
-  auto_early_stop: true,
+  saveBestSplat: true,
+  auto_early_stop: false,
   earlyStopMonitorInterval: 200,
   earlyStopDecisionPoints: 10,
   earlyStopMinEvalPoints: 6,
@@ -295,7 +296,7 @@ const getDefaultProcessConfig = () => ({
   earlyStopEmaAlpha: 0.1,
   pngInterval: 50,
   evalInterval: 1000,
-  saveInterval: 2500,
+  saveInterval: 31000,
   sparse_preference: "best",
   sparse_merge_selection: [] as string[],
   colmap: {
@@ -389,10 +390,11 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [engine, setEngine] = useState<TrainingEngine>(cfg.engine ?? "gsplat");
   const [maxSteps, setMaxSteps] = useState<number>(cfg.maxSteps ?? 15000);
   const [logInterval, setLogInterval] = useState<number>(cfg.logInterval ?? 100);
-  const [splatInterval, setSplatInterval] = useState<number>(cfg.splatInterval ?? 2500);
+  const [splatInterval, setSplatInterval] = useState<number>(cfg.splatInterval ?? cfg.splat_export_interval ?? 31000);
   const [bestSplatInterval, setBestSplatInterval] = useState<number>(cfg.bestSplatInterval ?? cfg.best_splat_interval ?? 100);
+    const [saveBestSplat, setSaveBestSplat] = useState<boolean>(cfg.saveBestSplat ?? cfg.save_best_splat ?? true);
   const [bestSplatStartStep, setBestSplatStartStep] = useState<number>(cfg.bestSplatStartStep ?? cfg.best_splat_start_step ?? 2000);
-  const [autoEarlyStop, setAutoEarlyStop] = useState<boolean>(cfg.auto_early_stop ?? true);
+  const [autoEarlyStop, setAutoEarlyStop] = useState<boolean>(cfg.auto_early_stop ?? false);
   const [earlyStopMonitorInterval, setEarlyStopMonitorInterval] = useState<number>(cfg.earlyStopMonitorInterval ?? cfg.early_stop_monitor_interval ?? 200);
   const [earlyStopDecisionPoints, setEarlyStopDecisionPoints] = useState<number>(cfg.earlyStopDecisionPoints ?? cfg.early_stop_decision_points ?? 10);
   const [earlyStopMinEvalPoints, setEarlyStopMinEvalPoints] = useState<number>(cfg.earlyStopMinEvalPoints ?? cfg.early_stop_min_eval_points ?? 6);
@@ -403,7 +405,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [earlyStopEmaAlpha, setEarlyStopEmaAlpha] = useState<number>(cfg.earlyStopEmaAlpha ?? cfg.early_stop_ema_alpha ?? 0.1);
   const [pngInterval, setPngInterval] = useState<number>(cfg.pngInterval ?? 50);
   const [evalInterval, setEvalInterval] = useState<number>(cfg.evalInterval ?? 1000);
-  const [saveInterval, setSaveInterval] = useState<number>(cfg.saveInterval ?? 2500);
+  const [saveInterval, setSaveInterval] = useState<number>(cfg.saveInterval ?? cfg.save_interval ?? 31000);
   const [imagesMaxSize, setImagesMaxSize] = useState<number | undefined>(cfg.images_max_size ?? 1600);
   const [imagesResizeEnabled, setImagesResizeEnabled] = useState<boolean>(cfg.images_resize_enabled ?? true);
   const [, setShowAdvancedTraining] = useState<boolean>(cfg.showAdvancedTraining ?? false);
@@ -650,6 +652,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   }, [showCoreAiSessionControls, baselineCandidateRuns, baselineSessionIdForAi]);
 
   const applyTrainingDefaults = (defaults: ReturnType<typeof getDefaultProcessConfig>) => {
+      setSaveBestSplat(typeof defaults.saveBestSplat === "boolean" ? defaults.saveBestSplat : true);
     setMode(defaults.mode ?? "baseline");
     setTuneStartStep(defaults.tune_start_step ?? 100);
     setTuneMinImprovement(defaults.tune_min_improvement ?? 0.005);
@@ -749,6 +752,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       if (typeof resolved.splat_export_interval === "number") setSplatInterval(resolved.splat_export_interval);
       if (typeof resolved.best_splat_interval === "number") setBestSplatInterval(resolved.best_splat_interval);
       if (typeof resolved.best_splat_start_step === "number") setBestSplatStartStep(resolved.best_splat_start_step);
+      if (typeof resolved.save_best_splat === "boolean") setSaveBestSplat(resolved.save_best_splat);
+      else if (typeof resolved.saveBestSplat === "boolean") setSaveBestSplat(resolved.saveBestSplat);
       if (typeof resolved.auto_early_stop === "boolean") setAutoEarlyStop(resolved.auto_early_stop);
       if (typeof resolved.early_stop_monitor_interval === "number") setEarlyStopMonitorInterval(resolved.early_stop_monitor_interval);
       if (typeof resolved.early_stop_decision_points === "number") setEarlyStopDecisionPoints(resolved.early_stop_decision_points);
@@ -804,6 +809,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
 
   const normalizeTrainingConfigForForm = (raw: Record<string, any>): Record<string, any> => {
     const normalized = { ...raw };
+    if (typeof normalized.save_best_splat !== "boolean" && typeof raw.saveBestSplat === "boolean") {
+      normalized.save_best_splat = raw.saveBestSplat;
+    }
     if (typeof normalized.trend_scope !== "string" && typeof raw.trendScope === "string") normalized.trend_scope = raw.trendScope;
     if (typeof normalized.max_steps !== "number" && typeof raw.maxSteps === "number") normalized.max_steps = raw.maxSteps;
     if (typeof normalized.log_interval !== "number" && typeof raw.logInterval === "number") normalized.log_interval = raw.logInterval;
@@ -832,12 +840,13 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
 
   const resetConfigToDefaults = () => {
     const defaults = getDefaultProcessConfig();
-    if (configTab === "training") {
+    const tab: "images" | "colmap" | "training" = configTab;
+    if (tab === "training") {
       applyTrainingDefaults(defaults);
       localStorage.removeItem(getTrainingConfigStorageKey(selectedRunId));
       return;
     }
-    if (configTab === "colmap") {
+    if (tab === "colmap") {
       applyColmapDefaults(defaults);
       return;
     }
@@ -874,6 +883,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       splat_export_interval: splatInterval,
       best_splat_interval: bestSplatInterval,
       best_splat_start_step: bestSplatStartStep,
+      save_best_splat: saveBestSplat,
       auto_early_stop: autoEarlyStop,
       early_stop_monitor_interval: earlyStopMonitorInterval,
       early_stop_decision_points: earlyStopDecisionPoints,
@@ -898,7 +908,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       litegs_alpha_shrink: litegsAlphaShrink,
     };
     localStorage.setItem(getTrainingConfigStorageKey(selectedRunId), JSON.stringify(config));
-  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, trendScope, aiInputMode, baselineSessionIdForAi, runCount, runJitterFactor, continueOnFailure, startModelMode, sourceModelId, engine, maxSteps, logInterval, splatInterval, bestSplatInterval, bestSplatStartStep, autoEarlyStop, earlyStopMonitorInterval, earlyStopDecisionPoints, earlyStopMinEvalPoints, earlyStopMinStepRatio, earlyStopMonitorMinRelativeImprovement, earlyStopEvalMinRelativeImprovement, earlyStopMaxVolatilityRatio, earlyStopEmaAlpha, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
+  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, trendScope, aiInputMode, baselineSessionIdForAi, runCount, runJitterFactor, continueOnFailure, startModelMode, sourceModelId, engine, maxSteps, logInterval, splatInterval, bestSplatInterval, bestSplatStartStep, saveBestSplat, autoEarlyStop, earlyStopMonitorInterval, earlyStopDecisionPoints, earlyStopMinEvalPoints, earlyStopMinStepRatio, earlyStopMonitorMinRelativeImprovement, earlyStopEvalMinRelativeImprovement, earlyStopMaxVolatilityRatio, earlyStopEmaAlpha, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2460,6 +2470,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         splat_export_interval: splatInterval,
         best_splat_interval: bestSplatInterval,
         best_splat_start_step: bestSplatStartStep,
+        save_best_splat: saveBestSplat,
         auto_early_stop: autoEarlyStop,
         early_stop_monitor_interval: earlyStopMonitorInterval,
         early_stop_decision_points: earlyStopDecisionPoints,
@@ -2612,6 +2623,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         splat_export_interval: splatInterval,
         best_splat_interval: bestSplatInterval,
         best_splat_start_step: bestSplatStartStep,
+        save_best_splat: saveBestSplat,
         auto_early_stop: autoEarlyStop,
         early_stop_monitor_interval: earlyStopMonitorInterval,
         early_stop_decision_points: earlyStopDecisionPoints,
@@ -2786,6 +2798,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       splat_export_interval: splatInterval,
       best_splat_interval: bestSplatInterval,
       best_splat_start_step: bestSplatStartStep,
+      save_best_splat: saveBestSplat,
       auto_early_stop: autoEarlyStop,
       early_stop_monitor_interval: earlyStopMonitorInterval,
       early_stop_decision_points: earlyStopDecisionPoints,
@@ -2833,6 +2846,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       splat_export_interval: splatInterval,
       best_splat_interval: bestSplatInterval,
       best_splat_start_step: bestSplatStartStep,
+      save_best_splat: saveBestSplat,
       auto_early_stop: autoEarlyStop,
       early_stop_monitor_interval: earlyStopMonitorInterval,
       early_stop_decision_points: earlyStopDecisionPoints,
@@ -3013,6 +3027,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
           splat_export_interval: defaults.splatInterval,
           best_splat_interval: defaults.bestSplatInterval,
           best_splat_start_step: defaults.bestSplatStartStep,
+          save_best_splat: defaults.saveBestSplat,
           auto_early_stop: defaults.auto_early_stop,
           early_stop_monitor_interval: defaults.earlyStopMonitorInterval,
           early_stop_decision_points: defaults.earlyStopDecisionPoints,
@@ -3523,6 +3538,27 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   }, [showTelemetryModal, fetchTelemetry, telemetryDownloadBusy]);
 
   const engineOptions = Object.values(engineOutputMap).filter((bundle) => bundle.hasModel);
+  const telemetryBestLoss = useMemo(() => {
+    let bestLoss: number | null = null;
+    let bestStep: number | null = null;
+
+    for (const row of telemetryData?.training_rows || []) {
+      if (typeof row?.loss !== "number") continue;
+      if (bestLoss === null || row.loss < bestLoss) {
+        bestLoss = row.loss;
+        bestStep = typeof row.step === "number" ? row.step : null;
+      }
+    }
+
+    if (telemetryData?.status && typeof telemetryData.status.current_loss === "number") {
+      if (bestLoss === null || telemetryData.status.current_loss < bestLoss) {
+        bestLoss = telemetryData.status.current_loss;
+        bestStep = typeof telemetryData.status.currentStep === "number" ? telemetryData.status.currentStep : bestStep;
+      }
+    }
+
+    return { bestStep, bestLoss };
+  }, [telemetryData]);
   const hasEngineOutputs = Object.keys(engineOutputMap).length > 0;
   const showEngineDropdown = engineOptions.length > 1;
   const activeEngineBundle = selectedEngineName ? engineOutputMap[selectedEngineName] : null;
@@ -4324,10 +4360,12 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                 {telemetryData?.status && (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                     <p className="text-xs font-semibold text-slate-700 mb-1">Current status</p>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-slate-700">
+                    <div className="grid grid-cols-1 md:grid-cols-5 gap-2 text-xs text-slate-700">
                       <div>Stage: <span className="font-semibold">{telemetryData.status.stage || "-"}</span></div>
                       <div>Step: <span className="font-semibold">{typeof telemetryData.status.currentStep === "number" ? telemetryData.status.currentStep.toLocaleString() : "-"}</span></div>
                       <div>Loss: <span className="font-semibold">{typeof telemetryData.status.current_loss === "number" ? telemetryData.status.current_loss.toFixed(6) : "-"}</span></div>
+                      <div>Best loss step: <span className="font-semibold">{typeof telemetryBestLoss.bestStep === "number" ? telemetryBestLoss.bestStep.toLocaleString() : "-"}</span></div>
+                      <div>Best loss value: <span className="font-semibold">{typeof telemetryBestLoss.bestLoss === "number" ? telemetryBestLoss.bestLoss.toFixed(6) : "-"}</span></div>
                     </div>
                   </div>
                 )}
@@ -4978,92 +5016,108 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                               />
                             </div>
                             <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-0.5">
-                              <div>
-                                <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                  <span>Splat export interval</span>
-                                  <button onClick={() => setSelectedInfoKey("splatInterval")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                </label>
-                                <input
-                                  type="number"
-                                  value={splatInterval}
-                                  onChange={(e) => setSplatInterval(parseInt(e.target.value) || 2500)}
-                                  className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
-                                  min={50}
-                                  step={50}
-                                />
-                              </div>
+                              {engine === "gsplat" && (
+                                <>
+                                  <div>
+                                  <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                    <span>Log interval</span>
+                                    <button onClick={() => setSelectedInfoKey("logInterval")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                  </label>
+                                  <input
+                                    type="number"
+                                    value={logInterval}
+                                    onChange={(e) => setLogInterval(parseInt(e.target.value) || 100)}
+                                    className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
+                                    min={10}
+                                    step={10}
+                                  />
+                                  </div>
+                                  <div>
+                                  <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                    <span>Eval interval</span>
+                                    <button onClick={() => setSelectedInfoKey("evalInterval")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                  </label>
+                                  <input
+                                    type="number"
+                                    value={evalInterval}
+                                    onChange={(e) => setEvalInterval(parseInt(e.target.value) || 1000)}
+                                    className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
+                                    min={50}
+                                    step={50}
+                                  />
+                                  </div>
+                                  <div>
+                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                      <span>Splat export interval</span>
+                                      <button onClick={() => setSelectedInfoKey("splatInterval")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                    </label>
+                                    <input
+                                      type="number"
+                                      value={splatInterval}
+                                      onChange={(e) => setSplatInterval(parseInt(e.target.value) || 31000)}
+                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
+                                      min={50}
+                                      step={50}
+                                    />
+                                  </div>
+                                  <div>
+                                  <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                    <span>Checkpoint interval</span>
+                                    <button onClick={() => setSelectedInfoKey("saveInterval")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                  </label>
+                                  <input
+                                    type="number"
+                                    value={saveInterval}
+                                    onChange={(e) => setSaveInterval(parseInt(e.target.value) || 31000)}
+                                    className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
+                                    min={50}
+                                    step={50}
+                                  />
+                                  </div>
+                                  <div className="flex items-center justify-between">
+                                    <label className="flex items-center gap-1 text-[11px] font-medium text-slate-600 mb-0.5">
+                                      <span>Save best splat</span>
+                                      <button onClick={() => setSelectedInfoKey("saveBestSplat")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                    </label>
+                                    <input
+                                      type="checkbox"
+                                      checked={saveBestSplat}
+                                      onChange={e => setSaveBestSplat(e.target.checked)}
+                                      className="ml-2"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                      <span>Best splat interval</span>
+                                      <button onClick={() => setSelectedInfoKey("bestSplatInterval")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                    </label>
+                                    <input
+                                      type="number"
+                                      value={bestSplatInterval}
+                                      onChange={(e) => setBestSplatInterval(parseInt(e.target.value) || 100)}
+                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
+                                      min={10}
+                                      step={10}
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
+                                      <span>Best splat start step</span>
+                                      <button onClick={() => setSelectedInfoKey("bestSplatStartStep")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
+                                    </label>
+                                    <input
+                                      type="number"
+                                      value={bestSplatStartStep}
+                                      onChange={(e) => setBestSplatStartStep(parseInt(e.target.value) || 2000)}
+                                      className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
+                                      min={1}
+                                      step={10}
+                                    />
+                                  </div>
+                                </>
+                              )}
                               {engine === "gsplat" && (
                               <>
-                                <div>
-                                <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                  <span>Best splat interval</span>
-                                  <button onClick={() => setSelectedInfoKey("bestSplatInterval")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                </label>
-                                <input
-                                  type="number"
-                                  value={bestSplatInterval}
-                                  onChange={(e) => setBestSplatInterval(parseInt(e.target.value) || 100)}
-                                  className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
-                                  min={10}
-                                  step={10}
-                                />
-                                </div>
-                                <div>
-                                <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                  <span>Best splat start step</span>
-                                  <button onClick={() => setSelectedInfoKey("bestSplatStartStep")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                </label>
-                                <input
-                                  type="number"
-                                  value={bestSplatStartStep}
-                                  onChange={(e) => setBestSplatStartStep(parseInt(e.target.value) || 2000)}
-                                  className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
-                                  min={1}
-                                  step={10}
-                                />
-                                </div>
-                                <div>
-                                <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                  <span>Log interval</span>
-                                  <button onClick={() => setSelectedInfoKey("logInterval")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                </label>
-                                <input
-                                  type="number"
-                                  value={logInterval}
-                                  onChange={(e) => setLogInterval(parseInt(e.target.value) || 100)}
-                                  className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
-                                  min={10}
-                                  step={10}
-                                />
-                                </div>
-                                <div>
-                                <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                  <span>Eval interval</span>
-                                  <button onClick={() => setSelectedInfoKey("evalInterval")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                </label>
-                                <input
-                                  type="number"
-                                  value={evalInterval}
-                                  onChange={(e) => setEvalInterval(parseInt(e.target.value) || 1000)}
-                                  className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
-                                  min={50}
-                                  step={50}
-                                />
-                                </div>
-                                <div>
-                                <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                  <span>Checkpoint interval</span>
-                                  <button onClick={() => setSelectedInfoKey("saveInterval")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
-                                </label>
-                                <input
-                                  type="number"
-                                  value={saveInterval}
-                                  onChange={(e) => setSaveInterval(parseInt(e.target.value) || 2500)}
-                                  className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md"
-                                  min={50}
-                                  step={50}
-                                />
-                                </div>
                                 <div className="sm:col-span-2 mt-1 rounded-md border border-slate-200 bg-white p-2">
                                   <label className="flex items-center justify-between text-[11px] font-medium text-slate-700 mb-1">
                                     <span>Enable Early Stop</span>
