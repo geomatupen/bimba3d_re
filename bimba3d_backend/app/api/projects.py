@@ -286,6 +286,17 @@ def _read_run_analytics(run_dir: Path | None) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _analytics_metrics(run_analytics: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(run_analytics, dict):
+        return {}
+    summary = run_analytics.get("summary") if isinstance(run_analytics.get("summary"), dict) else {}
+    summary_metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}
+    if summary_metrics:
+        return summary_metrics
+    legacy_metrics = run_analytics.get("metrics") if isinstance(run_analytics.get("metrics"), dict) else {}
+    return legacy_metrics
+
+
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -373,6 +384,87 @@ def _ensure_run_analytics(
         or run_id
     )
 
+    summary_metrics = {
+        "best_loss_step": loss_summary.get("best_loss_step"),
+        "best_loss": loss_summary.get("best_loss"),
+        "final_loss_step": loss_summary.get("final_loss_step"),
+        "final_loss": loss_summary.get("final_loss"),
+        "best_psnr_step": best_psnr_step,
+        "best_psnr": best_psnr,
+        "final_psnr_step": final_eval.get("step") if isinstance(final_eval, dict) else None,
+        "final_psnr": final_eval.get("psnr") if isinstance(final_eval, dict) else None,
+        "best_ssim_step": best_ssim_step,
+        "best_ssim": best_ssim,
+        "final_ssim_step": final_eval.get("step") if isinstance(final_eval, dict) else None,
+        "final_ssim": final_eval.get("ssim") if isinstance(final_eval, dict) else None,
+        "best_lpips_step": best_lpips_step,
+        "best_lpips": best_lpips,
+        "final_lpips_step": final_eval.get("step") if isinstance(final_eval, dict) else None,
+        "final_lpips": final_eval.get("lpips") if isinstance(final_eval, dict) else None,
+        "total_time_seconds": None,
+    }
+
+    summary_payload = {
+        "project_id": run_dir.parent.parent.name,
+        "run_id": run_id,
+        "run_name": run_name,
+        "name": run_dir.parent.parent.name,
+        "status": "completed",
+        "mode": str(resolved_cfg.get("mode") or requested_cfg.get("mode") or "baseline"),
+        "engine": str(resolved_cfg.get("engine") or requested_cfg.get("engine") or "gsplat"),
+        "metrics": summary_metrics,
+        "tuning": {
+            "initial": {},
+            "final": {},
+            "end_params": {},
+            "end_step": None,
+            "runs": None,
+            "history_count": 0,
+            "history": [],
+            "tune_interval": resolved_cfg.get("tune_interval") or requested_cfg.get("tune_interval"),
+            "log_interval": resolved_cfg.get("log_interval") or requested_cfg.get("log_interval"),
+            "runtime_series": [],
+        },
+        "major_params": {
+            "max_steps": resolved_cfg.get("max_steps") or requested_cfg.get("max_steps"),
+            "total_steps_completed": summary_metrics.get("final_loss_step"),
+            "densify_from_iter": resolved_cfg.get("densify_from_iter") or requested_cfg.get("densify_from_iter"),
+            "densify_until_iter": resolved_cfg.get("densify_until_iter") or requested_cfg.get("densify_until_iter"),
+            "densification_interval": resolved_cfg.get("densification_interval") or requested_cfg.get("densification_interval"),
+            "eval_interval": resolved_cfg.get("eval_interval") or requested_cfg.get("eval_interval"),
+            "save_interval": resolved_cfg.get("save_interval") or requested_cfg.get("save_interval"),
+            "splat_export_interval": resolved_cfg.get("splat_export_interval") or requested_cfg.get("splat_export_interval"),
+            "best_splat_interval": resolved_cfg.get("best_splat_interval") or requested_cfg.get("best_splat_interval"),
+            "best_splat_start_step": resolved_cfg.get("best_splat_start_step") or requested_cfg.get("best_splat_start_step"),
+            "auto_early_stop": resolved_cfg.get("auto_early_stop") or requested_cfg.get("auto_early_stop"),
+            "trend_scope": resolved_cfg.get("trend_scope") or requested_cfg.get("trend_scope"),
+            "batch_size": resolved_cfg.get("batch_size") or requested_cfg.get("batch_size"),
+        },
+        "loss_milestones": {},
+        "log_loss_series": [],
+        "log_time_series": [],
+        "eval_series": [],
+        "eval_time_series": [],
+        "eval_psnr_series": [
+            {"step": int(r.get("step")), "value": float(r.get("psnr"))}
+            for r in eval_rows
+            if isinstance(r, dict) and isinstance(r.get("step"), (int, float)) and isinstance(r.get("psnr"), (int, float))
+        ],
+        "eval_ssim_series": [
+            {"step": int(r.get("step")), "value": float(r.get("ssim"))}
+            for r in eval_rows
+            if isinstance(r, dict) and isinstance(r.get("step"), (int, float)) and isinstance(r.get("ssim"), (int, float))
+        ],
+        "eval_lpips_series": [
+            {"step": int(r.get("step")), "value": float(r.get("lpips"))}
+            for r in eval_rows
+            if isinstance(r, dict) and isinstance(r.get("step"), (int, float)) and isinstance(r.get("lpips"), (int, float))
+        ],
+        "preview_url": None,
+        "eval_points": len(eval_rows),
+        "early_stop": None,
+    }
+
     payload = {
         "schema": "run_analytics_v1",
         "version": 1,
@@ -380,26 +472,9 @@ def _ensure_run_analytics(
         "project_id": run_dir.parent.parent.name,
         "run_id": run_id,
         "run_name": run_name,
-        "engine": str(resolved_cfg.get("engine") or requested_cfg.get("engine") or "gsplat"),
-        "mode": str(resolved_cfg.get("mode") or requested_cfg.get("mode") or "baseline"),
-        "metrics": {
-            "best_loss_step": loss_summary.get("best_loss_step"),
-            "best_loss": loss_summary.get("best_loss"),
-            "final_loss_step": loss_summary.get("final_loss_step"),
-            "final_loss": loss_summary.get("final_loss"),
-            "best_psnr_step": best_psnr_step,
-            "best_psnr": best_psnr,
-            "final_psnr_step": final_eval.get("step") if isinstance(final_eval, dict) else None,
-            "final_psnr": final_eval.get("psnr") if isinstance(final_eval, dict) else None,
-            "best_ssim_step": best_ssim_step,
-            "best_ssim": best_ssim,
-            "final_ssim_step": final_eval.get("step") if isinstance(final_eval, dict) else None,
-            "final_ssim": final_eval.get("ssim") if isinstance(final_eval, dict) else None,
-            "best_lpips_step": best_lpips_step,
-            "best_lpips": best_lpips,
-            "final_lpips_step": final_eval.get("step") if isinstance(final_eval, dict) else None,
-            "final_lpips": final_eval.get("lpips") if isinstance(final_eval, dict) else None,
-        },
+        "engine": summary_payload.get("engine"),
+        "mode": summary_payload.get("mode"),
+        "summary": summary_payload,
         "ai": {
             "input_mode_learning": learning_payload,
             "input_mode_insights": ai_insights if isinstance(ai_insights, dict) else None,
@@ -1464,7 +1539,7 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
             run_id = run_dir.name
             run_analytics = _read_run_analytics(run_dir)
             if isinstance(run_analytics, dict):
-                metrics = run_analytics.get("metrics") if isinstance(run_analytics.get("metrics"), dict) else {}
+                metrics = _analytics_metrics(run_analytics)
                 ai_block = run_analytics.get("ai") if isinstance(run_analytics.get("ai"), dict) else {}
                 input_mode_learning = ai_block.get("input_mode_learning") if isinstance(ai_block.get("input_mode_learning"), dict) else {}
                 transition = input_mode_learning.get("transition") if isinstance(input_mode_learning.get("transition"), dict) else {}
@@ -1547,7 +1622,7 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
                     ai_insights=None,
                 )
                 if isinstance(run_analytics, dict):
-                    metrics = run_analytics.get("metrics") if isinstance(run_analytics.get("metrics"), dict) else {}
+                    metrics = _analytics_metrics(run_analytics)
                     ai_block = run_analytics.get("ai") if isinstance(run_analytics.get("ai"), dict) else {}
                     input_mode_learning = ai_block.get("input_mode_learning") if isinstance(ai_block.get("input_mode_learning"), dict) else {}
                     transition = input_mode_learning.get("transition") if isinstance(input_mode_learning.get("transition"), dict) else {}
@@ -3584,7 +3659,7 @@ def get_project_telemetry(
                 ai_insights=ai_insights if isinstance(ai_insights, dict) else None,
             )
         if isinstance(run_analytics, dict):
-            metrics = run_analytics.get("metrics") if isinstance(run_analytics.get("metrics"), dict) else {}
+            metrics = _analytics_metrics(run_analytics)
             if isinstance(metrics.get("best_loss"), (int, float)):
                 training_summary["best_loss"] = float(metrics.get("best_loss"))
             if isinstance(metrics.get("best_loss_step"), (int, float)):
@@ -3783,9 +3858,10 @@ def list_project_runs(project_id: str):
                     run_dir / "outputs" / "engines" / "litegs" / "metadata.json",
                 )
             )
+            has_analytics_summary = (run_dir / "analytics" / "run_analytics_v1.json").exists()
             has_comparison_summary = (run_dir / "comparison" / "experiment_summary.json").exists()
             is_base_run = run_id == base_session_id
-            is_completed = has_completed_outputs or has_comparison_summary or (is_base_run and project_has_completed_outputs)
+            is_completed = has_completed_outputs or has_analytics_summary or has_comparison_summary or (is_base_run and project_has_completed_outputs)
             run_shared_version = run_config.get("shared_config_version") if isinstance(run_config, dict) else None
             if not isinstance(run_shared_version, int):
                 run_shared_version = None
@@ -5954,12 +6030,30 @@ def get_experiment_summary(
             raise HTTPException(status_code=404, detail="Run not found")
 
         if requested_run_id and run_dir:
-            persisted_summary_path = run_dir / "comparison" / "experiment_summary.json"
-            persisted_summary = _read_json_if_exists(persisted_summary_path)
+            run_cfg = _read_json_if_exists(run_dir / "run_config.json")
+            resolved_cfg = run_cfg.get("resolved_params") if isinstance(run_cfg, dict) and isinstance(run_cfg.get("resolved_params"), dict) else {}
+            requested_cfg = run_cfg.get("requested_params") if isinstance(run_cfg, dict) and isinstance(run_cfg.get("requested_params"), dict) else {}
+            ai_insights_fallback = _extract_ai_run_insights(run_dir, run_cfg)
+
+            run_analytics = _ensure_run_analytics(
+                run_dir=run_dir,
+                run_config=run_cfg if isinstance(run_cfg, dict) else None,
+                ai_insights=ai_insights_fallback if isinstance(ai_insights_fallback, dict) else None,
+            )
+
+            persisted_summary = None
+            if isinstance(run_analytics, dict):
+                persisted_summary = run_analytics.get("summary") if isinstance(run_analytics.get("summary"), dict) else None
+            if not isinstance(persisted_summary, dict):
+                persisted_summary_path = run_dir / "comparison" / "experiment_summary.json"
+                legacy_summary = _read_json_if_exists(persisted_summary_path)
+                if isinstance(legacy_summary, dict):
+                    persisted_summary = legacy_summary
+
             if not isinstance(persisted_summary, dict):
                 raise HTTPException(
                     status_code=404,
-                    detail="Run comparison summary not found. Re-run the session to generate comparison artifacts.",
+                    detail="Run analytics summary not found. Re-run the session to generate analytics artifacts.",
                 )
 
             outputs = files.get_output_files(project_id, run_id=requested_run_id)
@@ -5976,9 +6070,19 @@ def get_experiment_summary(
             if not response_payload.get("run_name"):
                 response_payload["run_name"] = requested_run_id
             metrics_payload = response_payload.get("metrics") if isinstance(response_payload.get("metrics"), dict) else {}
-            comparison_metadata = _read_json_if_exists(run_dir / "comparison" / "metadata.json")
+            analytics_metrics = _analytics_metrics(run_analytics)
+            if analytics_metrics:
+                if isinstance(analytics_metrics.get("best_loss"), (int, float)):
+                    metrics_payload["best_splat_loss"] = float(analytics_metrics.get("best_loss"))
+                if isinstance(analytics_metrics.get("best_loss_step"), (int, float)):
+                    metrics_payload["best_splat_step"] = int(analytics_metrics.get("best_loss_step"))
+                if isinstance(analytics_metrics.get("final_loss"), (int, float)):
+                    metrics_payload["final_loss"] = float(analytics_metrics.get("final_loss"))
+                if isinstance(analytics_metrics.get("best_psnr"), (int, float)):
+                    metrics_payload["convergence_speed"] = float(analytics_metrics.get("best_psnr"))
+            comparison_metadata = _read_json_if_exists(run_dir / "outputs" / "engines" / "gsplat" / "metadata.json")
             if not isinstance(comparison_metadata, dict):
-                comparison_metadata = _read_json_if_exists(run_dir / "outputs" / "engines" / "gsplat" / "metadata.json")
+                comparison_metadata = _read_json_if_exists(run_dir / "comparison" / "metadata.json")
             best_splat = comparison_metadata.get("best_splat") if isinstance(comparison_metadata, dict) and isinstance(comparison_metadata.get("best_splat"), dict) else {}
             early_stop = comparison_metadata.get("early_stop") if isinstance(comparison_metadata, dict) and isinstance(comparison_metadata.get("early_stop"), dict) else {}
             if metrics_payload.get("best_splat_step") is None and isinstance(best_splat.get("step"), (int, float)):
@@ -5994,10 +6098,12 @@ def get_experiment_summary(
                 response_payload["early_stop"] = early_stop
 
             summary_major = response_payload.get("major_params") if isinstance(response_payload.get("major_params"), dict) else {}
-            run_cfg = _read_json_if_exists(run_dir / "run_config.json")
-            resolved_cfg = run_cfg.get("resolved_params") if isinstance(run_cfg, dict) and isinstance(run_cfg.get("resolved_params"), dict) else {}
-            requested_cfg = run_cfg.get("requested_params") if isinstance(run_cfg, dict) and isinstance(run_cfg.get("requested_params"), dict) else {}
-            ai_insights = _extract_ai_run_insights(run_dir, run_cfg)
+            analytics_ai = None
+            if isinstance(run_analytics, dict):
+                ai_block = run_analytics.get("ai") if isinstance(run_analytics.get("ai"), dict) else {}
+                insights = ai_block.get("input_mode_insights") if isinstance(ai_block.get("input_mode_insights"), dict) else None
+                if isinstance(insights, dict):
+                    analytics_ai = insights
             major_keys = [
                 "max_steps",
                 "densify_from_iter",
@@ -6032,17 +6138,19 @@ def get_experiment_summary(
             if summary_major:
                 response_payload["major_params"] = summary_major
 
-            if ai_insights:
-                response_payload["ai_insights"] = ai_insights
+            if isinstance(analytics_ai, dict) and analytics_ai.get("ai_input_mode"):
+                response_payload["ai_insights"] = analytics_ai
+            elif ai_insights_fallback:
+                response_payload["ai_insights"] = ai_insights_fallback
 
             if (
                 response_payload.get("eval_psnr_series") is None
                 or response_payload.get("eval_ssim_series") is None
                 or response_payload.get("eval_lpips_series") is None
             ):
-                eval_history_for_series = _read_json_if_exists(run_dir / "comparison" / "eval_history.json")
+                eval_history_for_series = _read_json_if_exists(run_dir / "outputs" / "engines" / "gsplat" / "eval_history.json")
                 if not isinstance(eval_history_for_series, list):
-                    eval_history_for_series = _read_json_if_exists(run_dir / "outputs" / "engines" / "gsplat" / "eval_history.json")
+                    eval_history_for_series = _read_json_if_exists(run_dir / "comparison" / "eval_history.json")
                 eval_rows_for_series = (
                     sorted(
                         [item for item in eval_history_for_series if isinstance(item, dict)],

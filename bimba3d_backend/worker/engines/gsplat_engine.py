@@ -1928,29 +1928,6 @@ def run_training(
             "engine": "gsplat",
             "mode": mode,
             "summary": summary_payload,
-            "metrics": {
-                "best_loss_step": (
-                    int((tuning_state.get("best_splat") or {}).get("step"))
-                    if isinstance((tuning_state.get("best_splat") or {}).get("step"), (int, float))
-                    else None
-                ),
-                "best_loss": _safe_float((tuning_state.get("best_splat") or {}).get("loss")),
-                "final_loss_step": int(final_eval_row.get("step")) if isinstance(final_eval_row, dict) and isinstance(final_eval_row.get("step"), (int, float)) else None,
-                "final_loss": _safe_float(final_eval_row.get("final_loss")) if isinstance(final_eval_row, dict) else None,
-                "best_psnr_step": int(best_psnr_row.get("step")) if isinstance(best_psnr_row, dict) and isinstance(best_psnr_row.get("step"), (int, float)) else None,
-                "best_psnr": _safe_float(best_psnr_row.get("convergence_speed")) if isinstance(best_psnr_row, dict) else None,
-                "final_psnr_step": int(final_eval_row.get("step")) if isinstance(final_eval_row, dict) and isinstance(final_eval_row.get("step"), (int, float)) else None,
-                "final_psnr": _safe_float(final_eval_row.get("convergence_speed")) if isinstance(final_eval_row, dict) else None,
-                "best_ssim_step": int(best_ssim_row.get("step")) if isinstance(best_ssim_row, dict) and isinstance(best_ssim_row.get("step"), (int, float)) else None,
-                "best_ssim": _safe_float(best_ssim_row.get("sharpness_mean")) if isinstance(best_ssim_row, dict) else None,
-                "final_ssim_step": int(final_eval_row.get("step")) if isinstance(final_eval_row, dict) and isinstance(final_eval_row.get("step"), (int, float)) else None,
-                "final_ssim": _safe_float(final_eval_row.get("sharpness_mean")) if isinstance(final_eval_row, dict) else None,
-                "best_lpips_step": int(best_lpips_row.get("step")) if isinstance(best_lpips_row, dict) and isinstance(best_lpips_row.get("step"), (int, float)) else None,
-                "best_lpips": _safe_float(best_lpips_row.get("lpips_mean")) if isinstance(best_lpips_row, dict) else None,
-                "final_lpips_step": int(final_eval_row.get("step")) if isinstance(final_eval_row, dict) and isinstance(final_eval_row.get("step"), (int, float)) else None,
-                "final_lpips": _safe_float(final_eval_row.get("lpips_mean")) if isinstance(final_eval_row, dict) else None,
-                "total_time_seconds": total_time_seconds,
-            },
             "ai": {
                 "input_mode_learning": input_mode_learning_payload if isinstance(input_mode_learning_payload, dict) else None,
                 "input_mode_insights": input_mode_insights,
@@ -1967,27 +1944,9 @@ def run_training(
             if candidate_run_root.exists():
                 run_artifact_root = candidate_run_root
 
-        comparison_dir = run_artifact_root / "comparison"
-        comparison_dir.mkdir(parents=True, exist_ok=True)
-        write_json_atomic(comparison_dir / "experiment_summary.json", summary_payload)
-
         analytics_dir = run_artifact_root / "analytics"
         analytics_dir.mkdir(parents=True, exist_ok=True)
         write_json_atomic(analytics_dir / "run_analytics_v1.json", analytics_payload)
-
-        for artifact_name in ("eval_history.json", "adaptive_tuning_results.json", "metadata.json"):
-            source_path = engine_output_dir / artifact_name
-            if source_path.exists():
-                try:
-                    shutil.copy2(source_path, comparison_dir / artifact_name)
-                except Exception as exc:
-                    logger.warning("Failed to copy %s into comparison folder: %s", artifact_name, exc)
-        run_cfg_source = run_artifact_root / "run_config.json"
-        if run_cfg_source.exists():
-            try:
-                shutil.copy2(run_cfg_source, comparison_dir / "run_config.json")
-            except Exception as exc:
-                logger.warning("Failed to copy run_config.json into comparison folder: %s", exc)
 
     # Persist durable training timing into metadata.json so total elapsed survives log rotation.
     training_time_payload = {
