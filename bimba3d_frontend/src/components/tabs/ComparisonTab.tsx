@@ -641,8 +641,8 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
     });
   }, [leftSummary, rightSummary]);
 
-  const leftHistory = leftSummary?.tuning?.history ?? [];
-  const rightHistory = rightSummary?.tuning?.history ?? [];
+  const leftHistory = useMemo(() => leftSummary?.tuning?.history ?? [], [leftSummary?.tuning?.history]);
+  const rightHistory = useMemo(() => rightSummary?.tuning?.history ?? [], [rightSummary?.tuning?.history]);
   const leftSelectedRun = useMemo(() => leftRuns.find((run) => run.run_id === leftRunId) || null, [leftRuns, leftRunId]);
   const rightSelectedRun = useMemo(() => rightRuns.find((run) => run.run_id === rightRunId) || null, [rightRuns, rightRunId]);
   const leftIsBase = Boolean(leftSelectedRun?.is_base);
@@ -729,7 +729,7 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
     return getMajorParamSeriesPoints(rightSummary, selectedGraphRow.key, graphXMax);
   }, [rightSummary, selectedGraphRow, graphXMax]);
 
-  const allGraphPoints = [...leftGraphPoints, ...rightGraphPoints];
+  const allGraphPoints = useMemo(() => [...leftGraphPoints, ...rightGraphPoints], [leftGraphPoints, rightGraphPoints]);
   const graphHasData = allGraphPoints.length > 0;
   const forceZeroXStart =
     selectedGraphRow.type === "loss_log" ||

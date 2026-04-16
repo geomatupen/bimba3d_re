@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { FileText, RefreshCw, Download } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -220,12 +220,12 @@ export default function LogsTab({ projectId }: LogsTabProps) {
   const [aiPdfDownloadBusy, setAiPdfDownloadBusy] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
-  const fetchProcessingLogs = async () => {
+  const fetchProcessingLogs = useCallback(async () => {
     const res = await api.get(`/projects/${projectId}/logs?lines=500`);
     setLogs(res.data.logs || "No logs available yet.");
-  };
+  }, [projectId]);
 
-  const fetchAiLogs = async () => {
+  const fetchAiLogs = useCallback(async () => {
     const res = await api.get(`/projects/${projectId}/telemetry`, {
       params: {
         run_id: selectedAiRunId || undefined,
@@ -301,16 +301,16 @@ export default function LogsTab({ projectId }: LogsTabProps) {
     setAiSummary(summary);
     setAiRunId(res.data.run_id || selectedAiRunId || null);
     setAiSource("telemetry");
-  };
+  }, [projectId, selectedAiRunId]);
 
-  const fetchAiLearningTable = async () => {
+  const fetchAiLearningTable = useCallback(async () => {
     const res = await api.get(`/projects/${projectId}/ai-learning-table`);
     const rows = Array.isArray(res.data?.rows) ? (res.data.rows as AILearningTableRow[]) : [];
     setAiLearningRows(rows);
     setAiLearningMessage(typeof res.data?.message === "string" ? res.data.message : null);
-  };
+  }, [projectId]);
 
-  const fetchAiRuns = async () => {
+  const fetchAiRuns = useCallback(async () => {
     const res = await api.get(`/projects/${projectId}/runs`);
     const runs: ProjectRunInfo[] = Array.isArray(res.data?.runs) ? res.data.runs : [];
     const aiRuns = runs.filter((run) => {
@@ -331,7 +331,7 @@ export default function LogsTab({ projectId }: LogsTabProps) {
     if (!stillValid) {
       setSelectedAiRunId(aiRuns[0].run_id);
     }
-  };
+  }, [projectId, selectedAiRunId]);
 
   useEffect(() => {
     if (view !== "ai") {
@@ -344,7 +344,7 @@ export default function LogsTab({ projectId }: LogsTabProps) {
       setSelectedAiRunId("");
       setAiTrainingRows([]);
     });
-  }, [projectId, view]);
+  }, [projectId, view, fetchAiRuns]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -382,7 +382,7 @@ export default function LogsTab({ projectId }: LogsTabProps) {
     fetchData();
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
-  }, [projectId, view, selectedAiRunId]);
+  }, [projectId, view, selectedAiRunId, fetchProcessingLogs, fetchAiLogs, fetchAiLearningTable]);
 
   useEffect(() => {
     if (view === "processing" && autoScroll && logsEndRef.current) {
