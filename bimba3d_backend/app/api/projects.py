@@ -3837,7 +3837,6 @@ def list_project_runs(project_id: str):
         shared_doc = _read_project_shared_config(project_dir, str(base_session_id) if base_session_id else None)
         current_shared_version = int(shared_doc.get("version") or 1)
         active_sparse_version = shared_doc.get("active_sparse_version") if isinstance(shared_doc.get("active_sparse_version"), int) else None
-        active_sparse_version = shared_doc.get("active_sparse_version") if isinstance(shared_doc.get("active_sparse_version"), int) else None
 
         runs: list[dict] = []
         for run_dir in sorted((p for p in runs_root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True):

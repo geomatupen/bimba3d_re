@@ -1847,37 +1847,6 @@ def run_training(
             "early_stop": tuning_state.get("early_stop") if isinstance(tuning_state.get("early_stop"), dict) else None,
         }
 
-        def _safe_float(value):
-            try:
-                if value is None:
-                    return None
-                return float(value)
-            except Exception:
-                return None
-
-        best_psnr_row = None
-        best_ssim_row = None
-        best_lpips_row = None
-        final_eval_row = eval_history[-1] if isinstance(eval_history, list) and eval_history else {}
-        for point in eval_history:
-            if not isinstance(point, dict):
-                continue
-            psnr_val = _safe_float(point.get("convergence_speed"))
-            ssim_val = _safe_float(point.get("sharpness_mean"))
-            lpips_val = _safe_float(point.get("lpips_mean"))
-            if psnr_val is not None and (
-                best_psnr_row is None or psnr_val > _safe_float(best_psnr_row.get("convergence_speed"))
-            ):
-                best_psnr_row = point
-            if ssim_val is not None and (
-                best_ssim_row is None or ssim_val > _safe_float(best_ssim_row.get("sharpness_mean"))
-            ):
-                best_ssim_row = point
-            if lpips_val is not None and (
-                best_lpips_row is None or lpips_val < _safe_float(best_lpips_row.get("lpips_mean"))
-            ):
-                best_lpips_row = point
-
         input_mode_insights = None
         if isinstance(input_mode_learning_payload, dict):
             transition = input_mode_learning_payload.get("transition") if isinstance(input_mode_learning_payload.get("transition"), dict) else {}
