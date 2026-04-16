@@ -282,8 +282,38 @@ def _read_json_if_exists(path: Path | None):
 def _read_run_analytics(run_dir: Path | None) -> dict[str, Any] | None:
     if not isinstance(run_dir, Path):
         return None
-    payload = _read_json_if_exists(run_dir / "analytics" / "run_analytics_v1.json")
-    return payload if isinstance(payload, dict) else None
+    analytics_path = run_dir / "analytics" / "run_analytics_v1.json"
+    payload = _read_json_if_exists(analytics_path)
+    if not isinstance(payload, dict):
+        return None
+
+    # Backward-compatible enrichment: older analytics may miss provenance fields.
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}
+    changed = False
+    if metrics:
+        if metrics.get("best_loss") is not None and not isinstance(metrics.get("best_loss_source"), str):
+            metrics["best_loss_source"] = "best_splat_update"
+            changed = True
+        if metrics.get("best_loss") is not None and not isinstance(metrics.get("best_loss_tracking_start_step"), (int, float)):
+            run_cfg = _read_json_if_exists(run_dir / "run_config.json")
+            resolved_cfg = run_cfg.get("resolved_params") if isinstance(run_cfg, dict) and isinstance(run_cfg.get("resolved_params"), dict) else {}
+            requested_cfg = run_cfg.get("requested_params") if isinstance(run_cfg, dict) and isinstance(run_cfg.get("requested_params"), dict) else {}
+            tracking_start = (
+                resolved_cfg.get("best_splat_start_step")
+                if resolved_cfg.get("best_splat_start_step") is not None
+                else requested_cfg.get("best_splat_start_step")
+            )
+            if isinstance(tracking_start, (int, float)):
+                metrics["best_loss_tracking_start_step"] = int(tracking_start)
+                changed = True
+
+    if changed:
+        try:
+            _write_json_atomic(analytics_path, payload)
+        except Exception as exc:
+            logger.warning("Failed to persist analytics enrichment for %s: %s", analytics_path, exc)
+    return payload
 
 
 def _analytics_metrics(run_analytics: dict[str, Any] | None) -> dict[str, Any]:
@@ -387,6 +417,12 @@ def _ensure_run_analytics(
     summary_metrics = {
         "best_loss_step": loss_summary.get("best_loss_step"),
         "best_loss": loss_summary.get("best_loss"),
+        "best_loss_source": "best_splat_update",
+        "best_loss_tracking_start_step": (
+            resolved_cfg.get("best_splat_start_step")
+            if resolved_cfg.get("best_splat_start_step") is not None
+            else requested_cfg.get("best_splat_start_step")
+        ),
         "final_loss_step": loss_summary.get("final_loss_step"),
         "final_loss": loss_summary.get("final_loss"),
         "best_psnr_step": best_psnr_step,
@@ -3664,6 +3700,10 @@ def get_project_telemetry(
                 training_summary["best_loss"] = float(metrics.get("best_loss"))
             if isinstance(metrics.get("best_loss_step"), (int, float)):
                 training_summary["best_loss_step"] = int(metrics.get("best_loss_step"))
+            if isinstance(metrics.get("best_loss_source"), str):
+                training_summary["best_loss_source"] = str(metrics.get("best_loss_source"))
+            if isinstance(metrics.get("best_loss_tracking_start_step"), (int, float)):
+                training_summary["best_loss_tracking_start_step"] = int(metrics.get("best_loss_tracking_start_step"))
 
             ai_block = run_analytics.get("ai") if isinstance(run_analytics.get("ai"), dict) else {}
             canonical_ai = ai_block.get("input_mode_insights") if isinstance(ai_block.get("input_mode_insights"), dict) else None
@@ -6075,6 +6115,10 @@ def get_experiment_summary(
                     metrics_payload["best_splat_loss"] = float(analytics_metrics.get("best_loss"))
                 if isinstance(analytics_metrics.get("best_loss_step"), (int, float)):
                     metrics_payload["best_splat_step"] = int(analytics_metrics.get("best_loss_step"))
+                if isinstance(analytics_metrics.get("best_loss_source"), str):
+                    metrics_payload["best_loss_source"] = str(analytics_metrics.get("best_loss_source"))
+                if isinstance(analytics_metrics.get("best_loss_tracking_start_step"), (int, float)):
+                    metrics_payload["best_loss_tracking_start_step"] = int(analytics_metrics.get("best_loss_tracking_start_step"))
                 if isinstance(analytics_metrics.get("final_loss"), (int, float)):
                     metrics_payload["final_loss"] = float(analytics_metrics.get("final_loss"))
                 if isinstance(analytics_metrics.get("best_psnr"), (int, float)):
