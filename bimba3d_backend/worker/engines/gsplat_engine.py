@@ -1847,6 +1847,120 @@ def run_training(
             "early_stop": tuning_state.get("early_stop") if isinstance(tuning_state.get("early_stop"), dict) else None,
         }
 
+        def _safe_float(value):
+            try:
+                if value is None:
+                    return None
+                return float(value)
+            except Exception:
+                return None
+
+        best_psnr_row = None
+        best_ssim_row = None
+        best_lpips_row = None
+        final_eval_row = eval_history[-1] if isinstance(eval_history, list) and eval_history else {}
+        for point in eval_history:
+            if not isinstance(point, dict):
+                continue
+            psnr_val = _safe_float(point.get("convergence_speed"))
+            ssim_val = _safe_float(point.get("sharpness_mean"))
+            lpips_val = _safe_float(point.get("lpips_mean"))
+            if psnr_val is not None and (
+                best_psnr_row is None or psnr_val > _safe_float(best_psnr_row.get("convergence_speed"))
+            ):
+                best_psnr_row = point
+            if ssim_val is not None and (
+                best_ssim_row is None or ssim_val > _safe_float(best_ssim_row.get("sharpness_mean"))
+            ):
+                best_ssim_row = point
+            if lpips_val is not None and (
+                best_lpips_row is None or lpips_val < _safe_float(best_lpips_row.get("lpips_mean"))
+            ):
+                best_lpips_row = point
+
+        input_mode_insights = None
+        if isinstance(input_mode_learning_payload, dict):
+            transition = input_mode_learning_payload.get("transition") if isinstance(input_mode_learning_payload.get("transition"), dict) else {}
+            outcomes = transition.get("outcomes") if isinstance(transition.get("outcomes"), dict) else {}
+            baseline_comparison = transition.get("baseline_comparison") if isinstance(transition.get("baseline_comparison"), dict) else {}
+            input_mode_insights = {
+                "ai_input_mode": str((preset_summary or {}).get("mode") or "") or None,
+                "baseline_session_id": str(p.get("baseline_session_id") or "").strip() or None,
+                "selected_preset": input_mode_learning_payload.get("selected_preset"),
+                "heuristic_preset": str((preset_summary or {}).get("heuristic_preset") or "") or None,
+                "cache_used": bool((preset_summary or {}).get("cache_used")) if (preset_summary or {}).get("cache_used") is not None else None,
+                "reward": input_mode_learning_payload.get("reward_signal"),
+                "reward_positive": (
+                    bool(input_mode_learning_payload.get("reward_signal") > 0.0)
+                    if isinstance(input_mode_learning_payload.get("reward_signal"), (int, float))
+                    else None
+                ),
+                "reward_label": (
+                    "rewarded"
+                    if isinstance(input_mode_learning_payload.get("reward_signal"), (int, float)) and input_mode_learning_payload.get("reward_signal") > 0.0
+                    else "penalized_or_neutral"
+                ),
+                "reward_mode": str((preset_summary or {}).get("mode") or "") or None,
+                "reward_preset": input_mode_learning_payload.get("selected_preset"),
+                "feature_source": "runtime",
+                "initial_params": dict((preset_summary or {}).get("updates") or {}),
+                "feature_details": dict((preset_summary or {}).get("features") or {}),
+                "learn_snapshot": {
+                    "s_best": input_mode_learning_payload.get("s_best"),
+                    "s_end": input_mode_learning_payload.get("s_end"),
+                    "s_run": input_mode_learning_payload.get("s_run"),
+                    "t_best": input_mode_learning_payload.get("t_best"),
+                    "t_eval_best": input_mode_learning_payload.get("t_eval_best"),
+                    "t_end": input_mode_learning_payload.get("t_end"),
+                    "best_anchor": outcomes.get("best_anchor") if isinstance(outcomes, dict) else None,
+                    "end_anchor": outcomes.get("end_anchor") if isinstance(outcomes, dict) else None,
+                    "baseline_comparison": baseline_comparison if isinstance(baseline_comparison, dict) else None,
+                },
+            }
+
+        analytics_payload = {
+            "schema": "run_analytics_v1",
+            "version": 1,
+            "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "project_id": project_id,
+            "run_id": run_id_value,
+            "run_name": run_name,
+            "engine": "gsplat",
+            "mode": mode,
+            "summary": summary_payload,
+            "metrics": {
+                "best_loss_step": (
+                    int((tuning_state.get("best_splat") or {}).get("step"))
+                    if isinstance((tuning_state.get("best_splat") or {}).get("step"), (int, float))
+                    else None
+                ),
+                "best_loss": _safe_float((tuning_state.get("best_splat") or {}).get("loss")),
+                "final_loss_step": int(final_eval_row.get("step")) if isinstance(final_eval_row, dict) and isinstance(final_eval_row.get("step"), (int, float)) else None,
+                "final_loss": _safe_float(final_eval_row.get("final_loss")) if isinstance(final_eval_row, dict) else None,
+                "best_psnr_step": int(best_psnr_row.get("step")) if isinstance(best_psnr_row, dict) and isinstance(best_psnr_row.get("step"), (int, float)) else None,
+                "best_psnr": _safe_float(best_psnr_row.get("convergence_speed")) if isinstance(best_psnr_row, dict) else None,
+                "final_psnr_step": int(final_eval_row.get("step")) if isinstance(final_eval_row, dict) and isinstance(final_eval_row.get("step"), (int, float)) else None,
+                "final_psnr": _safe_float(final_eval_row.get("convergence_speed")) if isinstance(final_eval_row, dict) else None,
+                "best_ssim_step": int(best_ssim_row.get("step")) if isinstance(best_ssim_row, dict) and isinstance(best_ssim_row.get("step"), (int, float)) else None,
+                "best_ssim": _safe_float(best_ssim_row.get("sharpness_mean")) if isinstance(best_ssim_row, dict) else None,
+                "final_ssim_step": int(final_eval_row.get("step")) if isinstance(final_eval_row, dict) and isinstance(final_eval_row.get("step"), (int, float)) else None,
+                "final_ssim": _safe_float(final_eval_row.get("sharpness_mean")) if isinstance(final_eval_row, dict) else None,
+                "best_lpips_step": int(best_lpips_row.get("step")) if isinstance(best_lpips_row, dict) and isinstance(best_lpips_row.get("step"), (int, float)) else None,
+                "best_lpips": _safe_float(best_lpips_row.get("lpips_mean")) if isinstance(best_lpips_row, dict) else None,
+                "final_lpips_step": int(final_eval_row.get("step")) if isinstance(final_eval_row, dict) and isinstance(final_eval_row.get("step"), (int, float)) else None,
+                "final_lpips": _safe_float(final_eval_row.get("lpips_mean")) if isinstance(final_eval_row, dict) else None,
+                "total_time_seconds": total_time_seconds,
+            },
+            "ai": {
+                "input_mode_learning": input_mode_learning_payload if isinstance(input_mode_learning_payload, dict) else None,
+                "input_mode_insights": input_mode_insights,
+                "controller": {
+                    "history_count": len(runtime_tuning_series),
+                    "runtime_series": runtime_tuning_series,
+                },
+            },
+        }
+
         run_artifact_root = project_dir
         if configured_run_id:
             candidate_run_root = project_dir / "runs" / configured_run_id
@@ -1856,6 +1970,10 @@ def run_training(
         comparison_dir = run_artifact_root / "comparison"
         comparison_dir.mkdir(parents=True, exist_ok=True)
         write_json_atomic(comparison_dir / "experiment_summary.json", summary_payload)
+
+        analytics_dir = run_artifact_root / "analytics"
+        analytics_dir.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(analytics_dir / "run_analytics_v1.json", analytics_payload)
 
         for artifact_name in ("eval_history.json", "adaptive_tuning_results.json", "metadata.json"):
             source_path = engine_output_dir / artifact_name

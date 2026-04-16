@@ -88,6 +88,8 @@ interface TelemetryPayload {
     end_timestamp?: string | null;
     total_elapsed_seconds?: number | null;
     row_count?: number | null;
+    best_loss?: number | null;
+    best_loss_step?: number | null;
   };
   run_config?: {
     requested_params?: Record<string, any>;
@@ -3751,24 +3753,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
 
   const engineOptions = Object.values(engineOutputMap).filter((bundle) => bundle.hasModel);
   const telemetryBestLoss = useMemo(() => {
-    let bestLoss: number | null = null;
-    let bestStep: number | null = null;
-
-    for (const row of telemetryData?.training_rows || []) {
-      if (typeof row?.loss !== "number") continue;
-      if (bestLoss === null || row.loss < bestLoss) {
-        bestLoss = row.loss;
-        bestStep = typeof row.step === "number" ? row.step : null;
-      }
-    }
-
-    if (telemetryData?.status && typeof telemetryData.status.current_loss === "number") {
-      if (bestLoss === null || telemetryData.status.current_loss < bestLoss) {
-        bestLoss = telemetryData.status.current_loss;
-        bestStep = typeof telemetryData.status.currentStep === "number" ? telemetryData.status.currentStep : bestStep;
-      }
-    }
-
+    const summary = telemetryData?.training_summary;
+    const bestLoss = typeof summary?.best_loss === "number" ? summary.best_loss : null;
+    const bestStep = typeof summary?.best_loss_step === "number" ? summary.best_loss_step : null;
     return { bestStep, bestLoss };
   }, [telemetryData]);
   const hasEngineOutputs = Object.keys(engineOutputMap).length > 0;

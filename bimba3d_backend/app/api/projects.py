@@ -279,6 +279,140 @@ def _read_json_if_exists(path: Path | None):
         return None
 
 
+def _read_run_analytics(run_dir: Path | None) -> dict[str, Any] | None:
+    if not isinstance(run_dir, Path):
+        return None
+    payload = _read_json_if_exists(run_dir / "analytics" / "run_analytics_v1.json")
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    tmp.replace(path)
+
+
+def _best_metric(rows: list[dict[str, Any]], key: str, prefer: str) -> tuple[int | None, float | None]:
+    best_step = None
+    best_value = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        step_raw = row.get("step")
+        value_raw = row.get(key)
+        if not isinstance(step_raw, (int, float)):
+            continue
+        if not isinstance(value_raw, (int, float)):
+            continue
+        step = int(step_raw)
+        value = float(value_raw)
+        if best_value is None:
+            best_value = value
+            best_step = step
+            continue
+        if prefer == "max" and value > best_value:
+            best_value = value
+            best_step = step
+        if prefer == "min" and value < best_value:
+            best_value = value
+            best_step = step
+    return best_step, best_value
+
+
+def _ensure_run_analytics(
+    *,
+    run_dir: Path,
+    run_config: dict[str, Any] | None,
+    ai_insights: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    existing = _read_run_analytics(run_dir)
+    if isinstance(existing, dict):
+        return existing
+
+    learning_payload = _read_json_if_exists(run_dir / "outputs" / "engines" / "gsplat" / "input_mode_learning_results.json")
+    if not isinstance(learning_payload, dict):
+        learning_payload = None
+
+    loss_summary = _extract_loss_summary_from_log(run_dir / "processing.log")
+    eval_rows = _extract_eval_rows(run_dir / "outputs" / "engines" / "gsplat" / "stats", eval_limit=200000)
+    if not eval_rows:
+        eval_history = _read_json_if_exists(run_dir / "outputs" / "engines" / "gsplat" / "eval_history.json")
+        if isinstance(eval_history, list):
+            rows: list[dict[str, Any]] = []
+            for item in eval_history:
+                if not isinstance(item, dict):
+                    continue
+                step = item.get("step")
+                if not isinstance(step, (int, float)):
+                    continue
+                rows.append(
+                    {
+                        "step": int(step),
+                        "psnr": item.get("convergence_speed"),
+                        "lpips": item.get("lpips_mean"),
+                        "ssim": item.get("sharpness_mean"),
+                        "num_gaussians": item.get("num_gaussians"),
+                    }
+                )
+            eval_rows = sorted(rows, key=lambda r: int(r.get("step", 0)))
+
+    best_psnr_step, best_psnr = _best_metric(eval_rows, "psnr", "max")
+    best_ssim_step, best_ssim = _best_metric(eval_rows, "ssim", "max")
+    best_lpips_step, best_lpips = _best_metric(eval_rows, "lpips", "min")
+    final_eval = eval_rows[-1] if eval_rows else {}
+
+    run_id = run_dir.name
+    resolved_cfg = run_config.get("resolved_params") if isinstance(run_config, dict) and isinstance(run_config.get("resolved_params"), dict) else {}
+    requested_cfg = run_config.get("requested_params") if isinstance(run_config, dict) and isinstance(run_config.get("requested_params"), dict) else {}
+    run_name = (
+        (run_config.get("run_name") if isinstance(run_config, dict) else None)
+        or (run_config.get("name") if isinstance(run_config, dict) else None)
+        or requested_cfg.get("run_name")
+        or run_id
+    )
+
+    payload = {
+        "schema": "run_analytics_v1",
+        "version": 1,
+        "generated_at_utc": datetime.utcnow().isoformat() + "Z",
+        "project_id": run_dir.parent.parent.name,
+        "run_id": run_id,
+        "run_name": run_name,
+        "engine": str(resolved_cfg.get("engine") or requested_cfg.get("engine") or "gsplat"),
+        "mode": str(resolved_cfg.get("mode") or requested_cfg.get("mode") or "baseline"),
+        "metrics": {
+            "best_loss_step": loss_summary.get("best_loss_step"),
+            "best_loss": loss_summary.get("best_loss"),
+            "final_loss_step": loss_summary.get("final_loss_step"),
+            "final_loss": loss_summary.get("final_loss"),
+            "best_psnr_step": best_psnr_step,
+            "best_psnr": best_psnr,
+            "final_psnr_step": final_eval.get("step") if isinstance(final_eval, dict) else None,
+            "final_psnr": final_eval.get("psnr") if isinstance(final_eval, dict) else None,
+            "best_ssim_step": best_ssim_step,
+            "best_ssim": best_ssim,
+            "final_ssim_step": final_eval.get("step") if isinstance(final_eval, dict) else None,
+            "final_ssim": final_eval.get("ssim") if isinstance(final_eval, dict) else None,
+            "best_lpips_step": best_lpips_step,
+            "best_lpips": best_lpips,
+            "final_lpips_step": final_eval.get("step") if isinstance(final_eval, dict) else None,
+            "final_lpips": final_eval.get("lpips") if isinstance(final_eval, dict) else None,
+        },
+        "ai": {
+            "input_mode_learning": learning_payload,
+            "input_mode_insights": ai_insights if isinstance(ai_insights, dict) else None,
+            "controller": None,
+        },
+    }
+    try:
+        _write_json_atomic(run_dir / "analytics" / "run_analytics_v1.json", payload)
+    except Exception as exc:
+        logger.warning("Failed to backfill run analytics for %s: %s", run_dir, exc)
+    return payload
+
+
 def _get_batch_lineage_path(project_dir: Path) -> Path:
     return project_dir / BATCH_LINEAGE_FILE
 
@@ -888,6 +1022,8 @@ def _build_training_summary(training_rows: list[dict[str, Any]]) -> dict[str, An
     first_epoch = None
     last_epoch = None
     max_elapsed = None
+    best_loss = None
+    best_loss_step = None
 
     for row in training_rows:
         step = row.get("step")
@@ -913,6 +1049,13 @@ def _build_training_summary(training_rows: list[dict[str, Any]]) -> dict[str, An
             if max_elapsed is None or elapsed_val > max_elapsed:
                 max_elapsed = elapsed_val
 
+        loss = row.get("loss")
+        if isinstance(loss, (int, float)):
+            loss_val = float(loss)
+            if best_loss is None or loss_val < best_loss:
+                best_loss = loss_val
+                best_loss_step = step if isinstance(step, int) else best_loss_step
+
     total_elapsed_seconds = None
     if max_elapsed is not None:
         total_elapsed_seconds = max_elapsed
@@ -926,6 +1069,8 @@ def _build_training_summary(training_rows: list[dict[str, Any]]) -> dict[str, An
         "end_timestamp": end_timestamp,
         "total_elapsed_seconds": total_elapsed_seconds,
         "row_count": len(training_rows),
+        "best_loss": best_loss,
+        "best_loss_step": best_loss_step,
     }
 
 
@@ -1317,6 +1462,73 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
 
         for run_dir in sorted([p for p in runs_dir.iterdir() if p.is_dir()], key=lambda p: p.name):
             run_id = run_dir.name
+            run_analytics = _read_run_analytics(run_dir)
+            if isinstance(run_analytics, dict):
+                metrics = run_analytics.get("metrics") if isinstance(run_analytics.get("metrics"), dict) else {}
+                ai_block = run_analytics.get("ai") if isinstance(run_analytics.get("ai"), dict) else {}
+                input_mode_learning = ai_block.get("input_mode_learning") if isinstance(ai_block.get("input_mode_learning"), dict) else {}
+                transition = input_mode_learning.get("transition") if isinstance(input_mode_learning.get("transition"), dict) else {}
+                outcomes = transition.get("outcomes") if isinstance(transition.get("outcomes"), dict) else {}
+                baseline_comparison = transition.get("baseline_comparison") if isinstance(transition.get("baseline_comparison"), dict) else {}
+                best_anchor = outcomes.get("best_anchor") if isinstance(outcomes.get("best_anchor"), dict) else {}
+                end_anchor = outcomes.get("end_anchor") if isinstance(outcomes.get("end_anchor"), dict) else {}
+                insight = ai_block.get("input_mode_insights") if isinstance(ai_block.get("input_mode_insights"), dict) else {}
+
+                if insight.get("ai_input_mode") or input_mode_learning:
+                    rows.append(
+                        {
+                            "run_id": run_id,
+                            "run_name": run_analytics.get("run_name"),
+                            "ai_input_mode": insight.get("ai_input_mode"),
+                            "baseline_run_id": insight.get("baseline_session_id"),
+                            "selected_preset": input_mode_learning.get("selected_preset") or insight.get("selected_preset"),
+                            "phase": "phase_a" if run_id.startswith("warmup_phase_a") else (
+                                "phase_b" if run_id.startswith("warmup_phase_b") else (
+                                    "phase_c" if run_id.startswith("warmup_phase_c") else "other"
+                                )
+                            ),
+                            "is_warmup": run_id.startswith("warmup_phase_"),
+                            "best_loss_step": metrics.get("best_loss_step"),
+                            "best_loss": metrics.get("best_loss"),
+                            "final_loss_step": metrics.get("final_loss_step"),
+                            "final_loss": metrics.get("final_loss"),
+                            "best_psnr_step": metrics.get("best_psnr_step"),
+                            "best_psnr": metrics.get("best_psnr"),
+                            "final_psnr_step": metrics.get("final_psnr_step"),
+                            "final_psnr": metrics.get("final_psnr"),
+                            "best_ssim_step": metrics.get("best_ssim_step"),
+                            "best_ssim": metrics.get("best_ssim"),
+                            "final_ssim_step": metrics.get("final_ssim_step"),
+                            "final_ssim": metrics.get("final_ssim"),
+                            "best_lpips_step": metrics.get("best_lpips_step"),
+                            "best_lpips": metrics.get("best_lpips"),
+                            "final_lpips_step": metrics.get("final_lpips_step"),
+                            "final_lpips": metrics.get("final_lpips"),
+                            "t_best": input_mode_learning.get("t_best"),
+                            "t_eval_best": input_mode_learning.get("t_eval_best"),
+                            "t_end": input_mode_learning.get("t_end"),
+                            "s_best": input_mode_learning.get("s_best"),
+                            "s_end": input_mode_learning.get("s_end"),
+                            "s_run": input_mode_learning.get("s_run"),
+                            "s_base_best": baseline_comparison.get("s_base_best"),
+                            "s_base_end": baseline_comparison.get("s_base_end"),
+                            "s_base": baseline_comparison.get("s_base"),
+                            "reward": input_mode_learning.get("reward_signal"),
+                            "baseline_best_anchor_step": baseline_comparison.get("baseline_best_anchor_step"),
+                            "baseline_end_anchor_step": baseline_comparison.get("baseline_end_anchor_step"),
+                            "score_weights": baseline_comparison.get("score_weights"),
+                            "run_best_l": best_anchor.get("l"),
+                            "run_best_q": best_anchor.get("q"),
+                            "run_best_t": best_anchor.get("t"),
+                            "run_best_s": best_anchor.get("s"),
+                            "run_end_l": end_anchor.get("l"),
+                            "run_end_q": end_anchor.get("q"),
+                            "run_end_t": end_anchor.get("t"),
+                            "run_end_s": end_anchor.get("s"),
+                        }
+                    )
+                    continue
+
             run_config = _read_json_if_exists(run_dir / "run_config.json")
             resolved_cfg = run_config.get("resolved_params") if isinstance(run_config, dict) and isinstance(run_config.get("resolved_params"), dict) else {}
             requested_cfg = run_config.get("requested_params") if isinstance(run_config, dict) and isinstance(run_config.get("requested_params"), dict) else {}
@@ -1327,6 +1539,77 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
 
             if not ai_mode and not isinstance(learning_payload, dict):
                 continue
+
+            if not isinstance(run_analytics, dict):
+                run_analytics = _ensure_run_analytics(
+                    run_dir=run_dir,
+                    run_config=run_config if isinstance(run_config, dict) else None,
+                    ai_insights=None,
+                )
+                if isinstance(run_analytics, dict):
+                    metrics = run_analytics.get("metrics") if isinstance(run_analytics.get("metrics"), dict) else {}
+                    ai_block = run_analytics.get("ai") if isinstance(run_analytics.get("ai"), dict) else {}
+                    input_mode_learning = ai_block.get("input_mode_learning") if isinstance(ai_block.get("input_mode_learning"), dict) else {}
+                    transition = input_mode_learning.get("transition") if isinstance(input_mode_learning.get("transition"), dict) else {}
+                    outcomes = transition.get("outcomes") if isinstance(transition.get("outcomes"), dict) else {}
+                    baseline_comparison = transition.get("baseline_comparison") if isinstance(transition.get("baseline_comparison"), dict) else {}
+                    best_anchor = outcomes.get("best_anchor") if isinstance(outcomes.get("best_anchor"), dict) else {}
+                    end_anchor = outcomes.get("end_anchor") if isinstance(outcomes.get("end_anchor"), dict) else {}
+                    insight = ai_block.get("input_mode_insights") if isinstance(ai_block.get("input_mode_insights"), dict) else {}
+                    if insight.get("ai_input_mode") or input_mode_learning:
+                        rows.append(
+                            {
+                                "run_id": run_id,
+                                "run_name": run_analytics.get("run_name"),
+                                "ai_input_mode": insight.get("ai_input_mode"),
+                                "baseline_run_id": insight.get("baseline_session_id"),
+                                "selected_preset": input_mode_learning.get("selected_preset") or insight.get("selected_preset"),
+                                "phase": "phase_a" if run_id.startswith("warmup_phase_a") else (
+                                    "phase_b" if run_id.startswith("warmup_phase_b") else (
+                                        "phase_c" if run_id.startswith("warmup_phase_c") else "other"
+                                    )
+                                ),
+                                "is_warmup": run_id.startswith("warmup_phase_"),
+                                "best_loss_step": metrics.get("best_loss_step"),
+                                "best_loss": metrics.get("best_loss"),
+                                "final_loss_step": metrics.get("final_loss_step"),
+                                "final_loss": metrics.get("final_loss"),
+                                "best_psnr_step": metrics.get("best_psnr_step"),
+                                "best_psnr": metrics.get("best_psnr"),
+                                "final_psnr_step": metrics.get("final_psnr_step"),
+                                "final_psnr": metrics.get("final_psnr"),
+                                "best_ssim_step": metrics.get("best_ssim_step"),
+                                "best_ssim": metrics.get("best_ssim"),
+                                "final_ssim_step": metrics.get("final_ssim_step"),
+                                "final_ssim": metrics.get("final_ssim"),
+                                "best_lpips_step": metrics.get("best_lpips_step"),
+                                "best_lpips": metrics.get("best_lpips"),
+                                "final_lpips_step": metrics.get("final_lpips_step"),
+                                "final_lpips": metrics.get("final_lpips"),
+                                "t_best": input_mode_learning.get("t_best"),
+                                "t_eval_best": input_mode_learning.get("t_eval_best"),
+                                "t_end": input_mode_learning.get("t_end"),
+                                "s_best": input_mode_learning.get("s_best"),
+                                "s_end": input_mode_learning.get("s_end"),
+                                "s_run": input_mode_learning.get("s_run"),
+                                "s_base_best": baseline_comparison.get("s_base_best"),
+                                "s_base_end": baseline_comparison.get("s_base_end"),
+                                "s_base": baseline_comparison.get("s_base"),
+                                "reward": input_mode_learning.get("reward_signal"),
+                                "baseline_best_anchor_step": baseline_comparison.get("baseline_best_anchor_step"),
+                                "baseline_end_anchor_step": baseline_comparison.get("baseline_end_anchor_step"),
+                                "score_weights": baseline_comparison.get("score_weights"),
+                                "run_best_l": best_anchor.get("l"),
+                                "run_best_q": best_anchor.get("q"),
+                                "run_best_t": best_anchor.get("t"),
+                                "run_best_s": best_anchor.get("s"),
+                                "run_end_l": end_anchor.get("l"),
+                                "run_end_q": end_anchor.get("q"),
+                                "run_end_t": end_anchor.get("t"),
+                                "run_end_s": end_anchor.get("s"),
+                            }
+                        )
+                        continue
 
             transition = learning_payload.get("transition") if isinstance(learning_payload, dict) and isinstance(learning_payload.get("transition"), dict) else {}
             outcomes = transition.get("outcomes") if isinstance(transition.get("outcomes"), dict) else {}
@@ -3283,6 +3566,7 @@ def get_project_telemetry(
         run_log_path = run_dir / "processing.log"
         stats_dir = run_dir / "outputs" / "engines" / "gsplat" / "stats"
         run_config_path = run_dir / "run_config.json"
+        run_analytics = _read_run_analytics(run_dir)
 
         text_lines = _read_text_lines(run_log_path, max_lines=log_limit, from_start=bool(from_start))
         training_rows = _extract_training_rows(text_lines, row_limit=log_limit, from_start=bool(from_start))
@@ -3293,6 +3577,23 @@ def get_project_telemetry(
         if not isinstance(run_config, dict):
             run_config = None
         ai_insights = _extract_ai_run_insights(run_dir, run_config)
+        if not isinstance(run_analytics, dict):
+            run_analytics = _ensure_run_analytics(
+                run_dir=run_dir,
+                run_config=run_config if isinstance(run_config, dict) else None,
+                ai_insights=ai_insights if isinstance(ai_insights, dict) else None,
+            )
+        if isinstance(run_analytics, dict):
+            metrics = run_analytics.get("metrics") if isinstance(run_analytics.get("metrics"), dict) else {}
+            if isinstance(metrics.get("best_loss"), (int, float)):
+                training_summary["best_loss"] = float(metrics.get("best_loss"))
+            if isinstance(metrics.get("best_loss_step"), (int, float)):
+                training_summary["best_loss_step"] = int(metrics.get("best_loss_step"))
+
+            ai_block = run_analytics.get("ai") if isinstance(run_analytics.get("ai"), dict) else {}
+            canonical_ai = ai_block.get("input_mode_insights") if isinstance(ai_block.get("input_mode_insights"), dict) else None
+            if isinstance(canonical_ai, dict) and canonical_ai.get("ai_input_mode"):
+                ai_insights = canonical_ai
 
         project_base_session_id = project_status.get("base_session_id") if isinstance(project_status, dict) else None
         shared_doc = _read_project_shared_config(project_dir, str(project_base_session_id) if project_base_session_id else None)
@@ -3328,6 +3629,7 @@ def get_project_telemetry(
             "eval_rows": eval_rows,
             "latest_eval": eval_rows[-1] if eval_rows else None,
             "training_summary": training_summary,
+            "run_analytics": run_analytics,
             "run_config": run_config,
             "effective_shared_config": effective_shared,
             "shared_config_version": current_shared_version,
