@@ -7,7 +7,7 @@ from typing import Any
 from .common import apply_preset_updates, clamp_float
 
 PRESETS = ["conservative", "balanced", "geometry_fast", "appearance_fast"]
-HEURISTIC_PRESET_BONUS = 0.01
+HEURISTIC_PRESET_BONUS = 0.002
 
 
 def _selector_dir(project_dir: Path) -> Path:

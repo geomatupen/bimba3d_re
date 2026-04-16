@@ -1185,6 +1185,214 @@ def _extract_event_rows(lines: list[str], row_limit: int) -> list[dict[str, Any]
     return rows
 
 
+def _extract_loss_summary_from_log(path: Path) -> dict[str, Any]:
+    best_loss_step: int | None = None
+    best_loss_value: float | None = None
+    final_loss_step: int | None = None
+    final_loss_value: float | None = None
+
+    if not path.exists():
+        return {
+            "best_loss_step": None,
+            "best_loss": None,
+            "final_loss_step": None,
+            "final_loss": None,
+        }
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                best_match = BEST_SPLAT_UPDATE_RE.search(line)
+                if best_match:
+                    try:
+                        step = int(best_match.group("step"))
+                        loss = float(best_match.group("loss"))
+                        if best_loss_value is None or loss < best_loss_value:
+                            best_loss_value = loss
+                            best_loss_step = step
+                    except Exception:
+                        pass
+
+                snap_match = GSPLAT_SNAPSHOT_RE.search(line)
+                if snap_match:
+                    try:
+                        final_loss_step = int(snap_match.group("step"))
+                        final_loss_value = float(snap_match.group("loss"))
+                    except Exception:
+                        pass
+                    continue
+
+                step_match = GSPLAT_STEP_RE.search(line)
+                if step_match:
+                    try:
+                        final_loss_step = int(step_match.group("step"))
+                        final_loss_value = float(step_match.group("loss"))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    if best_loss_value is None and final_loss_value is not None:
+        best_loss_value = final_loss_value
+        best_loss_step = final_loss_step
+
+    return {
+        "best_loss_step": best_loss_step,
+        "best_loss": best_loss_value,
+        "final_loss_step": final_loss_step,
+        "final_loss": final_loss_value,
+    }
+
+
+def _extract_eval_summary(stats_dir: Path) -> dict[str, Any]:
+    rows = _extract_eval_rows(stats_dir, eval_limit=200000)
+    if not rows:
+        return {
+            "best_psnr_step": None,
+            "best_psnr": None,
+            "final_psnr_step": None,
+            "final_psnr": None,
+            "best_ssim_step": None,
+            "best_ssim": None,
+            "final_ssim_step": None,
+            "final_ssim": None,
+            "best_lpips_step": None,
+            "best_lpips": None,
+            "final_lpips_step": None,
+            "final_lpips": None,
+        }
+
+    def _safe_float(value: Any) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    final_row = rows[-1]
+
+    psnr_candidates = [r for r in rows if _safe_float(r.get("psnr")) is not None]
+    ssim_candidates = [r for r in rows if _safe_float(r.get("ssim")) is not None]
+    lpips_candidates = [r for r in rows if _safe_float(r.get("lpips")) is not None]
+
+    best_psnr_row = max(psnr_candidates, key=lambda r: float(r.get("psnr")), default=None)
+    best_ssim_row = max(ssim_candidates, key=lambda r: float(r.get("ssim")), default=None)
+    best_lpips_row = min(lpips_candidates, key=lambda r: float(r.get("lpips")), default=None)
+
+    return {
+        "best_psnr_step": int(best_psnr_row.get("step")) if isinstance(best_psnr_row, dict) and isinstance(best_psnr_row.get("step"), int) else None,
+        "best_psnr": _safe_float(best_psnr_row.get("psnr")) if isinstance(best_psnr_row, dict) else None,
+        "final_psnr_step": int(final_row.get("step")) if isinstance(final_row.get("step"), int) else None,
+        "final_psnr": _safe_float(final_row.get("psnr")),
+        "best_ssim_step": int(best_ssim_row.get("step")) if isinstance(best_ssim_row, dict) and isinstance(best_ssim_row.get("step"), int) else None,
+        "best_ssim": _safe_float(best_ssim_row.get("ssim")) if isinstance(best_ssim_row, dict) else None,
+        "final_ssim_step": int(final_row.get("step")) if isinstance(final_row.get("step"), int) else None,
+        "final_ssim": _safe_float(final_row.get("ssim")),
+        "best_lpips_step": int(best_lpips_row.get("step")) if isinstance(best_lpips_row, dict) and isinstance(best_lpips_row.get("step"), int) else None,
+        "best_lpips": _safe_float(best_lpips_row.get("lpips")) if isinstance(best_lpips_row, dict) else None,
+        "final_lpips_step": int(final_row.get("step")) if isinstance(final_row.get("step"), int) else None,
+        "final_lpips": _safe_float(final_row.get("lpips")),
+    }
+
+
+def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
+    """Build run-wise AI learning comparison rows for Logs tab tables."""
+    try:
+        project_dir = DATA_DIR / project_id
+        if not project_dir.exists():
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        runs_dir = project_dir / "runs"
+        if not runs_dir.exists():
+            return {
+                "project_id": project_id,
+                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "ai_enabled": False,
+                "rows": [],
+                "message": "No runs found for this project.",
+            }
+
+        rows: list[dict[str, Any]] = []
+
+        for run_dir in sorted([p for p in runs_dir.iterdir() if p.is_dir()], key=lambda p: p.name):
+            run_id = run_dir.name
+            run_config = _read_json_if_exists(run_dir / "run_config.json")
+            resolved_cfg = run_config.get("resolved_params") if isinstance(run_config, dict) and isinstance(run_config.get("resolved_params"), dict) else {}
+            requested_cfg = run_config.get("requested_params") if isinstance(run_config, dict) and isinstance(run_config.get("requested_params"), dict) else {}
+
+            ai_mode = str(resolved_cfg.get("ai_input_mode") or requested_cfg.get("ai_input_mode") or "").strip().lower()
+            learning_path = run_dir / "outputs" / "engines" / "gsplat" / "input_mode_learning_results.json"
+            learning_payload = _read_json_if_exists(learning_path)
+
+            if not ai_mode and not isinstance(learning_payload, dict):
+                continue
+
+            transition = learning_payload.get("transition") if isinstance(learning_payload, dict) and isinstance(learning_payload.get("transition"), dict) else {}
+            outcomes = transition.get("outcomes") if isinstance(transition.get("outcomes"), dict) else {}
+            baseline_comparison = transition.get("baseline_comparison") if isinstance(transition.get("baseline_comparison"), dict) else {}
+            best_anchor = outcomes.get("best_anchor") if isinstance(outcomes.get("best_anchor"), dict) else {}
+            end_anchor = outcomes.get("end_anchor") if isinstance(outcomes.get("end_anchor"), dict) else {}
+
+            loss_summary = _extract_loss_summary_from_log(run_dir / "processing.log")
+            eval_summary = _extract_eval_summary(run_dir / "outputs" / "engines" / "gsplat" / "stats")
+
+            run_name = None
+            if isinstance(run_config, dict):
+                run_name = run_config.get("run_name") or run_config.get("name")
+                if not run_name and isinstance(requested_cfg, dict):
+                    run_name = requested_cfg.get("run_name")
+
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "run_name": run_name,
+                    "ai_input_mode": ai_mode or None,
+                    "baseline_run_id": str(resolved_cfg.get("baseline_session_id") or requested_cfg.get("baseline_session_id") or "").strip() or None,
+                    "selected_preset": learning_payload.get("selected_preset") if isinstance(learning_payload, dict) else None,
+                    "phase": "phase_a" if run_id.startswith("warmup_phase_a") else (
+                        "phase_b" if run_id.startswith("warmup_phase_b") else (
+                            "phase_c" if run_id.startswith("warmup_phase_c") else "other"
+                        )
+                    ),
+                    "is_warmup": run_id.startswith("warmup_phase_"),
+                    **loss_summary,
+                    **eval_summary,
+                    "t_best": learning_payload.get("t_best") if isinstance(learning_payload, dict) else None,
+                    "t_eval_best": learning_payload.get("t_eval_best") if isinstance(learning_payload, dict) else None,
+                    "t_end": learning_payload.get("t_end") if isinstance(learning_payload, dict) else None,
+                    "s_best": learning_payload.get("s_best") if isinstance(learning_payload, dict) else None,
+                    "s_end": learning_payload.get("s_end") if isinstance(learning_payload, dict) else None,
+                    "s_run": learning_payload.get("s_run") if isinstance(learning_payload, dict) else None,
+                    "s_base_best": baseline_comparison.get("s_base_best") if isinstance(baseline_comparison, dict) else None,
+                    "s_base_end": baseline_comparison.get("s_base_end") if isinstance(baseline_comparison, dict) else None,
+                    "s_base": baseline_comparison.get("s_base") if isinstance(baseline_comparison, dict) else None,
+                    "reward": learning_payload.get("reward_signal") if isinstance(learning_payload, dict) else None,
+                    "baseline_best_anchor_step": baseline_comparison.get("baseline_best_anchor_step") if isinstance(baseline_comparison, dict) else None,
+                    "baseline_end_anchor_step": baseline_comparison.get("baseline_end_anchor_step") if isinstance(baseline_comparison, dict) else None,
+                    "score_weights": baseline_comparison.get("score_weights") if isinstance(baseline_comparison, dict) else None,
+                    "run_best_l": best_anchor.get("l") if isinstance(best_anchor, dict) else None,
+                    "run_best_q": best_anchor.get("q") if isinstance(best_anchor, dict) else None,
+                    "run_best_t": best_anchor.get("t") if isinstance(best_anchor, dict) else None,
+                    "run_best_s": best_anchor.get("s") if isinstance(best_anchor, dict) else None,
+                    "run_end_l": end_anchor.get("l") if isinstance(end_anchor, dict) else None,
+                    "run_end_q": end_anchor.get("q") if isinstance(end_anchor, dict) else None,
+                    "run_end_t": end_anchor.get("t") if isinstance(end_anchor, dict) else None,
+                    "run_end_s": end_anchor.get("s") if isinstance(end_anchor, dict) else None,
+                }
+            )
+
+        return {
+            "project_id": project_id,
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "ai_enabled": len(rows) > 0,
+            "rows": rows,
+            "message": None if rows else "No AI-applied runs with learning artifacts found.",
+        }
+    except HTTPException:
+        raise
+
+
 def _run_batch_process(
     project_id: str,
     base_params: dict,
@@ -3141,6 +3349,17 @@ def get_project_telemetry(
     except Exception as exc:
         logger.error("Error getting telemetry for %s: %s", project_id, exc)
         raise HTTPException(status_code=500, detail="Failed to get telemetry")
+
+
+@router.get("/{project_id}/ai-learning-table")
+def get_project_ai_learning_table(project_id: str):
+    try:
+        return _build_project_ai_learning_table(project_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error building AI learning table for %s: %s", project_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to build AI learning table")
 
 
 @router.post("/{project_id}/stop")

@@ -8,7 +8,7 @@ interface LogsTabProps {
   projectId: string;
 }
 
-type LogsView = "processing" | "ai";
+type LogsView = "processing" | "ai" | "ai_learning_table";
 type LearningState = "learning" | "not_learning" | "neutral";
 
 interface AILogEvent {
@@ -83,6 +83,50 @@ interface ChartGeometry {
     reward?: number | null;
     relativeImprovement?: number | null;
   }>;
+}
+
+interface AILearningTableRow {
+  run_id: string;
+  run_name?: string | null;
+  ai_input_mode?: string | null;
+  baseline_run_id?: string | null;
+  selected_preset?: string | null;
+  phase?: string | null;
+  is_warmup?: boolean;
+  best_loss_step?: number | null;
+  best_loss?: number | null;
+  final_loss_step?: number | null;
+  final_loss?: number | null;
+  best_psnr_step?: number | null;
+  best_psnr?: number | null;
+  final_psnr_step?: number | null;
+  final_psnr?: number | null;
+  best_ssim_step?: number | null;
+  best_ssim?: number | null;
+  final_ssim_step?: number | null;
+  final_ssim?: number | null;
+  best_lpips_step?: number | null;
+  best_lpips?: number | null;
+  final_lpips_step?: number | null;
+  final_lpips?: number | null;
+  t_best?: number | null;
+  t_eval_best?: number | null;
+  t_end?: number | null;
+  s_best?: number | null;
+  s_end?: number | null;
+  s_run?: number | null;
+  s_base_best?: number | null;
+  s_base_end?: number | null;
+  s_base?: number | null;
+  reward?: number | null;
+  run_best_l?: number | null;
+  run_best_q?: number | null;
+  run_best_t?: number | null;
+  run_best_s?: number | null;
+  run_end_l?: number | null;
+  run_end_q?: number | null;
+  run_end_t?: number | null;
+  run_end_s?: number | null;
 }
 
 function buildPolylinePoints(points: ChartPoint[], width: number, height: number): ChartGeometry {
@@ -167,6 +211,8 @@ export default function LogsTab({ projectId }: LogsTabProps) {
   const [aiRunOptions, setAiRunOptions] = useState<ProjectRunInfo[]>([]);
   const [aiTrainingRows, setAiTrainingRows] = useState<TelemetryTrainingRow[]>([]);
   const [aiSource, setAiSource] = useState<string | null>(null);
+  const [aiLearningRows, setAiLearningRows] = useState<AILearningTableRow[]>([]);
+  const [aiLearningMessage, setAiLearningMessage] = useState<string | null>(null);
   const [stateFilter, setStateFilter] = useState<"all" | LearningState>("all");
   const [nonKeepOnly, setNonKeepOnly] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -257,6 +303,13 @@ export default function LogsTab({ projectId }: LogsTabProps) {
     setAiSource("telemetry");
   };
 
+  const fetchAiLearningTable = async () => {
+    const res = await api.get(`/projects/${projectId}/ai-learning-table`);
+    const rows = Array.isArray(res.data?.rows) ? (res.data.rows as AILearningTableRow[]) : [];
+    setAiLearningRows(rows);
+    setAiLearningMessage(typeof res.data?.message === "string" ? res.data.message : null);
+  };
+
   const fetchAiRuns = async () => {
     const res = await api.get(`/projects/${projectId}/runs`);
     const runs: ProjectRunInfo[] = Array.isArray(res.data?.runs) ? res.data.runs : [];
@@ -298,7 +351,7 @@ export default function LogsTab({ projectId }: LogsTabProps) {
       try {
         if (view === "processing") {
           await fetchProcessingLogs();
-        } else {
+        } else if (view === "ai") {
           if (!selectedAiRunId) {
             setAiEvents([]);
             setAiSummary({ total: 0, learning: 0, not_learning: 0, neutral: 0 });
@@ -308,12 +361,17 @@ export default function LogsTab({ projectId }: LogsTabProps) {
           } else {
             await fetchAiLogs();
           }
+        } else {
+          await fetchAiLearningTable();
         }
         setLoading(false);
       } catch (err) {
         console.error("Failed to fetch logs data:", err);
         if (view === "processing") {
           setLogs("Failed to load logs.");
+        } else if (view === "ai_learning_table") {
+          setAiLearningRows([]);
+          setAiLearningMessage("Failed to load AI learning comparison table.");
         } else {
           setAiEvents([]);
         }
@@ -562,14 +620,21 @@ export default function LogsTab({ projectId }: LogsTabProps) {
 
   const downloadLogs = () => {
     const isAiView = view === "ai";
-    const content = isAiView ? JSON.stringify(filteredAiEvents, null, 2) : logs;
-    const blob = new Blob([content], { type: isAiView ? "application/json" : "text/plain" });
+    const isAiLearningView = view === "ai_learning_table";
+    const content = isAiView
+      ? JSON.stringify(filteredAiEvents, null, 2)
+      : isAiLearningView
+        ? JSON.stringify(aiLearningRows, null, 2)
+        : logs;
+    const blob = new Blob([content], { type: isAiView || isAiLearningView ? "application/json" : "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = isAiView
       ? `${projectId}_ai_logs_${aiRunId || "latest"}.json`
-      : `${projectId}_logs.txt`;
+      : isAiLearningView
+        ? `${projectId}_ai_learning_table.json`
+        : `${projectId}_logs.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -581,7 +646,7 @@ export default function LogsTab({ projectId }: LogsTabProps) {
     try {
       if (view === "processing") {
         await fetchProcessingLogs();
-      } else {
+      } else if (view === "ai") {
         if (!selectedAiRunId) {
           setAiEvents([]);
           setAiSummary({ total: 0, learning: 0, not_learning: 0, neutral: 0 });
@@ -591,6 +656,8 @@ export default function LogsTab({ projectId }: LogsTabProps) {
         } else {
           await fetchAiLogs();
         }
+      } else {
+        await fetchAiLearningTable();
       }
     } catch (err) {
       console.error("Failed to refresh logs:", err);
@@ -836,6 +903,16 @@ export default function LogsTab({ projectId }: LogsTabProps) {
     }
   };
 
+  const fmt = (value: number | null | undefined, decimals = 6) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "-";
+    return value.toFixed(decimals);
+  };
+
+  const fmtStep = (value: number | null | undefined) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "-";
+    return value.toLocaleString();
+  };
+
   return (
     <div className="max-w-6xl">
       <div className="bg-white rounded-xl shadow-md border border-gray-200">
@@ -899,6 +976,12 @@ export default function LogsTab({ projectId }: LogsTabProps) {
             >
               AI Logs
             </button>
+            <button
+              className={`px-4 py-2 text-sm font-medium border-l border-gray-200 ${view === "ai_learning_table" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"}`}
+              onClick={() => setView("ai_learning_table")}
+            >
+              AI Learning Table
+            </button>
           </div>
           {view === "ai" && (
             <p className="text-xs text-slate-500">
@@ -915,7 +998,7 @@ export default function LogsTab({ projectId }: LogsTabProps) {
               {logs}
               <div ref={logsEndRef} />
             </pre>
-          ) : (
+          ) : view === "ai" ? (
             <div className="h-[600px] overflow-y-auto rounded-b-xl bg-slate-50">
               <div className="px-6 py-4 border-b border-gray-200 bg-white">
                 <div className="flex flex-wrap items-center gap-4">
@@ -1047,6 +1130,77 @@ export default function LogsTab({ projectId }: LogsTabProps) {
                       </>
                     )}
                   </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="h-[600px] overflow-y-auto rounded-b-xl bg-slate-50">
+              <div className="px-6 py-4 border-b border-gray-200 bg-white text-xs text-slate-600">
+                This table shows all run-level values that influence AI learning scores (`S_run`, `S_base`, reward), including loss/metric summaries.
+              </div>
+              <div className="p-4">
+                <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
+                  <table className="min-w-[1900px] w-full text-xs">
+                    <thead className="bg-slate-100 text-slate-700">
+                      <tr>
+                        <th className="px-2 py-2 text-left font-semibold">Run</th>
+                        <th className="px-2 py-2 text-left font-semibold">Preset</th>
+                        <th className="px-2 py-2 text-left font-semibold">Best Loss</th>
+                        <th className="px-2 py-2 text-left font-semibold">Final Loss</th>
+                        <th className="px-2 py-2 text-left font-semibold">Best PSNR</th>
+                        <th className="px-2 py-2 text-left font-semibold">Final PSNR</th>
+                        <th className="px-2 py-2 text-left font-semibold">Best SSIM</th>
+                        <th className="px-2 py-2 text-left font-semibold">Final SSIM</th>
+                        <th className="px-2 py-2 text-left font-semibold">Best LPIPS</th>
+                        <th className="px-2 py-2 text-left font-semibold">Final LPIPS</th>
+                        <th className="px-2 py-2 text-left font-semibold">Run Best (l,q,t,s)</th>
+                        <th className="px-2 py-2 text-left font-semibold">Run End (l,q,t,s)</th>
+                        <th className="px-2 py-2 text-left font-semibold">S Best</th>
+                        <th className="px-2 py-2 text-left font-semibold">S End</th>
+                        <th className="px-2 py-2 text-left font-semibold">S Run</th>
+                        <th className="px-2 py-2 text-left font-semibold">S Base Best</th>
+                        <th className="px-2 py-2 text-left font-semibold">S Base End</th>
+                        <th className="px-2 py-2 text-left font-semibold">S Base</th>
+                        <th className="px-2 py-2 text-left font-semibold">Reward</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {aiLearningRows.length === 0 ? (
+                        <tr>
+                          <td className="px-3 py-6 text-slate-500" colSpan={19}>
+                            {aiLearningMessage || "No AI learning rows available for this project yet."}
+                          </td>
+                        </tr>
+                      ) : (
+                        aiLearningRows.map((row) => (
+                          <tr key={row.run_id} className="border-t border-gray-100 align-top">
+                            <td className="px-2 py-2 text-slate-800">
+                              <div className="font-semibold">{row.run_name || row.run_id}</div>
+                              <div className="text-[10px] text-slate-500">{row.run_id}</div>
+                            </td>
+                            <td className="px-2 py-2 text-slate-700">{row.selected_preset || "-"}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.best_loss)} @ {fmtStep(row.best_loss_step)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.final_loss)} @ {fmtStep(row.final_loss_step)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.best_psnr, 4)} @ {fmtStep(row.best_psnr_step)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.final_psnr, 4)} @ {fmtStep(row.final_psnr_step)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.best_ssim, 4)} @ {fmtStep(row.best_ssim_step)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.final_ssim, 4)} @ {fmtStep(row.final_ssim_step)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.best_lpips, 4)} @ {fmtStep(row.best_lpips_step)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.final_lpips, 4)} @ {fmtStep(row.final_lpips_step)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.run_best_l, 4)}, {fmt(row.run_best_q, 4)}, {fmt(row.run_best_t, 4)}, {fmt(row.run_best_s, 4)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.run_end_l, 4)}, {fmt(row.run_end_q, 4)}, {fmt(row.run_end_t, 4)}, {fmt(row.run_end_s, 4)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.s_best, 6)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.s_end, 6)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.s_run, 6)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.s_base_best, 6)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.s_base_end, 6)}</td>
+                            <td className="px-2 py-2 text-slate-700">{fmt(row.s_base, 6)}</td>
+                            <td className="px-2 py-2 text-slate-700 font-semibold">{fmt(row.reward, 6)}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>
