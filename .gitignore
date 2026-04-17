@@ -22,6 +22,8 @@ bimba3d_backend/env/
 bimba3d_backend/data/projects/
 bimba3d_backend/data/archived_projects/
 bimba3d_backend/data/exports/
+bimba3d_backend/data/models/**
+!bimba3d_backend/data/models/models_index.json
 bimba3d_backend/data/.cache/
 bimba3d_backend/**/outputs/
 bimba3d_backend/**/status.json
