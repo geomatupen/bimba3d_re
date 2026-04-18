@@ -158,6 +158,7 @@ class ProcessParams(BaseModel):
     tune_interval: Optional[int] = None  # [custom]
     tune_scope: Optional[str] = None  # [custom] "core_individual" | "core_only" | "core_ai_optimization" | "core_individual_plus_strategy"
     trend_scope: Optional[str] = None  # [custom] "run" | "phase" (core_ai_optimization)
+    session_execution_mode: Optional[str] = None  # [custom] "train" | "test"
     images_max_size: Optional[int] = None  # [custom]
     litegs_target_primitives: Optional[int] = None  # [custom]
     litegs_alpha_shrink: Optional[float] = None  # [custom]

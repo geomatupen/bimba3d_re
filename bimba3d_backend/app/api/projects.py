@@ -41,6 +41,7 @@ from bimba3d_backend.app.models.project import (
 )
 from bimba3d_backend.app.services import status, storage, colmap, gsplat, files, sparse_edit, pointsbin
 from bimba3d_backend.app.services import model_registry
+from bimba3d_backend.app.services.session_execution_mode import apply_session_execution_mode_overrides
 from bimba3d_backend.app.services.worker_mode import normalize_worker_mode, resolve_worker_mode
 from bimba3d_backend.worker import pipeline
 
@@ -716,6 +717,39 @@ def _read_run_config_params(project_dir: Path, run_id: str) -> tuple[dict, dict]
     return requested, resolved
 
 
+def _resolve_source_model_id_from_run_ancestry(project_dir: Path, run_id: str, max_hops: int = 300) -> str | None:
+    """Walk source_run_id ancestry and return the first reusable source_model_id found."""
+    current_run_id = str(run_id or "").strip()
+    if not current_run_id:
+        return None
+
+    visited: set[str] = set()
+    hops = 0
+    while current_run_id and current_run_id not in visited and hops < max_hops:
+        visited.add(current_run_id)
+        hops += 1
+
+        requested, resolved = _read_run_config_params(project_dir, current_run_id)
+        source_model_id = str(
+            resolved.get("source_model_id")
+            or requested.get("source_model_id")
+            or ""
+        ).strip()
+        if source_model_id:
+            return source_model_id
+
+        parent_run_id = str(
+            resolved.get("source_run_id")
+            or requested.get("source_run_id")
+            or ""
+        ).strip()
+        if not parent_run_id:
+            break
+        current_run_id = parent_run_id
+
+    return None
+
+
 def _resolve_project_model_metadata_from_run(project_dir: Path, run_id: str) -> tuple[str | None, str | None]:
     if not run_id:
         return None, None
@@ -1136,35 +1170,7 @@ def _extract_ai_run_insights(run_dir: Path | None, run_config: dict | None) -> d
         or ""
     ).strip() or None
 
-    initial_param_keys = [
-        "tune_start_step",
-        "tune_end_step",
-        "tune_interval",
-        "tune_min_improvement",
-        "run_jitter_mode",
-        "run_jitter_factor",
-        "run_jitter_min",
-        "run_jitter_max",
-        "run_jitter_multiplier",
-        "trend_scope",
-        "feature_lr",
-        "opacity_lr",
-        "scaling_lr",
-        "rotation_lr",
-        "position_lr_init",
-        "position_lr_final",
-        "densification_interval",
-        "densify_grad_threshold",
-        "opacity_threshold",
-        "lambda_dssim",
-    ]
-
     initial_params: dict[str, Any] = {}
-    for key in initial_param_keys:
-        if key in resolved_cfg and resolved_cfg.get(key) is not None:
-            initial_params[key] = resolved_cfg.get(key)
-        elif key in requested_cfg and requested_cfg.get(key) is not None:
-            initial_params[key] = requested_cfg.get(key)
 
     features_details: dict[str, Any] = {}
     features_from_log = False
@@ -1359,23 +1365,58 @@ def _ensure_analytics_ai_initial_params(
     existing_initial = insight.get("initial_params") if isinstance(insight.get("initial_params"), dict) else {}
     has_any_existing = any(existing_initial.get(k) is not None for k in SELECTOR_OWNED_LEARNED_KEYS)
     if not has_any_existing:
-        backfilled = _selector_initial_params_from_run_config(run_config)
-        if backfilled:
-            insight["initial_params"] = backfilled
+        log_insights = _extract_ai_run_insights(run_dir, run_config)
+        log_initial = (
+            log_insights.get("initial_params")
+            if isinstance(log_insights, dict) and isinstance(log_insights.get("initial_params"), dict)
+            else {}
+        )
+        log_selected_preset = (
+            str(log_insights.get("selected_preset") or "").strip()
+            if isinstance(log_insights, dict)
+            else ""
+        )
+        log_heuristic_preset = (
+            str(log_insights.get("heuristic_preset") or "").strip()
+            if isinstance(log_insights, dict)
+            else ""
+        )
+        if log_initial:
+            insight["initial_params"] = log_initial
+            if log_selected_preset and not str(insight.get("selected_preset") or "").strip():
+                insight["selected_preset"] = log_selected_preset
+            if log_heuristic_preset and not str(insight.get("heuristic_preset") or "").strip():
+                insight["heuristic_preset"] = log_heuristic_preset
             changed = True
+        else:
+            # Do not inject config defaults when run-start params are not logged.
+            # Keeping this empty avoids surfacing misleading "default" values as learned start params.
+            pass
 
     # Backfill feature_details from persisted mode cache JSON if missing.
     existing_features = insight.get("feature_details") if isinstance(insight.get("feature_details"), dict) else {}
     if not existing_features:
-        cache_path = run_dir.parent.parent / "outputs" / "ai_input_modes" / f"{ai_mode}.json"
-        cache_payload = _read_json_if_exists(cache_path)
-        if isinstance(cache_payload, dict):
-            cached_features = cache_payload.get("features") if isinstance(cache_payload.get("features"), dict) else {}
-            if cached_features:
-                insight["feature_details"] = cached_features
-                if not isinstance(insight.get("feature_source"), str) or not str(insight.get("feature_source")).strip():
-                    insight["feature_source"] = "cache"
-                changed = True
+        log_insights = _extract_ai_run_insights(run_dir, run_config)
+        log_features = (
+            log_insights.get("feature_details")
+            if isinstance(log_insights, dict) and isinstance(log_insights.get("feature_details"), dict)
+            else {}
+        )
+        if log_features:
+            insight["feature_details"] = log_features
+            if not isinstance(insight.get("feature_source"), str) or not str(insight.get("feature_source")).strip():
+                insight["feature_source"] = "log"
+            changed = True
+        else:
+            cache_path = run_dir.parent.parent / "outputs" / "ai_input_modes" / f"{ai_mode}.json"
+            cache_payload = _read_json_if_exists(cache_path)
+            if isinstance(cache_payload, dict):
+                cached_features = cache_payload.get("features") if isinstance(cache_payload.get("features"), dict) else {}
+                if cached_features:
+                    insight["feature_details"] = cached_features
+                    if not isinstance(insight.get("feature_source"), str) or not str(insight.get("feature_source")).strip():
+                        insight["feature_source"] = "cache"
+                    changed = True
 
     if changed:
         try:
@@ -1947,7 +1988,23 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
         for run_dir in sorted([p for p in runs_dir.iterdir() if p.is_dir()], key=lambda p: p.name):
             run_id = run_dir.name
             run_config = _read_json_if_exists(run_dir / "run_config.json")
+            ai_insights_fallback = _extract_ai_run_insights(
+                run_dir,
+                run_config if isinstance(run_config, dict) else None,
+            )
+            fallback_initial = (
+                ai_insights_fallback.get("initial_params")
+                if isinstance(ai_insights_fallback, dict) and isinstance(ai_insights_fallback.get("initial_params"), dict)
+                else {}
+            )
+            has_runstart_initial_params = any(fallback_initial.get(k) is not None for k in SELECTOR_OWNED_LEARNED_KEYS)
             run_analytics = _read_run_analytics(run_dir)
+            if not isinstance(run_analytics, dict):
+                run_analytics = _ensure_run_analytics(
+                    run_dir=run_dir,
+                    run_config=run_config if isinstance(run_config, dict) else None,
+                    ai_insights=ai_insights_fallback if isinstance(ai_insights_fallback, dict) else None,
+                )
             run_analytics = _ensure_analytics_ai_initial_params(
                 run_dir=run_dir,
                 run_analytics=run_analytics if isinstance(run_analytics, dict) else None,
@@ -1957,6 +2014,11 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
                 run_analytics if isinstance(run_analytics, dict) else None,
                 run_config if isinstance(run_config, dict) else None,
             )
+            if not has_runstart_initial_params:
+                # Preserve row visibility but do not surface default/config-like values
+                # as "learned" start params when run-start marker is missing.
+                learned_input_params = {}
+            learned_input_params_source = "run_start_log" if has_runstart_initial_params else "missing_run_start_log"
             if isinstance(run_analytics, dict):
                 metrics = _analytics_metrics(run_analytics)
                 ai_block = run_analytics.get("ai") if isinstance(run_analytics.get("ai"), dict) else {}
@@ -2020,6 +2082,12 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
                             "run_end_t": end_anchor.get("t"),
                             "run_end_s": end_anchor.get("s"),
                             "learned_input_params": learned_input_params or None,
+                            "learned_input_params_source": learned_input_params_source,
+                            "learned_input_params_status": (
+                                "captured_from_run_start_log"
+                                if has_runstart_initial_params
+                                else "run_start_params_marker_missing"
+                            ),
                         }
                     )
                     continue
@@ -2143,6 +2211,8 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
                         "run_end_t": None,
                         "run_end_s": None,
                         "learned_input_params": baseline_learned_input_params or None,
+                        "learned_input_params_source": "baseline_config",
+                        "learned_input_params_status": "baseline_reference_values",
                     }
                 )
 
@@ -3034,7 +3104,13 @@ def list_reusable_models():
     try:
         items = model_registry.load_models_index()
         items = sorted(items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
-        return {"models": items}
+        enriched: list[dict[str, Any]] = []
+        for item in items:
+            enriched.append({
+                **item,
+                "ai_profile": model_registry.resolve_model_ai_profile(item),
+            })
+        return {"models": enriched}
     except Exception as exc:
         logger.error("Error listing reusable models: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to list reusable models")
@@ -3188,6 +3264,8 @@ def elevate_project_run_model(project_id: str, run_id: str, payload: ElevateMode
             resolved = run_cfg.get("resolved_params") if isinstance(run_cfg.get("resolved_params"), dict) else {}
             if str(resolved.get("start_model_mode") or "").strip().lower() == "reuse":
                 source_model_id = str(resolved.get("source_model_id") or "").strip() or None
+                if not source_model_id:
+                    source_model_id = _resolve_source_model_id_from_run_ancestry(project_dir, run_id)
 
         parent_model_record = model_registry.resolve_reusable_model(source_model_id or "") if source_model_id else None
         is_inplace_update = bool(parent_model_record and source_model_id)
@@ -3494,11 +3572,16 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
             raise HTTPException(status_code=400, detail=f"Invalid training engine: {engine}")
         params_payload["engine"] = engine
 
+        session_execution_mode, is_session_test = apply_session_execution_mode_overrides(
+            requested_params,
+            params_payload,
+        )
+
         # Optional AI input mode for initial presets in core_ai_optimization.
         mode_value = str(params_payload.get("mode") or "baseline").strip().lower()
         tune_scope_value = str(params_payload.get("tune_scope") or "").strip().lower()
         requested_ai_input_mode = str(requested_params.get("ai_input_mode") or "").strip().lower()
-        requested_preset_override = str(requested_params.get("ai_preset_override") or "").strip().lower()
+        requested_preset_override = "" if is_session_test else str(requested_params.get("ai_preset_override") or "").strip().lower()
         requested_selector_strategy = str(requested_params.get("ai_selector_strategy") or "").strip().lower()
         valid_ai_input_modes = {
             "exif_only",
@@ -3542,35 +3625,38 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
                 params_payload["ai_input_mode"] = chosen_mode
 
                 baseline_session_id = str(requested_params.get("baseline_session_id") or "").strip()
-                if not baseline_session_id:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="baseline_session_id is required for core_ai_optimization with ai_input_mode.",
-                    )
+                if not is_session_test:
+                    if not baseline_session_id:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="baseline_session_id is required for core_ai_optimization with ai_input_mode.",
+                        )
 
-                baseline_run_dir = project_dir / "runs" / baseline_session_id
-                if not baseline_run_dir.exists() or not baseline_run_dir.is_dir():
-                    raise HTTPException(status_code=404, detail="Selected baseline session not found")
+                    baseline_run_dir = project_dir / "runs" / baseline_session_id
+                    if not baseline_run_dir.exists() or not baseline_run_dir.is_dir():
+                        raise HTTPException(status_code=404, detail="Selected baseline session not found")
 
-                baseline_eval_path = baseline_run_dir / "outputs" / "engines" / "gsplat" / "eval_history.json"
-                if not baseline_eval_path.exists():
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Selected baseline session has no gsplat eval history",
-                    )
+                    baseline_eval_path = baseline_run_dir / "outputs" / "engines" / "gsplat" / "eval_history.json"
+                    if not baseline_eval_path.exists():
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Selected baseline session has no gsplat eval history",
+                        )
 
-                baseline_run_cfg = _read_json_if_exists(baseline_run_dir / "run_config.json")
-                baseline_mode = str(
-                    (baseline_run_cfg.get("resolved_params") or {}).get("mode")
-                    or (baseline_run_cfg.get("requested_params") or {}).get("mode")
-                    or ""
-                ).strip().lower()
-                if baseline_mode and baseline_mode != "baseline":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Selected baseline session must be a baseline-mode run",
-                    )
-                params_payload["baseline_session_id"] = baseline_session_id
+                    baseline_run_cfg = _read_json_if_exists(baseline_run_dir / "run_config.json")
+                    baseline_mode = str(
+                        (baseline_run_cfg.get("resolved_params") or {}).get("mode")
+                        or (baseline_run_cfg.get("requested_params") or {}).get("mode")
+                        or ""
+                    ).strip().lower()
+                    if baseline_mode and baseline_mode != "baseline":
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Selected baseline session must be a baseline-mode run",
+                        )
+                    params_payload["baseline_session_id"] = baseline_session_id
+                else:
+                    params_payload.pop("baseline_session_id", None)
                 chosen_strategy = requested_selector_strategy or str(params_payload.get("ai_selector_strategy") or "").strip().lower()
                 if chosen_strategy not in valid_selector_strategies:
                     chosen_strategy = "preset_bias"
@@ -3599,8 +3685,10 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
 
         project_model_key: str | None = requested_project_model_key or None
         project_model_name: str | None = requested_project_model_name or None
+        inherited_test_ai_input_mode: str | None = None
+        inherited_test_ai_selector_strategy: str | None = None
 
-        start_model_mode = str(requested_params.get("start_model_mode") or "scratch").strip().lower()
+        start_model_mode = "reuse" if is_session_test else str(requested_params.get("start_model_mode") or "scratch").strip().lower()
         if start_model_mode not in {"scratch", "reuse"}:
             raise HTTPException(status_code=400, detail="start_model_mode must be 'scratch' or 'reuse'")
 
@@ -3638,6 +3726,13 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
                 if not isinstance(model_record, dict):
                     raise HTTPException(status_code=404, detail="Reusable model not found")
 
+                if is_session_test:
+                    inherited_test_profile = model_registry.resolve_model_ai_profile(model_record)
+                    inherited_test_ai_input_mode = str(inherited_test_profile.get("ai_input_mode") or "").strip().lower() or None
+                    inherited_test_ai_selector_strategy = (
+                        str(inherited_test_profile.get("ai_selector_strategy") or "").strip().lower() or None
+                    )
+
                 checkpoint_path = Path(str((model_record.get("paths") or {}).get("checkpoint") or "")).expanduser()
                 if not checkpoint_path.exists():
                     raise HTTPException(status_code=400, detail="Reusable model checkpoint file is missing")
@@ -3661,6 +3756,21 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
                 if not project_model_name and source_series_name:
                     project_model_name = source_series_name
 
+                if is_session_test:
+                    source_cfg = _read_json_if_exists(source_run_dir / "run_config.json")
+                    if isinstance(source_cfg, dict):
+                        source_requested = source_cfg.get("requested_params") if isinstance(source_cfg.get("requested_params"), dict) else {}
+                        source_resolved = source_cfg.get("resolved_params") if isinstance(source_cfg.get("resolved_params"), dict) else {}
+                        source_mode = str(source_resolved.get("mode") or source_requested.get("mode") or "").strip().lower()
+                        source_scope = str(source_resolved.get("tune_scope") or source_requested.get("tune_scope") or "").strip().lower()
+                        if source_mode == "modified" and source_scope == "core_ai_optimization":
+                            inherited_test_ai_input_mode = str(
+                                source_resolved.get("ai_input_mode") or source_requested.get("ai_input_mode") or ""
+                            ).strip().lower() or inherited_test_ai_input_mode
+                            inherited_test_ai_selector_strategy = str(
+                                source_resolved.get("ai_selector_strategy") or source_requested.get("ai_selector_strategy") or ""
+                            ).strip().lower() or inherited_test_ai_selector_strategy
+
             params_payload["start_model_mode"] = "reuse"
             params_payload["source_model_checkpoint"] = str(checkpoint_path)
         else:
@@ -3681,22 +3791,63 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
         if project_model_key:
             params_payload["project_model_key"] = project_model_key
 
+        if (
+            is_session_test
+            and engine == "gsplat"
+            and str(params_payload.get("mode") or "").strip().lower() == "modified"
+            and str(params_payload.get("tune_scope") or "").strip().lower() == "core_ai_optimization"
+        ):
+            chosen_test_ai_mode = requested_ai_input_mode or inherited_test_ai_input_mode or ""
+            if chosen_test_ai_mode:
+                if chosen_test_ai_mode not in valid_ai_input_modes:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "ai_input_mode must be one of: exif_only, exif_plus_flight_plan, "
+                            "exif_plus_flight_plan_plus_external"
+                        ),
+                    )
+                params_payload["ai_input_mode"] = chosen_test_ai_mode
+                chosen_test_strategy = (
+                    requested_selector_strategy
+                    or inherited_test_ai_selector_strategy
+                    or str(params_payload.get("ai_selector_strategy") or "").strip().lower()
+                )
+                if chosen_test_strategy not in valid_selector_strategies:
+                    chosen_test_strategy = "preset_bias"
+                params_payload["ai_selector_strategy"] = chosen_test_strategy
+            else:
+                params_payload.pop("ai_input_mode", None)
+                params_payload.pop("ai_selector_strategy", None)
+            params_payload.pop("baseline_session_id", None)
+            params_payload.pop("ai_preset_override", None)
+
         # Optional sequential batch orchestration.
         try:
             run_count = int(requested_params.get("run_count") or 1)
         except Exception:
             run_count = 1
+        if is_session_test:
+            run_count = 1
         if run_count < 1:
             run_count = 1
 
         warmup_at_start = bool(requested_params.get("warmup_at_start", False))
+        if is_session_test:
+            warmup_at_start = False
 
         # Restart-from-scratch is scoped to one existing selected session.
         # Never treat restart_fresh requests as batch orchestration.
         if bool(requested_params.get("restart_fresh")):
             run_count = 1
 
-        if warmup_at_start:
+        if is_session_test:
+            logger.info(
+                "Session execution mode is test for %s; bypassing train orchestration (warmup/batch).",
+                project_id,
+            )
+
+        if (not is_session_test) and warmup_at_start:
             if bool(requested_params.get("resume")):
                 raise HTTPException(status_code=400, detail="Warmup start does not support resume.")
             if bool(requested_params.get("restart_fresh")):
@@ -3778,7 +3929,7 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
         # Orchestration-only flag; do not pass to worker runtime.
         params_payload.pop("warmup_at_start", None)
 
-        if run_count > 1:
+        if (not is_session_test) and run_count > 1:
             if bool(requested_params.get("resume")):
                 raise HTTPException(status_code=400, detail="Batch resume is not supported. Use Batch Continue from a fresh start.")
 

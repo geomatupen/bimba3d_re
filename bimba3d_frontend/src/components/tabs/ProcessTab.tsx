@@ -8,6 +8,7 @@ import { api } from "../../api/client";
 import ViewerTab from "./ViewerTab";
 import SparseViewer from "../SparseViewer.tsx";
 import ConfirmModal from "../ConfirmModal";
+import CoreAiSessionTestControls, { type SessionExecutionMode } from "./CoreAiSessionTestControls";
 
 // Small Info wrapper: render a smaller info icon throughout the modal
 const Info = (props: React.ComponentProps<typeof LucideInfo>) => (
@@ -185,6 +186,11 @@ interface ReusableModelEntry {
   source_project_id?: string | null;
   source_run_id?: string | null;
   created_at?: string | null;
+  ai_profile?: {
+    pipeline_kind?: "controller" | "input_mode" | null;
+    ai_input_mode?: AiInputMode | null;
+    ai_selector_strategy?: AiSelectorStrategy | null;
+  } | null;
 }
 
 const extractSnapshotStep = (name?: string): number | null => {
@@ -555,6 +561,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const [runJitterMax, setRunJitterMax] = useState<number>(cfg.run_jitter_max ?? 1.5);
   const [continueOnFailure, setContinueOnFailure] = useState<boolean>(cfg.continue_on_failure ?? true);
   const [startModelMode, setStartModelMode] = useState<StartModelMode>(cfg.start_model_mode === "reuse" ? "reuse" : "scratch");
+  const [sessionExecutionMode, setSessionExecutionMode] = useState<SessionExecutionMode>(
+    (cfg as Record<string, unknown>).session_execution_mode === "test" ? "test" : "train"
+  );
   const [projectModelName, setProjectModelName] = useState<string>(cfg.project_model_name ?? "");
   const [sourceModelId, setSourceModelId] = useState<string>(cfg.source_model_id ?? "");
   const [reusableModels, setReusableModels] = useState<ReusableModelEntry[]>([]);
@@ -607,11 +616,51 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   const showCoreAiSessionControls =
     engine === "gsplat" && mode === "modified" && tuneScope === "core_ai_optimization";
   const hasAiInputModeFlow = showCoreAiSessionControls && Boolean(aiInputMode);
+  const hasAiInputModeTrainFlow = hasAiInputModeFlow && sessionExecutionMode === "train";
   const hasLegacyControllerFlow = showCoreAiSessionControls && !aiInputMode;
+  const isSessionTestMode = showCoreAiSessionControls && sessionExecutionMode === "test";
+  const effectiveStartModelMode: StartModelMode = isSessionTestMode ? "reuse" : startModelMode;
+  const effectiveWarmupAtStart = showCoreAiSessionControls && !isSessionTestMode ? warmupAtStart : false;
+  const effectiveRunCount = showCoreAiSessionControls && !isSessionTestMode ? runCount : 1;
   const showManualModifiedTuneControls = engine === "gsplat" && mode === "modified" && !showCoreAiSessionControls;
   const showManualDensificationControls = engine === "gsplat" && !showCoreAiSessionControls;
-  const showBatchActions = showCoreAiSessionControls && !warmupAtStart && runCount > 1;
-  const isReusableWarmStartSelected = startModelMode === "reuse" && Boolean(sourceModelId);
+  const showBatchActions = showCoreAiSessionControls && !effectiveWarmupAtStart && effectiveRunCount > 1;
+  const isReusableWarmStartSelected = effectiveStartModelMode === "reuse" && Boolean(sourceModelId);
+  const modeCompatibleReusableModels = useMemo(() => {
+    if (!showCoreAiSessionControls) {
+      return reusableModels;
+    }
+
+    return reusableModels.filter((item) => {
+      const profile = item.ai_profile && typeof item.ai_profile === "object" ? item.ai_profile : {};
+      const pipelineKind = String(profile.pipeline_kind || "").trim().toLowerCase();
+      const modelAiMode = String(profile.ai_input_mode || "").trim().toLowerCase();
+      const modelSelector = String(profile.ai_selector_strategy || "").trim().toLowerCase();
+
+      if (!hasAiInputModeFlow) {
+        return pipelineKind === "controller";
+      }
+
+      if (!aiInputMode || modelAiMode !== aiInputMode) {
+        return false;
+      }
+
+      if (!aiSelectorStrategy) {
+        return true;
+      }
+
+      return modelSelector === aiSelectorStrategy;
+    });
+  }, [
+    showCoreAiSessionControls,
+    reusableModels,
+    hasAiInputModeFlow,
+    aiInputMode,
+    aiSelectorStrategy,
+  ]);
+  const modeModelEmptyLabel = hasAiInputModeFlow
+    ? "No reusable models match selected EXIF mode + selector strategy"
+    : "No reusable models match controller pipeline";
 
   const tuneScopeDropdownValue: TuneScopeDropdownValue =
     tuneScope === "core_ai_optimization"
@@ -676,6 +725,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     run_jitter_min: 'Random mode only: lower bound for per-run random jitter multiplier (applied from run 2 onward). Bounds: minimum 0.000001, no frontend hard max. If min > max, backend auto-swaps.',
     run_jitter_max: 'Random mode only: upper bound for per-run random jitter multiplier (applied from run 2 onward). Bounds: minimum 0.000001, no frontend hard max. If max < min, backend auto-swaps.',
     continue_on_failure: 'If enabled, remaining runs continue even when one run fails/stops.',
+    session_execution_mode: 'Session intent for Core AI optimization. Train keeps warmup/batch controls. Test hides those controls and requires selecting one reusable model.',
     start_model_mode: 'Choose training initialization mode. Scratch starts a new project-scoped model series. Reuse continues the active project-scoped series unless a global elevated model is selected below.',
     project_model_name: 'Optional display name for the project-scoped model series. If empty, run name is used. New series keys are created only when start mode is Scratch.',
     source_model_id: 'Optional global elevated model for warm-start. Leave empty to reuse the latest checkpoint from the active project-scoped model series.',
@@ -831,12 +881,12 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   }, [selectedRunId]);
 
   useEffect(() => {
-    if (!hasAiInputModeFlow) return;
+    if (!hasAiInputModeTrainFlow) return;
     const valid = baselineCandidateRuns.some((r) => r.run_id === baselineSessionIdForAi);
     if (!valid) {
       setBaselineSessionIdForAi(baselineCandidateRuns[0]?.run_id || "");
     }
-  }, [hasAiInputModeFlow, baselineCandidateRuns, baselineSessionIdForAi]);
+  }, [hasAiInputModeTrainFlow, baselineCandidateRuns, baselineSessionIdForAi]);
 
   const applyTrainingDefaults = (defaults: ReturnType<typeof getDefaultProcessConfig>) => {
       setSaveBestSplat(typeof defaults.saveBestSplat === "boolean" ? defaults.saveBestSplat : false);
@@ -857,6 +907,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     setRunJitterMin(defaults.run_jitter_min ?? 0.5);
     setRunJitterMax(defaults.run_jitter_max ?? 1.5);
     setContinueOnFailure(defaults.continue_on_failure ?? true);
+    setSessionExecutionMode("train");
     setStartModelMode(defaults.start_model_mode ?? "scratch");
     setProjectModelName(defaults.project_model_name ?? "");
     setSourceModelId(defaults.source_model_id ?? "");
@@ -937,6 +988,9 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         setAiSelectorStrategy(resolved.ai_selector_strategy as AiSelectorStrategy);
       }
       if (typeof resolved.baseline_session_id === "string") setBaselineSessionIdForAi(resolved.baseline_session_id);
+      if (resolved.session_execution_mode === "train" || resolved.session_execution_mode === "test") {
+        setSessionExecutionMode(resolved.session_execution_mode as SessionExecutionMode);
+      }
       if (typeof resolved.warmup_at_start === "boolean") setWarmupAtStart(resolved.warmup_at_start);
       if (typeof resolved.run_count === "number") setRunCount(Math.max(1, Math.floor(resolved.run_count)));
       if (resolved.run_jitter_mode === "fixed" || resolved.run_jitter_mode === "random") {
@@ -1076,16 +1130,17 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       ai_input_mode: aiInputMode,
       ai_selector_strategy: aiSelectorStrategy,
       baseline_session_id: baselineSessionIdForAi,
-      warmup_at_start: warmupAtStart,
-      run_count: runCount,
-      run_jitter_mode: runJitterMode,
-      run_jitter_factor: runJitterFactor,
-      run_jitter_min: runJitterMin,
-      run_jitter_max: runJitterMax,
-      continue_on_failure: continueOnFailure,
-      start_model_mode: startModelMode,
-      project_model_name: projectModelName,
-      source_model_id: sourceModelId,
+      warmup_at_start: effectiveWarmupAtStart,
+      run_count: effectiveRunCount,
+      run_jitter_mode: sessionExecutionMode === "train" ? runJitterMode : undefined,
+      run_jitter_factor: sessionExecutionMode === "train" ? runJitterFactor : undefined,
+      run_jitter_min: sessionExecutionMode === "train" ? runJitterMin : undefined,
+      run_jitter_max: sessionExecutionMode === "train" ? runJitterMax : undefined,
+      continue_on_failure: sessionExecutionMode === "train" ? continueOnFailure : undefined,
+      session_execution_mode: sessionExecutionMode,
+      start_model_mode: effectiveStartModelMode,
+      project_model_name: sessionExecutionMode === "train" ? projectModelName : "",
+      source_model_id: effectiveStartModelMode === "reuse" ? sourceModelId : "",
       engine,
       max_steps: maxSteps,
       log_interval: logInterval,
@@ -1117,7 +1172,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       litegs_alpha_shrink: litegsAlphaShrink,
     };
     localStorage.setItem(getTrainingConfigStorageKey(selectedRunId), JSON.stringify(config));
-  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, trendScope, aiInputMode, baselineSessionIdForAi, warmupAtStart, runCount, runJitterMode, runJitterFactor, runJitterMin, runJitterMax, continueOnFailure, startModelMode, projectModelName, sourceModelId, engine, maxSteps, logInterval, splatInterval, bestSplatInterval, bestSplatStartStep, saveBestSplat, autoEarlyStop, earlyStopMonitorInterval, earlyStopDecisionPoints, earlyStopMinEvalPoints, earlyStopMinStepRatio, earlyStopMonitorMinRelativeImprovement, earlyStopEvalMinRelativeImprovement, earlyStopMaxVolatilityRatio, earlyStopEmaAlpha, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
+  }, [mode, tuneStartStep, tuneMinImprovement, tuneEndStep, tuneInterval, tuneScope, trendScope, aiInputMode, baselineSessionIdForAi, warmupAtStart, runCount, runJitterMode, runJitterFactor, runJitterMin, runJitterMax, continueOnFailure, sessionExecutionMode, startModelMode, projectModelName, sourceModelId, engine, maxSteps, logInterval, splatInterval, bestSplatInterval, bestSplatStartStep, saveBestSplat, autoEarlyStop, earlyStopMonitorInterval, earlyStopDecisionPoints, earlyStopMinEvalPoints, earlyStopMinStepRatio, earlyStopMonitorMinRelativeImprovement, earlyStopEvalMinRelativeImprovement, earlyStopMaxVolatilityRatio, earlyStopEmaAlpha, pngInterval, evalInterval, saveInterval, sparsePreference, sparseMergeSelection, densifyFromIter, densifyUntilIter, densificationInterval, densifyGradThreshold, opacityThreshold, lambdaDssim, litegsTargetPrimitives, litegsAlphaShrink, selectedRunId, getTrainingConfigStorageKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1148,6 +1203,19 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       cancelled = true;
     };
   }, [projectId]);
+
+  useEffect(() => {
+    if (!showCoreAiSessionControls) {
+      return;
+    }
+    if (sourceModelId && !modeCompatibleReusableModels.some((item) => item.model_id === sourceModelId)) {
+      setSourceModelId("");
+    }
+  }, [
+    showCoreAiSessionControls,
+    sourceModelId,
+    modeCompatibleReusableModels,
+  ]);
 
   // Persist shared image/COLMAP config once per project.
   useEffect(() => {
@@ -2633,8 +2701,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     const effectiveModeForIntent = engine === "gsplat" ? mode : "baseline";
     const includeSessionControlsForIntent =
       engine === "gsplat" && effectiveModeForIntent === "modified" && tuneScope === "core_ai_optimization";
-    const isWarmupStart = includeSessionControlsForIntent && warmupAtStart;
-    const wantsBatchStart = includeSessionControlsForIntent && !warmupAtStart && runCount > 1;
+    const isWarmupStart = includeSessionControlsForIntent && effectiveWarmupAtStart;
+    const wantsBatchStart = includeSessionControlsForIntent && !effectiveWarmupAtStart && effectiveRunCount > 1;
     const isRestart = !isWarmupStart && !wantsBatchStart && Boolean(selectedRunIdAtStart);
     const shouldReuseSelectedSession = Boolean(selectedRunIdAtStart) && !wantsBatchStart && !isWarmupStart;
     const batchSeedRunId = wantsBatchStart && selectedRunExists ? selectedRunIdAtStart : "";
@@ -2670,12 +2738,12 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       return;
     }
 
-    if (showCoreAiSessionControls && startModelMode === "reuse" && !sourceModelId) {
+    if (showCoreAiSessionControls && effectiveStartModelMode === "reuse" && !sourceModelId) {
       setError("Select a reusable model or switch start mode to scratch.");
       setProcessing(false);
       return;
     }
-    if (hasAiInputModeFlow && !baselineSessionIdForAi) {
+    if (hasAiInputModeTrainFlow && !baselineSessionIdForAi) {
       setError("Select a completed baseline session for comparison.");
       setProcessing(false);
       return;
@@ -2699,8 +2767,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       const effectiveMode = engine === "gsplat" ? mode : "baseline";
       const includeSessionControls =
         engine === "gsplat" && effectiveMode === "modified" && tuneScope === "core_ai_optimization";
-      const includeBatchControls = includeSessionControls && !warmupAtStart && runCount > 1;
-      const includeWarmupControls = includeSessionControls && warmupAtStart;
+      const includeBatchControls = includeSessionControls && !effectiveWarmupAtStart && effectiveRunCount > 1;
+      const includeWarmupControls = includeSessionControls && effectiveWarmupAtStart;
       const res = await api.post(`/projects/${projectId}/process`, {
         run_name: runNameForRequest,
         restart_fresh: isRestart,
@@ -2711,34 +2779,35 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         tune_interval: effectiveMode === "modified" ? tuneInterval : undefined,
         tune_scope: effectiveMode === "modified" ? tuneScope : undefined,
         trend_scope:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && !aiInputMode
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && !aiInputMode && sessionExecutionMode === "train"
             ? trendScope
             : undefined,
         ai_input_mode:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode && sessionExecutionMode === "train"
             ? aiInputMode
             : undefined,
         ai_selector_strategy:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && sessionExecutionMode === "train"
             ? aiSelectorStrategy
             : undefined,
         baseline_session_id:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode && sessionExecutionMode === "train"
             ? (baselineSessionIdForAi || undefined)
             : undefined,
-        warmup_at_start: includeSessionControls ? warmupAtStart : undefined,
-        run_count: includeBatchControls || includeWarmupControls ? runCount : 1,
+        session_execution_mode: includeSessionControls ? sessionExecutionMode : undefined,
+        warmup_at_start: includeSessionControls ? effectiveWarmupAtStart : undefined,
+        run_count: includeBatchControls || includeWarmupControls ? effectiveRunCount : 1,
         run_jitter_mode: includeBatchControls ? runJitterMode : undefined,
         run_jitter_factor: includeBatchControls ? runJitterFactor : undefined,
         run_jitter_min: includeBatchControls ? runJitterMin : undefined,
         run_jitter_max: includeBatchControls ? runJitterMax : undefined,
         continue_on_failure: includeBatchControls ? continueOnFailure : undefined,
-        start_model_mode: includeSessionControls ? startModelMode : undefined,
+        start_model_mode: includeSessionControls ? effectiveStartModelMode : undefined,
         project_model_name:
-          includeSessionControls && !isReusableWarmStartSelected
+          includeSessionControls && sessionExecutionMode === "train" && !isReusableWarmStartSelected
             ? (projectModelName.trim() || runNameForRequest || selectedRunId || undefined)
             : undefined,
-        source_model_id: includeSessionControls && startModelMode === "reuse" ? sourceModelId || undefined : undefined,
+        source_model_id: includeSessionControls && effectiveStartModelMode === "reuse" ? sourceModelId || undefined : undefined,
         stage,
         engine,
         max_steps: maxSteps,
@@ -2842,12 +2911,12 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       setProcessing(false);
       return;
     }
-    if (showCoreAiSessionControls && startModelMode === "reuse" && !sourceModelId) {
+    if (showCoreAiSessionControls && effectiveStartModelMode === "reuse" && !sourceModelId) {
       setError("Select a reusable model or switch start mode to scratch.");
       setProcessing(false);
       return;
     }
-    if (hasAiInputModeFlow && !baselineSessionIdForAi) {
+    if (hasAiInputModeTrainFlow && !baselineSessionIdForAi) {
       setError("Select a completed baseline session for comparison.");
       setProcessing(false);
       return;
@@ -2876,34 +2945,35 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
         tune_interval: effectiveMode === "modified" ? tuneInterval : undefined,
         tune_scope: effectiveMode === "modified" ? tuneScope : undefined,
         trend_scope:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && !aiInputMode
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && !aiInputMode && sessionExecutionMode === "train"
             ? trendScope
             : undefined,
         ai_input_mode:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode && sessionExecutionMode === "train"
             ? aiInputMode
             : undefined,
         ai_selector_strategy:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization"
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && sessionExecutionMode === "train"
             ? aiSelectorStrategy
             : undefined,
         baseline_session_id:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode && sessionExecutionMode === "train"
             ? (baselineSessionIdForAi || undefined)
             : undefined,
-        warmup_at_start: includeSessionControls ? warmupAtStart : undefined,
-        run_count: includeSessionControls ? runCount : undefined,
-        run_jitter_mode: includeSessionControls ? runJitterMode : undefined,
-        run_jitter_factor: includeSessionControls ? runJitterFactor : undefined,
-        run_jitter_min: includeSessionControls ? runJitterMin : undefined,
-        run_jitter_max: includeSessionControls ? runJitterMax : undefined,
-        continue_on_failure: includeSessionControls ? continueOnFailure : undefined,
-        start_model_mode: includeSessionControls ? startModelMode : undefined,
+        session_execution_mode: includeSessionControls ? sessionExecutionMode : undefined,
+        warmup_at_start: includeSessionControls ? effectiveWarmupAtStart : undefined,
+        run_count: includeSessionControls ? effectiveRunCount : undefined,
+        run_jitter_mode: includeSessionControls && sessionExecutionMode === "train" ? runJitterMode : undefined,
+        run_jitter_factor: includeSessionControls && sessionExecutionMode === "train" ? runJitterFactor : undefined,
+        run_jitter_min: includeSessionControls && sessionExecutionMode === "train" ? runJitterMin : undefined,
+        run_jitter_max: includeSessionControls && sessionExecutionMode === "train" ? runJitterMax : undefined,
+        continue_on_failure: includeSessionControls && sessionExecutionMode === "train" ? continueOnFailure : undefined,
+        start_model_mode: includeSessionControls ? effectiveStartModelMode : undefined,
         project_model_name:
-          includeSessionControls && !isReusableWarmStartSelected
+          includeSessionControls && sessionExecutionMode === "train" && !isReusableWarmStartSelected
             ? (projectModelName.trim() || selectedRunId || newRunName.trim() || undefined)
             : undefined,
-        source_model_id: includeSessionControls && startModelMode === "reuse" ? sourceModelId || undefined : undefined,
+        source_model_id: includeSessionControls && effectiveStartModelMode === "reuse" ? sourceModelId || undefined : undefined,
         stage: resumeStage,
         engine,
         max_steps: maxSteps,
@@ -3074,19 +3144,20 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       trend_scope: tuneScope === "core_ai_optimization" && !aiInputMode ? trendScope : undefined,
       ai_input_mode: tuneScope === "core_ai_optimization" && aiInputMode ? aiInputMode : undefined,
       ai_selector_strategy:
-        tuneScope === "core_ai_optimization" ? aiSelectorStrategy : undefined,
+        tuneScope === "core_ai_optimization" && sessionExecutionMode === "train" ? aiSelectorStrategy : undefined,
       baseline_session_id:
-        tuneScope === "core_ai_optimization" && aiInputMode ? (baselineSessionIdForAi || undefined) : undefined,
-      warmup_at_start: showCoreAiSessionControls ? warmupAtStart : undefined,
-      run_count: runCount,
-      run_jitter_mode: runJitterMode,
-      run_jitter_factor: runJitterFactor,
-      run_jitter_min: runJitterMin,
-      run_jitter_max: runJitterMax,
-      continue_on_failure: continueOnFailure,
-      start_model_mode: startModelMode,
-      project_model_name: isReusableWarmStartSelected ? undefined : (projectModelName || undefined),
-      source_model_id: sourceModelId || undefined,
+        tuneScope === "core_ai_optimization" && aiInputMode && sessionExecutionMode === "train" ? (baselineSessionIdForAi || undefined) : undefined,
+      warmup_at_start: showCoreAiSessionControls ? effectiveWarmupAtStart : undefined,
+      run_count: effectiveRunCount,
+      run_jitter_mode: sessionExecutionMode === "train" ? runJitterMode : undefined,
+      run_jitter_factor: sessionExecutionMode === "train" ? runJitterFactor : undefined,
+      run_jitter_min: sessionExecutionMode === "train" ? runJitterMin : undefined,
+      run_jitter_max: sessionExecutionMode === "train" ? runJitterMax : undefined,
+      continue_on_failure: sessionExecutionMode === "train" ? continueOnFailure : undefined,
+      session_execution_mode: showCoreAiSessionControls ? sessionExecutionMode : undefined,
+      start_model_mode: effectiveStartModelMode,
+      project_model_name: sessionExecutionMode === "train" && !isReusableWarmStartSelected ? (projectModelName || undefined) : undefined,
+      source_model_id: effectiveStartModelMode === "reuse" ? (sourceModelId || undefined) : undefined,
       stage: "train_only",
       engine,
       max_steps: maxSteps,
@@ -3131,19 +3202,20 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       trend_scope: tuneScope === "core_ai_optimization" && !aiInputMode ? trendScope : undefined,
       ai_input_mode: tuneScope === "core_ai_optimization" && aiInputMode ? aiInputMode : undefined,
       ai_selector_strategy:
-        tuneScope === "core_ai_optimization" ? aiSelectorStrategy : undefined,
+        tuneScope === "core_ai_optimization" && sessionExecutionMode === "train" ? aiSelectorStrategy : undefined,
       baseline_session_id:
-        tuneScope === "core_ai_optimization" && aiInputMode ? (baselineSessionIdForAi || undefined) : undefined,
-      warmup_at_start: showCoreAiSessionControls ? warmupAtStart : undefined,
-      run_count: runCount,
-      run_jitter_mode: runJitterMode,
-      run_jitter_factor: runJitterFactor,
-      run_jitter_min: runJitterMin,
-      run_jitter_max: runJitterMax,
-      continue_on_failure: continueOnFailure,
-      start_model_mode: startModelMode,
-      project_model_name: isReusableWarmStartSelected ? "" : projectModelName,
-      source_model_id: sourceModelId,
+        tuneScope === "core_ai_optimization" && aiInputMode && sessionExecutionMode === "train" ? (baselineSessionIdForAi || undefined) : undefined,
+      warmup_at_start: showCoreAiSessionControls ? effectiveWarmupAtStart : undefined,
+      run_count: effectiveRunCount,
+      run_jitter_mode: sessionExecutionMode === "train" ? runJitterMode : undefined,
+      run_jitter_factor: sessionExecutionMode === "train" ? runJitterFactor : undefined,
+      run_jitter_min: sessionExecutionMode === "train" ? runJitterMin : undefined,
+      run_jitter_max: sessionExecutionMode === "train" ? runJitterMax : undefined,
+      continue_on_failure: sessionExecutionMode === "train" ? continueOnFailure : undefined,
+      session_execution_mode: showCoreAiSessionControls ? sessionExecutionMode : undefined,
+      start_model_mode: effectiveStartModelMode,
+      project_model_name: sessionExecutionMode === "train" && !isReusableWarmStartSelected ? projectModelName : "",
+      source_model_id: effectiveStartModelMode === "reuse" ? sourceModelId : "",
       engine,
       max_steps: maxSteps,
       log_interval: logInterval,
@@ -5069,6 +5141,17 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                   <span className="text-[10px] text-blue-700">Core AI optimization only</span>
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                  <CoreAiSessionTestControls
+                                    sessionExecutionMode={sessionExecutionMode}
+                                    onSessionExecutionModeChange={setSessionExecutionMode}
+                                    sourceModelId={sourceModelId}
+                                    onSourceModelIdChange={setSourceModelId}
+                                    reusableModels={modeCompatibleReusableModels}
+                                    reusableModelsLoading={reusableModelsLoading}
+                                    reusableModelsError={reusableModelsError}
+                                    emptyStateLabel={modeModelEmptyLabel}
+                                    onSelectInfoKey={setSelectedInfoKey}
+                                  />
                                   {/* Always show trend scope and baseline session */}
                                   {hasLegacyControllerFlow && (
                                     <div className="md:col-span-2">
@@ -5087,7 +5170,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                       <p className="mt-1 text-[10px] text-slate-500">Run = one trend across all steps. Phase = separate trend per phase.</p>
                                     </div>
                                   )}
-                                  {hasAiInputModeFlow && (
+                                  {hasAiInputModeTrainFlow && (
                                     <div className="md:col-span-2">
                                       <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
                                         <span>AI selector strategy</span>
@@ -5104,7 +5187,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                       <p className="mt-1 text-[10px] text-slate-500">Continuous bandit uses bounded continuous multipliers instead of fixed preset templates.</p>
                                     </div>
                                   )}
-                                  {hasAiInputModeFlow && (
+                                  {hasAiInputModeTrainFlow && (
                                     <div className="md:col-span-2">
                                       <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
                                         <span>Baseline session (required)</span>
@@ -5125,6 +5208,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                       <p className="mt-1 text-[10px] text-slate-500">Used as reference for baseline-relative scoring.</p>
                                     </div>
                                   )}
+                                  {sessionExecutionMode === "train" && (
+                                  <>
                                   <div className="md:col-span-2">
                                     <label className="inline-flex items-center gap-2 text-[11px] font-medium text-slate-700">
                                       <input
@@ -5300,20 +5385,20 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                         <select
                                           value={sourceModelId}
                                           onChange={(e) => setSourceModelId(e.target.value)}
-                                          disabled={startModelMode !== "reuse" || reusableModelsLoading || reusableModels.length === 0}
+                                          disabled={startModelMode !== "reuse" || reusableModelsLoading || modeCompatibleReusableModels.length === 0}
                                           className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-slate-100 disabled:text-slate-500"
                                         >
                                           <option value="">
                                             {reusableModelsLoading
                                               ? "Loading models..."
-                                              : reusableModels.length > 0
+                                              : modeCompatibleReusableModels.length > 0
                                                 ? "Select reusable model"
-                                                : "No elevated models available"}
+                                                : modeModelEmptyLabel}
                                           </option>
-                                          {sourceModelId && !reusableModels.some((item) => item.model_id === sourceModelId) && (
+                                          {sourceModelId && !modeCompatibleReusableModels.some((item) => item.model_id === sourceModelId) && (
                                             <option value={sourceModelId}>{sourceModelId} (saved)</option>
                                           )}
-                                          {reusableModels.map((item) => (
+                                          {modeCompatibleReusableModels.map((item) => (
                                             <option key={item.model_id} value={item.model_id}>
                                               {item.model_name || item.model_id}
                                             </option>
@@ -5324,6 +5409,8 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                         )}
                                       </div>
                                     </>
+                                  </>
+                                  )}
                                 </div>
                               </div>
                             )}

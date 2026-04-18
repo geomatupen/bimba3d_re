@@ -22,6 +22,11 @@ interface ModelItem {
     unique_project_count?: number;
     project_names?: string[];
   } | null;
+  ai_profile?: {
+    pipeline_kind?: "controller" | "input_mode" | null;
+    ai_input_mode?: "exif_only" | "exif_plus_flight_plan" | "exif_plus_flight_plan_plus_external" | null;
+    ai_selector_strategy?: "preset_bias" | "continuous_bandit_linear" | null;
+  } | null;
 }
 
 interface ModelLineageDetail {
@@ -78,6 +83,33 @@ const formatSize = (bytes?: number) => {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+};
+
+const buildModelProfileBadges = (model?: ModelItem | null): string[] => {
+  const profile = model?.ai_profile && typeof model.ai_profile === "object" ? model.ai_profile : null;
+  if (!profile) return ["pipeline: unknown"];
+
+  const pipeline = String(profile.pipeline_kind || "").trim().toLowerCase();
+  const aiMode = String(profile.ai_input_mode || "").trim().toLowerCase();
+  const selector = String(profile.ai_selector_strategy || "").trim().toLowerCase();
+
+  const badges: string[] = [];
+  if (pipeline === "input_mode") {
+    badges.push("pipeline: input mode");
+  } else if (pipeline === "controller") {
+    badges.push("pipeline: controller");
+  } else {
+    badges.push("pipeline: unknown");
+  }
+
+  if (aiMode) {
+    badges.push(`ai mode: ${aiMode}`);
+  }
+  if (selector) {
+    badges.push(`selector: ${selector}`);
+  }
+
+  return badges;
 };
 
 export default function ModelRegistryTab({ projectId }: ModelRegistryTabProps) {
@@ -213,6 +245,23 @@ export default function ModelRegistryTab({ projectId }: ModelRegistryTabProps) {
     if (!showOnlyCurrentProject) return source;
     return source.filter((item) => item?.project_id === projectId);
   }, [detail, showOnlyCurrentProject, projectId]);
+
+  const contributorsByProject = useMemo(() => {
+    const buckets = new Map<string, { projectLabel: string; runs: Array<{ contributorId: string; runId: string; capturedAt?: string }> }>();
+    for (const item of displayedContributors) {
+      const projectIdValue = String(item?.project_id || "").trim();
+      const projectLabel = String(item?.project_name || projectIdValue || "Unknown project").trim();
+      const bucketKey = projectIdValue || projectLabel;
+      if (!buckets.has(bucketKey)) {
+        buckets.set(bucketKey, { projectLabel, runs: [] });
+      }
+      const runId = String(item?.run_id || "unknown-run").trim();
+      const contributorId = String(item?.contributor_id || `${bucketKey}:${runId}`).trim();
+      const capturedAt = typeof item?.captured_at === "string" ? item.captured_at : undefined;
+      buckets.get(bucketKey)?.runs.push({ contributorId, runId, capturedAt });
+    }
+    return Array.from(buckets.values());
+  }, [displayedContributors]);
 
   const displayedConfigProjects = useMemo(() => {
     const source = Array.isArray(detail?.configs?.projects) ? detail?.configs?.projects : [];
@@ -455,9 +504,24 @@ export default function ModelRegistryTab({ projectId }: ModelRegistryTabProps) {
                     ) : (
                       models.map((model) => (
                         <div key={`quick_${model.model_id}`} className="px-2 py-1 flex items-center justify-between gap-2">
-                          <span className="text-xs text-slate-700 truncate" title={model.model_name || model.model_id}>
-                            {model.model_name || model.model_id}
-                          </span>
+                          <div className="min-w-0">
+                            <p className="text-xs text-slate-700 truncate" title={model.model_name || model.model_id}>
+                              {model.model_name || model.model_id}
+                            </p>
+                            <p className="mt-0.5 text-[10px] text-slate-500 truncate" title={`${model.source?.project_name || model.source?.project_id || "Unknown project"} / ${model.source?.run_id || "unknown-run"}`}>
+                              {`${model.source?.project_name || model.source?.project_id || "Unknown project"} / ${model.source?.run_id || "unknown-run"}`}
+                            </p>
+                            <div className="mt-0.5 flex flex-wrap gap-1">
+                              {buildModelProfileBadges(model).map((badge) => (
+                                <span
+                                  key={`${model.model_id}_${badge}`}
+                                  className="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-700"
+                                >
+                                  {badge}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
                           <div className="relative shrink-0">
                             <button
                               type="button"
@@ -635,26 +699,41 @@ export default function ModelRegistryTab({ projectId }: ModelRegistryTabProps) {
                     <p className="text-xs font-semibold text-slate-500">Model</p>
                     <p className="font-semibold text-slate-900">{detail.model?.model_name || detail.model?.model_id || "-"}</p>
                     <p className="text-xs text-slate-600 mt-1">Created: {toLocaleDate(detail.model?.created_at)}</p>
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {buildModelProfileBadges(detail.model).map((badge) => (
+                        <span
+                          key={`detail_${detail.model?.model_id || "unknown"}_${badge}`}
+                          className="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-700"
+                        >
+                          {badge}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                   <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
                     <p className="text-xs font-semibold text-slate-500">Provenance Summary</p>
-                    <p className="text-slate-900">Contributors: {detail.provenance_summary?.contributor_count ?? 0}</p>
+                    <p className="text-slate-900">Contributor Runs: {detail.provenance_summary?.contributor_count ?? 0}</p>
                     <p className="text-slate-900">Projects: {detail.provenance_summary?.unique_project_count ?? 0}</p>
                   </div>
                 </div>
 
                 <div>
-                  <h4 className="text-sm font-semibold text-slate-900 mb-2">Contributors</h4>
+                  <h4 className="text-sm font-semibold text-slate-900 mb-2">Contributors (Grouped by Project)</h4>
                   <div className="max-h-48 overflow-auto rounded-md border border-slate-200 divide-y divide-slate-100 bg-white">
-                    {displayedContributors.length === 0 ? (
+                    {contributorsByProject.length === 0 ? (
                       <div className="px-3 py-2 text-xs text-slate-500">No contributors match this filter.</div>
                     ) : (
-                      displayedContributors.map((contributor) => (
-                        <div key={contributor.contributor_id || `${contributor.project_id}:${contributor.run_id}`} className="px-3 py-2 text-xs">
-                          <p className="font-semibold text-slate-800">
-                            {contributor.project_name || contributor.project_id || "Unknown project"} / {contributor.run_id || "unknown-run"}
-                          </p>
-                          <p className="text-slate-500">Captured: {toLocaleDate(contributor.captured_at)}</p>
+                      contributorsByProject.map((projectBucket) => (
+                        <div key={`project_bucket_${projectBucket.projectLabel}`} className="px-3 py-2 text-xs">
+                          <p className="font-semibold text-slate-800">{projectBucket.projectLabel}</p>
+                          <div className="mt-1 ml-2 space-y-1 border-l border-slate-200 pl-2">
+                            {projectBucket.runs.map((run) => (
+                              <div key={run.contributorId}>
+                                <p className="text-slate-700">{run.runId}</p>
+                                <p className="text-slate-500">Captured: {toLocaleDate(run.capturedAt)}</p>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       ))
                     )}

@@ -129,6 +129,8 @@ interface AILearningTableRow {
   run_end_t?: number | null;
   run_end_s?: number | null;
   learned_input_params?: Record<string, unknown> | null;
+  learned_input_params_source?: string | null;
+  learned_input_params_status?: string | null;
 }
 
 function buildPolylinePoints(points: ChartPoint[], width: number, height: number): ChartGeometry {
@@ -933,6 +935,23 @@ export default function LogsTab({ projectId }: LogsTabProps) {
       .join("\n");
   };
 
+  const fmtLearnedParamSource = (source: string | null | undefined, status: string | null | undefined) => {
+    const normalized = String(source || "").trim().toLowerCase();
+    if (normalized === "run_start_log") {
+      return "source: run-start log";
+    }
+    if (normalized === "missing_run_start_log") {
+      return "source: missing run-start marker";
+    }
+    if (normalized === "baseline_config") {
+      return "source: baseline config";
+    }
+    if (status && String(status).trim()) {
+      return `source: ${String(status).trim()}`;
+    }
+    return "source: unknown";
+  };
+
   return (
     <div className="max-w-6xl">
       <div className="bg-white rounded-xl shadow-md border border-gray-200">
@@ -1200,7 +1219,10 @@ export default function LogsTab({ projectId }: LogsTabProps) {
                               <div className="text-[10px] text-slate-500">{row.run_id}</div>
                             </td>
                             <td className="px-2 py-2 text-slate-700">{row.selected_preset || "-"}</td>
-                            <td className="px-2 py-2 text-slate-700 font-mono text-[10px] whitespace-pre-wrap break-words max-w-[360px]">{fmtLearnedParams(row.learned_input_params)}</td>
+                            <td className="px-2 py-2 text-slate-700 font-mono text-[10px] whitespace-pre-wrap break-words max-w-[360px]">
+                              <div>{fmtLearnedParams(row.learned_input_params)}</div>
+                              <div className="mt-1 text-[10px] font-sans text-slate-500">{fmtLearnedParamSource(row.learned_input_params_source, row.learned_input_params_status)}</div>
+                            </td>
                             <td className="px-2 py-2 text-slate-700">{fmt(row.best_loss)} @ {fmtStep(row.best_loss_step)}</td>
                             <td className="px-2 py-2 text-slate-700">{fmt(row.final_loss)} @ {fmtStep(row.final_loss_step)}</td>
                             <td className="px-2 py-2 text-slate-700">{fmt(row.best_psnr, 4)} @ {fmtStep(row.best_psnr_step)}</td>
