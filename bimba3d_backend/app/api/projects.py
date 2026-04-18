@@ -130,6 +130,17 @@ EXIF_ONLY_INPUT_X_KEYS = {
     "img_size_missing",
 }
 
+SELECTOR_OWNED_LEARNED_KEYS = [
+    "feature_lr",
+    "position_lr_init",
+    "scaling_lr",
+    "opacity_lr",
+    "rotation_lr",
+    "densify_grad_threshold",
+    "opacity_threshold",
+    "lambda_dssim",
+]
+
 WARMUP_PHASE_PLAN = [
     {
         "name": "phase_a_explore",
@@ -1289,17 +1300,6 @@ def _extract_ai_run_insights(run_dir: Path | None, run_config: dict | None) -> d
 def _extract_learned_params_from_json(run_analytics: dict | None, run_config: dict | None) -> dict[str, Any]:
     """Extract learned params from canonical analytics JSON only."""
 
-    learned_keys = [
-        "feature_lr",
-        "position_lr_init",
-        "scaling_lr",
-        "opacity_lr",
-        "rotation_lr",
-        "densify_grad_threshold",
-        "opacity_threshold",
-        "lambda_dssim",
-    ]
-
     if not isinstance(run_analytics, dict):
         return {}
 
@@ -1311,9 +1311,79 @@ def _extract_learned_params_from_json(run_analytics: dict | None, run_config: di
 
     return {
         key: initial_params.get(key)
-        for key in learned_keys
+        for key in SELECTOR_OWNED_LEARNED_KEYS
         if initial_params.get(key) is not None
     }
+
+
+def _selector_initial_params_from_run_config(run_config: dict | None) -> dict[str, Any]:
+    if not isinstance(run_config, dict):
+        return {}
+
+    resolved_cfg = run_config.get("resolved_params") if isinstance(run_config.get("resolved_params"), dict) else {}
+    requested_cfg = run_config.get("requested_params") if isinstance(run_config.get("requested_params"), dict) else {}
+
+    out: dict[str, Any] = {}
+    for key in SELECTOR_OWNED_LEARNED_KEYS:
+        if resolved_cfg.get(key) is not None:
+            out[key] = resolved_cfg.get(key)
+        elif requested_cfg.get(key) is not None:
+            out[key] = requested_cfg.get(key)
+    return out
+
+
+def _ensure_analytics_ai_initial_params(
+    *,
+    run_dir: Path,
+    run_analytics: dict[str, Any] | None,
+    run_config: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Populate missing canonical AI insight fields in analytics from JSON sources once."""
+    if not isinstance(run_analytics, dict):
+        return run_analytics
+
+    ai_block = run_analytics.get("ai") if isinstance(run_analytics.get("ai"), dict) else None
+    if not isinstance(ai_block, dict):
+        return run_analytics
+
+    insight = ai_block.get("input_mode_insights") if isinstance(ai_block.get("input_mode_insights"), dict) else None
+    if not isinstance(insight, dict):
+        return run_analytics
+
+    ai_mode = str(insight.get("ai_input_mode") or "").strip().lower()
+    if not ai_mode:
+        return run_analytics
+
+    changed = False
+
+    existing_initial = insight.get("initial_params") if isinstance(insight.get("initial_params"), dict) else {}
+    has_any_existing = any(existing_initial.get(k) is not None for k in SELECTOR_OWNED_LEARNED_KEYS)
+    if not has_any_existing:
+        backfilled = _selector_initial_params_from_run_config(run_config)
+        if backfilled:
+            insight["initial_params"] = backfilled
+            changed = True
+
+    # Backfill feature_details from persisted mode cache JSON if missing.
+    existing_features = insight.get("feature_details") if isinstance(insight.get("feature_details"), dict) else {}
+    if not existing_features:
+        cache_path = run_dir.parent.parent / "outputs" / "ai_input_modes" / f"{ai_mode}.json"
+        cache_payload = _read_json_if_exists(cache_path)
+        if isinstance(cache_payload, dict):
+            cached_features = cache_payload.get("features") if isinstance(cache_payload.get("features"), dict) else {}
+            if cached_features:
+                insight["feature_details"] = cached_features
+                if not isinstance(insight.get("feature_source"), str) or not str(insight.get("feature_source")).strip():
+                    insight["feature_source"] = "cache"
+                changed = True
+
+    if changed:
+        try:
+            _write_json_atomic(run_dir / "analytics" / "run_analytics_v1.json", run_analytics)
+        except Exception as exc:
+            logger.warning("Failed to persist AI insight backfill for %s: %s", run_dir, exc)
+
+    return run_analytics
 
 
 def _extract_training_rows(lines: list[str], row_limit: int, from_start: bool = False) -> list[dict[str, Any]]:
@@ -1878,6 +1948,11 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
             run_id = run_dir.name
             run_config = _read_json_if_exists(run_dir / "run_config.json")
             run_analytics = _read_run_analytics(run_dir)
+            run_analytics = _ensure_analytics_ai_initial_params(
+                run_dir=run_dir,
+                run_analytics=run_analytics if isinstance(run_analytics, dict) else None,
+                run_config=run_config if isinstance(run_config, dict) else None,
+            )
             learned_input_params = _extract_learned_params_from_json(
                 run_analytics if isinstance(run_analytics, dict) else None,
                 run_config if isinstance(run_config, dict) else None,
@@ -4117,6 +4192,11 @@ def get_project_telemetry(
         run_log_path = run_dir / "processing.log"
         run_config_path = run_dir / "run_config.json"
         run_analytics = _read_run_analytics(run_dir)
+        run_analytics = _ensure_analytics_ai_initial_params(
+            run_dir=run_dir,
+            run_analytics=run_analytics if isinstance(run_analytics, dict) else None,
+            run_config=_read_json_if_exists(run_config_path),
+        )
 
         def _slice_rows(rows: list[dict[str, Any]], limit: int, take_from_start: bool) -> list[dict[str, Any]]:
             if limit <= 0 or len(rows) <= limit:
