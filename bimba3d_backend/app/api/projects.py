@@ -550,7 +550,13 @@ def _ensure_run_analytics(
     # are guaranteed to have canonical analytics JSON generated during training.
     existing = _read_run_analytics(run_dir)
     if isinstance(existing, dict):
-        return existing
+        existing_metrics = _analytics_metrics(existing)
+        has_eval_metrics = any(
+            existing_metrics.get(key) is not None
+            for key in ("best_psnr", "final_psnr", "best_ssim", "final_ssim", "best_lpips", "final_lpips")
+        )
+        if has_eval_metrics:
+            return existing
 
     learning_payload = _read_json_if_exists(run_dir / "outputs" / "engines" / "gsplat" / "input_mode_learning_results.json")
     if not isinstance(learning_payload, dict):
@@ -715,6 +721,15 @@ def _read_batch_lineage(project_dir: Path) -> dict | None:
 
 def _write_batch_lineage(project_dir: Path, payload: dict) -> None:
     target = _get_batch_lineage_path(project_dir)
+    
+    # Merge with existing batch lineage to preserve all historical successful runs
+    existing = _read_json_if_exists(target)
+    if isinstance(existing, dict):
+        existing_ids = set(str(x or "").strip() for x in (existing.get("successful_run_ids") or []) if str(x or "").strip())
+        new_ids = set(str(x or "").strip() for x in (payload.get("successful_run_ids") or []) if str(x or "").strip())
+        merged_ids = sorted(existing_ids | new_ids)
+        payload["successful_run_ids"] = merged_ids
+    
     tmp = target.with_suffix(target.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
@@ -1061,6 +1076,7 @@ def _clear_restart_artifacts(
         targets.append(run_dir / "outputs" / "sparse")
     if clear_training:
         targets.append(run_dir / "outputs" / "engines")
+        targets.append(run_dir / "analytics")
 
     if clear_project_level:
         if clear_colmap:
@@ -2042,10 +2058,6 @@ def _extract_loss_summary_from_log(path: Path) -> dict[str, Any]:
     except Exception:
         pass
 
-    if best_loss_value is None and final_loss_value is not None:
-        best_loss_value = final_loss_value
-        best_loss_step = final_loss_step
-
     return {
         "best_loss_step": best_loss_step,
         "best_loss": best_loss_value,
@@ -2130,6 +2142,7 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
         for run_dir in sorted([p for p in runs_dir.iterdir() if p.is_dir()], key=lambda p: p.name):
             run_id = run_dir.name
             run_config = _read_json_if_exists(run_dir / "run_config.json")
+            learning_payload = _read_json_if_exists(run_dir / "outputs" / "engines" / "gsplat" / "input_mode_learning_results.json")
             ai_insights_fallback = _extract_ai_run_insights(
                 run_dir,
                 run_config if isinstance(run_config, dict) else None,
@@ -2141,7 +2154,14 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
             )
             has_runstart_initial_params = any(fallback_initial.get(k) is not None for k in SELECTOR_OWNED_LEARNED_KEYS)
             run_analytics = _read_run_analytics(run_dir)
-            if not isinstance(run_analytics, dict):
+            needs_run_analytics_backfill = not isinstance(run_analytics, dict)
+            if isinstance(run_analytics, dict):
+                metrics_preview = _analytics_metrics(run_analytics)
+                needs_run_analytics_backfill = not any(
+                    metrics_preview.get(key) is not None
+                    for key in ("best_psnr", "final_psnr", "best_ssim", "final_ssim", "best_lpips", "final_lpips")
+                )
+            if needs_run_analytics_backfill:
                 run_analytics = _ensure_run_analytics(
                     run_dir=run_dir,
                     run_config=run_config if isinstance(run_config, dict) else None,
@@ -2152,6 +2172,11 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
                 run_analytics=run_analytics if isinstance(run_analytics, dict) else None,
                 run_config=run_config if isinstance(run_config, dict) else None,
             )
+            learning_transition = learning_payload.get("transition") if isinstance(learning_payload, dict) and isinstance(learning_payload.get("transition"), dict) else {}
+            learning_outcomes = learning_transition.get("outcomes") if isinstance(learning_transition, dict) and isinstance(learning_transition.get("outcomes"), dict) else {}
+            learning_baseline_comparison = learning_transition.get("baseline_comparison") if isinstance(learning_transition, dict) and isinstance(learning_transition.get("baseline_comparison"), dict) else {}
+            learning_best_anchor = learning_outcomes.get("best_anchor") if isinstance(learning_outcomes, dict) else {}
+            learning_end_anchor = learning_outcomes.get("end_anchor") if isinstance(learning_outcomes, dict) else {}
             learned_input_params = _extract_learned_params_from_json(
                 run_analytics if isinstance(run_analytics, dict) else None,
                 run_config if isinstance(run_config, dict) else None,
@@ -2171,14 +2196,72 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
                 best_anchor = outcomes.get("best_anchor") if isinstance(outcomes.get("best_anchor"), dict) else {}
                 end_anchor = outcomes.get("end_anchor") if isinstance(outcomes.get("end_anchor"), dict) else {}
                 insight = ai_block.get("input_mode_insights") if isinstance(ai_block.get("input_mode_insights"), dict) else {}
+                ai_insights_map = ai_insights_fallback if isinstance(ai_insights_fallback, dict) else {}
+                baseline_session_id = (
+                    str(insight.get("baseline_session_id") or "").strip()
+                    or str(ai_insights_map.get("baseline_session_id") or "").strip()
+                    or str((run_config.get("resolved_params") if isinstance(run_config, dict) and isinstance(run_config.get("resolved_params"), dict) else {}).get("baseline_session_id") or "").strip()
+                    or str((run_config.get("requested_params") if isinstance(run_config, dict) and isinstance(run_config.get("requested_params"), dict) else {}).get("baseline_session_id") or "").strip()
+                    or None
+                )
 
-                if insight.get("ai_input_mode") or input_mode_learning:
+                # Prefer latest on-disk learning payload to avoid stale values
+                # when a run is restarted with the same run id.
+                if isinstance(learning_payload, dict):
+                    input_mode_learning = learning_payload
+                if isinstance(learning_transition, dict):
+                    transition = learning_transition
+                if isinstance(learning_outcomes, dict):
+                    outcomes = learning_outcomes
+                if isinstance(learning_baseline_comparison, dict):
+                    baseline_comparison = learning_baseline_comparison
+                if isinstance(learning_best_anchor, dict):
+                    best_anchor = learning_best_anchor
+                if isinstance(learning_end_anchor, dict):
+                    end_anchor = learning_end_anchor
+
+                if not insight and isinstance(run_analytics.get("ai"), dict) and isinstance(run_analytics.get("ai", {}).get("input_mode_insights"), dict):
+                    insight = run_analytics.get("ai", {}).get("input_mode_insights")  # type: ignore[assignment]
+
+                if insight.get("ai_input_mode") or input_mode_learning or learning_payload:
+                    has_baseline_comparison = bool(
+                        isinstance(baseline_comparison, dict)
+                        and any(
+                            baseline_comparison.get(key) is not None
+                            for key in ("s_base_best", "s_base_end", "s_base")
+                        )
+                    )
+                    remarks = None if has_baseline_comparison else "baseline missing"
+
+                    # During active runs, analytics can lag behind live logs.
+                    # Fill best/final loss columns from processing.log when missing.
+                    loss_summary = _extract_loss_summary_from_log(run_dir / "processing.log")
+                    best_loss_step = (
+                        metrics.get("best_loss_step")
+                        if metrics.get("best_loss_step") is not None
+                        else loss_summary.get("best_loss_step")
+                    )
+                    best_loss = (
+                        metrics.get("best_loss")
+                        if metrics.get("best_loss") is not None
+                        else loss_summary.get("best_loss")
+                    )
+                    final_loss_step = (
+                        metrics.get("final_loss_step")
+                        if metrics.get("final_loss_step") is not None
+                        else loss_summary.get("final_loss_step")
+                    )
+                    final_loss = (
+                        metrics.get("final_loss")
+                        if metrics.get("final_loss") is not None
+                        else loss_summary.get("final_loss")
+                    )
                     rows.append(
                         {
                             "run_id": run_id,
                             "run_name": run_analytics.get("run_name"),
                             "ai_input_mode": insight.get("ai_input_mode"),
-                            "baseline_run_id": insight.get("baseline_session_id"),
+                            "baseline_run_id": baseline_session_id,
                             "selected_preset": input_mode_learning.get("selected_preset") or insight.get("selected_preset"),
                             "phase": "phase_a" if run_id.startswith("warmup_phase_a") else (
                                 "phase_b" if run_id.startswith("warmup_phase_b") else (
@@ -2186,10 +2269,10 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
                                 )
                             ),
                             "is_warmup": run_id.startswith("warmup_phase_"),
-                            "best_loss_step": metrics.get("best_loss_step"),
-                            "best_loss": metrics.get("best_loss"),
-                            "final_loss_step": metrics.get("final_loss_step"),
-                            "final_loss": metrics.get("final_loss"),
+                            "best_loss_step": best_loss_step,
+                            "best_loss": best_loss,
+                            "final_loss_step": final_loss_step,
+                            "final_loss": final_loss,
                             "best_psnr_step": metrics.get("best_psnr_step"),
                             "best_psnr": metrics.get("best_psnr"),
                             "final_psnr_step": metrics.get("final_psnr_step"),
@@ -2202,27 +2285,28 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
                             "best_lpips": metrics.get("best_lpips"),
                             "final_lpips_step": metrics.get("final_lpips_step"),
                             "final_lpips": metrics.get("final_lpips"),
-                            "t_best": input_mode_learning.get("t_best"),
-                            "t_eval_best": input_mode_learning.get("t_eval_best"),
-                            "t_end": input_mode_learning.get("t_end"),
-                            "s_best": input_mode_learning.get("s_best"),
-                            "s_end": input_mode_learning.get("s_end"),
-                            "s_run": input_mode_learning.get("s_run"),
-                            "s_base_best": baseline_comparison.get("s_base_best"),
-                            "s_base_end": baseline_comparison.get("s_base_end"),
-                            "s_base": baseline_comparison.get("s_base"),
-                            "reward": input_mode_learning.get("reward_signal"),
-                            "baseline_best_anchor_step": baseline_comparison.get("baseline_best_anchor_step"),
-                            "baseline_end_anchor_step": baseline_comparison.get("baseline_end_anchor_step"),
-                            "score_weights": baseline_comparison.get("score_weights"),
-                            "run_best_l": best_anchor.get("l"),
-                            "run_best_q": best_anchor.get("q"),
-                            "run_best_t": best_anchor.get("t"),
-                            "run_best_s": best_anchor.get("s"),
-                            "run_end_l": end_anchor.get("l"),
-                            "run_end_q": end_anchor.get("q"),
-                            "run_end_t": end_anchor.get("t"),
-                            "run_end_s": end_anchor.get("s"),
+                            "t_best": (input_mode_learning.get("t_best") if isinstance(input_mode_learning, dict) else None) if has_baseline_comparison else None,
+                            "t_eval_best": (input_mode_learning.get("t_eval_best") if isinstance(input_mode_learning, dict) else None) if has_baseline_comparison else None,
+                            "t_end": (input_mode_learning.get("t_end") if isinstance(input_mode_learning, dict) else None) if has_baseline_comparison else None,
+                            "s_best": (input_mode_learning.get("s_best") if isinstance(input_mode_learning, dict) else None) if has_baseline_comparison else None,
+                            "s_end": (input_mode_learning.get("s_end") if isinstance(input_mode_learning, dict) else None) if has_baseline_comparison else None,
+                            "s_run": (input_mode_learning.get("s_run") if isinstance(input_mode_learning, dict) else None) if has_baseline_comparison else None,
+                            "s_base_best": (baseline_comparison.get("s_base_best") if isinstance(baseline_comparison, dict) else None) if has_baseline_comparison else None,
+                            "s_base_end": (baseline_comparison.get("s_base_end") if isinstance(baseline_comparison, dict) else None) if has_baseline_comparison else None,
+                            "s_base": (baseline_comparison.get("s_base") if isinstance(baseline_comparison, dict) else None) if has_baseline_comparison else None,
+                            "reward": (input_mode_learning.get("reward_signal") if isinstance(input_mode_learning, dict) else None) if has_baseline_comparison else None,
+                            "baseline_best_anchor_step": (baseline_comparison.get("baseline_best_anchor_step") if isinstance(baseline_comparison, dict) else None) if has_baseline_comparison else None,
+                            "baseline_end_anchor_step": (baseline_comparison.get("baseline_end_anchor_step") if isinstance(baseline_comparison, dict) else None) if has_baseline_comparison else None,
+                            "score_weights": (baseline_comparison.get("score_weights") if isinstance(baseline_comparison, dict) else None) if has_baseline_comparison else None,
+                            "run_best_l": (best_anchor.get("l") if isinstance(best_anchor, dict) else None) if has_baseline_comparison else None,
+                            "run_best_q": (best_anchor.get("q") if isinstance(best_anchor, dict) else None) if has_baseline_comparison else None,
+                            "run_best_t": (best_anchor.get("t") if isinstance(best_anchor, dict) else None) if has_baseline_comparison else None,
+                            "run_best_s": (best_anchor.get("s") if isinstance(best_anchor, dict) else None) if has_baseline_comparison else None,
+                            "run_end_l": (end_anchor.get("l") if isinstance(end_anchor, dict) else None) if has_baseline_comparison else None,
+                            "run_end_q": (end_anchor.get("q") if isinstance(end_anchor, dict) else None) if has_baseline_comparison else None,
+                            "run_end_t": (end_anchor.get("t") if isinstance(end_anchor, dict) else None) if has_baseline_comparison else None,
+                            "run_end_s": (end_anchor.get("s") if isinstance(end_anchor, dict) else None) if has_baseline_comparison else None,
+                            "remarks": remarks,
                             "learned_input_params": learned_input_params or None,
                             "learned_input_params_source": learned_input_params_source,
                             "learned_input_params_status": (
@@ -2343,7 +2427,7 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
                         "s_base_best": baseline_ref.get("s_base_best"),
                         "s_base_end": baseline_ref.get("s_base_end"),
                         "s_base": baseline_ref.get("s_base"),
-                        "reward": 0.0,
+                        "reward": None,
                         "run_best_l": None,
                         "run_best_q": None,
                         "run_best_t": None,
@@ -2352,6 +2436,7 @@ def _build_project_ai_learning_table(project_id: str) -> dict[str, Any]:
                         "run_end_q": None,
                         "run_end_t": None,
                         "run_end_s": None,
+                        "remarks": "baseline reference",
                         "learned_input_params": baseline_learned_input_params or None,
                         "learned_input_params_source": "baseline_config",
                         "learned_input_params_status": "baseline_reference_values",
@@ -3776,13 +3861,13 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
                 params_payload["ai_input_mode"] = chosen_mode
 
                 baseline_session_id = str(requested_params.get("baseline_session_id") or "").strip()
-                if not is_session_test:
-                    if not baseline_session_id:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="baseline_session_id is required for core_ai_optimization with ai_input_mode.",
-                        )
+                if not baseline_session_id and not is_session_test:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="baseline_session_id is required for core_ai_optimization with ai_input_mode.",
+                    )
 
+                if baseline_session_id:
                     baseline_run_dir = project_dir / "runs" / baseline_session_id
                     if not baseline_run_dir.exists() or not baseline_run_dir.is_dir():
                         raise HTTPException(status_code=404, detail="Selected baseline session not found")
@@ -3822,7 +3907,6 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
         else:
             params_payload.pop("ai_input_mode", None)
             params_payload.pop("ai_selector_strategy", None)
-            params_payload.pop("baseline_session_id", None)
             params_payload.pop("ai_preset_override", None)
 
         # Project-scoped model lineage is the default scope for run-to-run reuse.
@@ -3973,10 +4057,38 @@ def process_project(project_id: str, params: ProcessParams | None = Body(None)):
                 if chosen_test_strategy not in valid_selector_strategies:
                     chosen_test_strategy = "preset_bias"
                 params_payload["ai_selector_strategy"] = chosen_test_strategy
+
+                baseline_session_id_test = str(requested_params.get("baseline_session_id") or "").strip()
+                if baseline_session_id_test:
+                    baseline_run_dir_test = project_dir / "runs" / baseline_session_id_test
+                    if not baseline_run_dir_test.exists() or not baseline_run_dir_test.is_dir():
+                        raise HTTPException(status_code=404, detail="Selected baseline session not found")
+
+                    baseline_eval_path_test = baseline_run_dir_test / "outputs" / "engines" / "gsplat" / "eval_history.json"
+                    if not baseline_eval_path_test.exists():
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Selected baseline session has no gsplat eval history",
+                        )
+
+                    baseline_run_cfg_test = _read_json_if_exists(baseline_run_dir_test / "run_config.json")
+                    baseline_mode_test = str(
+                        (baseline_run_cfg_test.get("resolved_params") or {}).get("mode")
+                        or (baseline_run_cfg_test.get("requested_params") or {}).get("mode")
+                        or ""
+                    ).strip().lower()
+                    if baseline_mode_test and baseline_mode_test != "baseline":
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Selected baseline session must be a baseline-mode run",
+                        )
+                    params_payload["baseline_session_id"] = baseline_session_id_test
+                else:
+                    params_payload.pop("baseline_session_id", None)
             else:
                 params_payload.pop("ai_input_mode", None)
                 params_payload.pop("ai_selector_strategy", None)
-            params_payload.pop("baseline_session_id", None)
+                params_payload.pop("baseline_session_id", None)
             params_payload.pop("ai_preset_override", None)
 
         # Optional sequential batch orchestration.

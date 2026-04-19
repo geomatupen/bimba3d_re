@@ -159,6 +159,8 @@ def run_training(
     (engine_output_dir / "snapshots").mkdir(parents=True, exist_ok=True)
 
     p = dict(params or {})
+    session_execution_mode = str(p.get("session_execution_mode") or "train").strip().lower()
+    is_session_test_mode = session_execution_mode == "test"
 
     # Optional initial preset for core-ai runs; leaves legacy behavior unchanged
     # when ai_input_mode is not selected.
@@ -325,6 +327,7 @@ def run_training(
         and tune_scope == "core_ai_optimization"
         and bool(isinstance(preset_summary, dict) and preset_summary.get("applied"))
     )
+    allow_input_mode_learning_updates = bool(use_html_input_mode_flow and not is_session_test_mode)
 
     run_artifact_root = project_dir
     if configured_run_id:
@@ -1633,7 +1636,7 @@ def run_training(
             )
 
             input_mode_learning_payload = None
-            if use_html_input_mode_flow:
+            if allow_input_mode_learning_updates:
                 selected_preset = str((preset_summary or {}).get("selected_preset") or "")
                 yhat_scores = dict((preset_summary or {}).get("yhat_scores") or {})
                 mode_name = str((preset_summary or {}).get("mode") or "")
@@ -1883,6 +1886,7 @@ def run_training(
                             x_features=dict((preset_summary or {}).get("features") or {}),
                             run_id=run_session_id,
                             logger=logger,
+                            apply_update=allow_input_mode_learning_updates,
                         )
                     else:
                         input_mode_learning_payload = update_from_run(
@@ -1897,6 +1901,7 @@ def run_training(
                             x_features=dict((preset_summary or {}).get("features") or {}),
                             run_id=run_session_id,
                             logger=logger,
+                            apply_update=allow_input_mode_learning_updates,
                         )
                     write_json_atomic(
                         engine_output_dir / "input_mode_learning_results.json",
@@ -1912,6 +1917,10 @@ def run_training(
                                 "AI input-mode learner updated preset scores "
                                 f"(mode={mode_name}, preset={selected_preset})."
                             ),
+                        )
+                    elif is_session_test_mode:
+                        logger.info(
+                            "Session test mode: computed comparison metrics without updating input-mode learner state."
                         )
                 except Exception as exc:
                     logger.warning("Failed input-mode learner update: %s", exc)

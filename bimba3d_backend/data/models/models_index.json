@@ -1,42 +1,5 @@
 [
   {
-    "engine": "gsplat",
-    "created_at": "2026-04-05T09:34:32.282861Z",
-    "provenance_summary": {
-      "contributor_count": 1,
-      "unique_project_count": 1,
-      "project_names": [
-        "test5"
-      ]
-    },
-    "artifact_format": null,
-    "model_name": "test5_no_splat_copy",
-    "model_id": "model_20260405_093432_test5_no_splat_copy",
-    "paths": {
-      "checkpoint": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260405_093432_test5_no_splat_copy\\source_checkpoint.pt",
-      "artifact": null,
-      "model_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260405_093432_test5_no_splat_copy",
-      "configs_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260405_093432_test5_no_splat_copy\\configs",
-      "lineage": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260405_093432_test5_no_splat_copy\\lineage.json"
-    },
-    "source": {
-      "project_id": "624d2ef3-4824-4795-9177-66f5d9d7ecbd",
-      "project_name": "test5",
-      "run_id": "test5_session1"
-    }
-  },
-  {
-    "engine": "gsplat",
-    "created_at": "2026-04-08T18:46:14.960097Z",
-    "provenance_summary": {
-      "contributor_count": 3,
-      "unique_project_count": 1,
-      "project_names": [
-        "Test 7"
-      ]
-    },
-    "artifact_format": null,
-    "model_name": "model_b5740a69-5358-4702-a6d6-1bc57147e0a1_test-7_session2_run3",
     "model_id": "model_20260408_184614_model_b5740a69-5358-4702-a6d6-1bc57147e0a1_test-7_session2_run3",
     "paths": {
       "checkpoint": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260408_184614_model_b5740a69-5358-4702-a6d6-1bc57147e0a1_test-7_session2_run3\\source_checkpoint.pt",
@@ -45,24 +8,24 @@
       "configs_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260408_184614_model_b5740a69-5358-4702-a6d6-1bc57147e0a1_test-7_session2_run3\\configs",
       "lineage": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260408_184614_model_b5740a69-5358-4702-a6d6-1bc57147e0a1_test-7_session2_run3\\lineage.json"
     },
+    "provenance_summary": {
+      "contributor_count": 3,
+      "unique_project_count": 1,
+      "project_names": [
+        "Test 7"
+      ]
+    },
+    "artifact_format": null,
     "source": {
       "project_id": "b5740a69-5358-4702-a6d6-1bc57147e0a1",
       "project_name": "Test 7",
       "run_id": "test-7_session2_run3"
-    }
+    },
+    "engine": "gsplat",
+    "created_at": "2026-04-08T18:46:14.960097Z",
+    "model_name": "model_b5740a69-5358-4702-a6d6-1bc57147e0a1_test-7_session2_run3"
   },
   {
-    "engine": "gsplat",
-    "created_at": "2026-04-16T21:05:23.401335Z",
-    "provenance_summary": {
-      "contributor_count": 10,
-      "unique_project_count": 1,
-      "project_names": [
-        "Test New Method RJ add learn Densification Params after Reward bonus 0.002"
-      ]
-    },
-    "artifact_format": null,
-    "model_name": "exif_only_warmedup_first_try_phaseC_only",
     "model_id": "model_20260416_210523_exif_only_warmedup",
     "paths": {
       "checkpoint": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260416_210523_exif_only_warmedup\\source_checkpoint.pt",
@@ -71,10 +34,157 @@
       "configs_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260416_210523_exif_only_warmedup\\configs",
       "lineage": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260416_210523_exif_only_warmedup\\lineage.json"
     },
+    "provenance_summary": {
+      "contributor_count": 10,
+      "unique_project_count": 1,
+      "project_names": [
+        "Test New Method RJ add learn Densification Params after Reward bonus 0.002"
+      ]
+    },
+    "artifact_format": null,
     "source": {
       "project_id": "30fc203f-02fd-43c6-9df6-4b22eb2890f9",
       "project_name": "Test New Method RJ add learn Densification Params after Reward bonus 0.002",
       "run_id": "warmup_phase_c_adaptive_run3"
-    }
+    },
+    "engine": "gsplat",
+    "created_at": "2026-04-16T21:05:23.401335Z",
+    "model_name": "exif_only_warmedup_first_try_phaseC_only"
+  },
+  {
+    "model_id": "model_20260418_143137_train-jitter-preset",
+    "paths": {
+      "checkpoint": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_143137_train-jitter-preset\\source_checkpoint.pt",
+      "artifact": null,
+      "model_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_143137_train-jitter-preset",
+      "configs_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_143137_train-jitter-preset\\configs",
+      "lineage": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_143137_train-jitter-preset\\lineage.json"
+    },
+    "provenance_summary": {
+      "contributor_count": 7,
+      "unique_project_count": 1,
+      "project_names": [
+        "Train Preset"
+      ]
+    },
+    "artifact_format": null,
+    "source": {
+      "project_id": "c2ca619e-c6a6-4b1a-a201-1680f69ae3fc",
+      "project_name": "Train Preset",
+      "run_id": "warmup_phase_c_adaptive_run7"
+    },
+    "engine": "gsplat",
+    "created_at": "2026-04-18T14:31:37.425192Z",
+    "model_name": "train-jitter-preset"
+  },
+  {
+    "model_id": "model_20260418_181008_train-preset-5-after-jitter",
+    "paths": {
+      "checkpoint": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_181008_train-preset-5-after-jitter\\source_checkpoint.pt",
+      "artifact": null,
+      "model_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_181008_train-preset-5-after-jitter",
+      "configs_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_181008_train-preset-5-after-jitter\\configs",
+      "lineage": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_181008_train-preset-5-after-jitter\\lineage.json"
+    },
+    "provenance_summary": {
+      "contributor_count": 25,
+      "unique_project_count": 2,
+      "project_names": [
+        "Train Continuous Bandit",
+        "Train Continuous Bandit Podoli"
+      ]
+    },
+    "artifact_format": null,
+    "source": {
+      "project_id": "e2168dea-ce47-417b-9b41-dfe53a39b86f",
+      "project_name": "Train Continuous Bandit Podoli",
+      "run_id": "train-continuous-bandit-podoli_session1_run5"
+    },
+    "engine": "gsplat",
+    "created_at": "2026-04-18T18:10:08.668274Z",
+    "model_name": "train-continuous-bandit-podoli-without-jitter"
+  },
+  {
+    "model_id": "model_20260418_220834_train-continuous-bandit-podoli_with_jitter_april_19",
+    "paths": {
+      "checkpoint": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_220834_train-continuous-bandit-podoli_with_jitter_april_19\\source_checkpoint.pt",
+      "artifact": null,
+      "model_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_220834_train-continuous-bandit-podoli_with_jitter_april_19",
+      "configs_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_220834_train-continuous-bandit-podoli_with_jitter_april_19\\configs",
+      "lineage": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260418_220834_train-continuous-bandit-podoli_with_jitter_april_19\\lineage.json"
+    },
+    "provenance_summary": {
+      "contributor_count": 26,
+      "unique_project_count": 2,
+      "project_names": [
+        "Train Continuous Bandit",
+        "Train Continuous Bandit Podoli"
+      ]
+    },
+    "artifact_format": null,
+    "source": {
+      "project_id": "e2168dea-ce47-417b-9b41-dfe53a39b86f",
+      "project_name": "Train Continuous Bandit Podoli",
+      "run_id": "train-continuous-bandit-podoli_with_jitter_run9"
+    },
+    "engine": "gsplat",
+    "created_at": "2026-04-18T22:08:34.168617Z",
+    "model_name": "train-continuous-bandit-podoli_with_jitter_april_19"
+  },
+  {
+    "model_id": "model_20260419_075351_train-jitter-continuous-bandit_bilovec_april19_9-53am",
+    "paths": {
+      "checkpoint": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260419_075351_train-jitter-continuous-bandit_bilovec_april19_9-53am\\source_checkpoint.pt",
+      "artifact": null,
+      "model_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260419_075351_train-jitter-continuous-bandit_bilovec_april19_9-53am",
+      "configs_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260419_075351_train-jitter-continuous-bandit_bilovec_april19_9-53am\\configs",
+      "lineage": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260419_075351_train-jitter-continuous-bandit_bilovec_april19_9-53am\\lineage.json"
+    },
+    "provenance_summary": {
+      "contributor_count": 27,
+      "unique_project_count": 3,
+      "project_names": [
+        "Train Continuous Bandit",
+        "Train Continuous Bandit Podoli",
+        "3 - Train Continuous Bandit Bilovec"
+      ]
+    },
+    "artifact_format": null,
+    "source": {
+      "project_id": "1da69a44-08fa-49a6-b1f2-0beb5c3a933e",
+      "project_name": "3 - Train Continuous Bandit Bilovec",
+      "run_id": "train-jitter-continuous-bandit_run9"
+    },
+    "engine": "gsplat",
+    "created_at": "2026-04-19T07:53:51.415003Z",
+    "model_name": "train-jitter-continuous-bandit_bilovec_april19_9:53am"
+  },
+  {
+    "model_id": "model_20260419_080428_train-jitter-continuous-bandit_bilovec_april19_10am",
+    "paths": {
+      "checkpoint": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260419_080428_train-jitter-continuous-bandit_bilovec_april19_10am\\source_checkpoint.pt",
+      "artifact": null,
+      "model_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260419_080428_train-jitter-continuous-bandit_bilovec_april19_10am",
+      "configs_dir": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260419_080428_train-jitter-continuous-bandit_bilovec_april19_10am\\configs",
+      "lineage": "D:\\bimba3d-re\\bimba3d_backend\\data\\models\\model_20260419_080428_train-jitter-continuous-bandit_bilovec_april19_10am\\lineage.json"
+    },
+    "provenance_summary": {
+      "contributor_count": 29,
+      "unique_project_count": 3,
+      "project_names": [
+        "Train Continuous Bandit",
+        "Train Continuous Bandit Podoli",
+        "3 - Train Continuous Bandit Bilovec"
+      ]
+    },
+    "artifact_format": null,
+    "source": {
+      "project_id": "1da69a44-08fa-49a6-b1f2-0beb5c3a933e",
+      "project_name": "3 - Train Continuous Bandit Bilovec",
+      "run_id": "train-jitter-continuous-bandit_run10"
+    },
+    "engine": "gsplat",
+    "created_at": "2026-04-19T08:04:28.264716Z",
+    "model_name": "train-jitter-continuous-bandit_bilovec_april19_10am"
   }
 ]

@@ -128,6 +128,7 @@ interface AILearningTableRow {
   run_end_q?: number | null;
   run_end_t?: number | null;
   run_end_s?: number | null;
+  remarks?: string | null;
   learned_input_params?: Record<string, unknown> | null;
   learned_input_params_source?: string | null;
   learned_input_params_status?: string | null;
@@ -1038,7 +1039,7 @@ export default function LogsTab({ projectId }: LogsTabProps) {
               <div ref={logsEndRef} />
             </pre>
           ) : view === "ai" ? (
-            <div className="h-[600px] overflow-y-auto rounded-b-xl bg-slate-50">
+            <div className="h-[600px] overflow-hidden rounded-b-xl bg-slate-50">
               <div className="px-6 py-4 border-b border-gray-200 bg-white">
                 <div className="flex flex-wrap items-center gap-4">
                   <div className="flex items-center gap-2">
@@ -1178,36 +1179,37 @@ export default function LogsTab({ projectId }: LogsTabProps) {
                 This table shows all run-level values that influence AI learning scores (`S_run`, `S_base`, reward), including loss/metric summaries.
               </div>
               <div className="p-4">
-                <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
+                <div className="overflow-auto max-h-[520px] bg-white border border-gray-200 rounded-lg">
                   <table className="min-w-[2200px] w-full text-xs">
                     <thead className="bg-slate-100 text-slate-700">
                       <tr>
-                        <th className="px-2 py-2 text-left font-semibold">Run</th>
-                        <th className="px-2 py-2 text-left font-semibold">Preset</th>
-                        <th className="px-2 py-2 text-left font-semibold">Learned Input Params</th>
-                        <th className="px-2 py-2 text-left font-semibold">Best Loss</th>
-                        <th className="px-2 py-2 text-left font-semibold">Final Loss</th>
-                        <th className="px-2 py-2 text-left font-semibold">Best PSNR</th>
-                        <th className="px-2 py-2 text-left font-semibold">Final PSNR</th>
-                        <th className="px-2 py-2 text-left font-semibold">Best SSIM</th>
-                        <th className="px-2 py-2 text-left font-semibold">Final SSIM</th>
-                        <th className="px-2 py-2 text-left font-semibold">Best LPIPS</th>
-                        <th className="px-2 py-2 text-left font-semibold">Final LPIPS</th>
-                        <th className="px-2 py-2 text-left font-semibold">Run Best (l,q,t,s)</th>
-                        <th className="px-2 py-2 text-left font-semibold">Run End (l,q,t,s)</th>
-                        <th className="px-2 py-2 text-left font-semibold">S Best</th>
-                        <th className="px-2 py-2 text-left font-semibold">S End</th>
-                        <th className="px-2 py-2 text-left font-semibold">S Run</th>
-                        <th className="px-2 py-2 text-left font-semibold">S Base Best</th>
-                        <th className="px-2 py-2 text-left font-semibold">S Base End</th>
-                        <th className="px-2 py-2 text-left font-semibold">S Base</th>
-                        <th className="px-2 py-2 text-left font-semibold">Reward</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Run</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Preset</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Learned Input Params</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Best Loss</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Final Loss (- better)</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Best PSNR</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Final PSNR (+ better)</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Best SSIM</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Final SSIM (+ better)</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Best LPIPS</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Final LPIPS (- better)</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Run Best (l,q,t,s)</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Run End (l,q,t,s)</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">S Best</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">S End</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">S Run</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">S Base Best</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">S Base End</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">S Base</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Reward</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Remarks</th>
                       </tr>
                     </thead>
                     <tbody>
                       {aiLearningRows.length === 0 ? (
                         <tr>
-                          <td className="px-3 py-6 text-slate-500" colSpan={20}>
+                          <td className="px-3 py-6 text-slate-500" colSpan={21}>
                             {aiLearningMessage || "No AI learning rows available for this project yet."}
                           </td>
                         </tr>
@@ -1240,6 +1242,7 @@ export default function LogsTab({ projectId }: LogsTabProps) {
                             <td className="px-2 py-2 text-slate-700">{fmt(row.s_base_end, 6)}</td>
                             <td className="px-2 py-2 text-slate-700">{fmt(row.s_base, 6)}</td>
                             <td className="px-2 py-2 text-slate-700 font-semibold">{fmt(row.reward, 6)}</td>
+                            <td className="px-2 py-2 text-slate-700">{row.remarks || "-"}</td>
                           </tr>
                         ))
                       )}

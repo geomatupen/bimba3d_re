@@ -185,6 +185,7 @@ def update_from_run_continuous(
     x_features: dict[str, Any] | None,
     run_id: str,
     logger,
+    apply_update: bool = True,
 ) -> dict[str, Any]:
     if not eval_history:
         return {"updated": False, "reason": "no_eval_history"}
@@ -370,27 +371,28 @@ def update_from_run_continuous(
             },
         }
 
-    model = _load_model(project_dir)
-    entry = _mode_entry(model, mode)
-    means = entry.get("means", {})
-    runs = int(entry.get("runs", 0) or 0)
-    reward_mean = float(entry.get("reward_mean", 0.0) or 0.0)
+    if apply_update:
+        model = _load_model(project_dir)
+        entry = _mode_entry(model, mode)
+        means = entry.get("means", {})
+        runs = int(entry.get("runs", 0) or 0)
+        reward_mean = float(entry.get("reward_mean", 0.0) or 0.0)
 
-    delta = reward_signal - reward_mean
-    alpha = 1.0 / float(runs + 1)
-    reward_mean = reward_mean + alpha * delta
-    entry["reward_mean"] = reward_mean
-    entry["runs"] = runs + 1
+        delta = reward_signal - reward_mean
+        alpha = 1.0 / float(runs + 1)
+        reward_mean = reward_mean + alpha * delta
+        entry["reward_mean"] = reward_mean
+        entry["runs"] = runs + 1
 
-    eta = max(0.03, min(0.20, 0.20 / math.sqrt(float(runs + 1))))
-    for key in MULT_KEYS:
-        lo, hi = SAFE_BOUNDS[key]
-        cur = float(means.get(key, 1.0) or 1.0)
-        action = float(yhat_scores.get(key, cur) or cur)
-        # Move toward actions that generated positive reward, away when reward is negative.
-        cur = cur + eta * delta * (action - cur)
-        means[key] = float(clamp_float(cur, lo, hi))
-    entry["means"] = means
+        eta = max(0.03, min(0.20, 0.20 / math.sqrt(float(runs + 1))))
+        for key in MULT_KEYS:
+            lo, hi = SAFE_BOUNDS[key]
+            cur = float(means.get(key, 1.0) or 1.0)
+            action = float(yhat_scores.get(key, cur) or cur)
+            # Move toward actions that generated positive reward, away when reward is negative.
+            cur = cur + eta * delta * (action - cur)
+            means[key] = float(clamp_float(cur, lo, hi))
+        entry["means"] = means
 
     transition = {
         "x": dict(x_features or {}),
@@ -401,32 +403,43 @@ def update_from_run_continuous(
         "reward_signal": reward_signal,
     }
 
-    entry["last"] = {
-        "run_id": run_id,
-        "selected_preset": selected_preset,
-        "t_best": t_best,
-        "t_eval_best": t_eval_best,
-        "t_end": t_end,
-        "s_best": s_best,
-        "s_end": s_end,
-        "s_run": s_run,
-        "yhat_scores": yhat_scores,
-        "transition": transition,
-        "baseline_comparison": baseline_comparison,
-        "reward_signal": reward_signal,
-    }
+    if apply_update:
+        entry["last"] = {
+            "run_id": run_id,
+            "selected_preset": selected_preset,
+            "t_best": t_best,
+            "t_eval_best": t_eval_best,
+            "t_end": t_end,
+            "s_best": s_best,
+            "s_end": s_end,
+            "s_run": s_run,
+            "yhat_scores": yhat_scores,
+            "transition": transition,
+            "baseline_comparison": baseline_comparison,
+            "reward_signal": reward_signal,
+        }
 
-    _save_model(project_dir, model)
+        _save_model(project_dir, model)
 
-    logger.info(
-        "AI_INPUT_MODE_LEARN mode=%s preset=%s s_best=%.4f s_end=%.4f s_run=%.4f reward=%.4f",
-        mode,
-        selected_preset,
-        s_best,
-        s_end,
-        s_run,
-        reward_signal,
-    )
+        logger.info(
+            "AI_INPUT_MODE_LEARN mode=%s preset=%s s_best=%.4f s_end=%.4f s_run=%.4f reward=%.4f",
+            mode,
+            selected_preset,
+            s_best,
+            s_end,
+            s_run,
+            reward_signal,
+        )
+    else:
+        logger.info(
+            "AI_INPUT_MODE_COMPARE_ONLY mode=%s preset=%s s_best=%.4f s_end=%.4f s_run=%.4f reward=%.4f",
+            mode,
+            selected_preset,
+            s_best,
+            s_end,
+            s_run,
+            reward_signal,
+        )
     logger.info(
         "AI_INPUT_MODE_REWARD_OUTCOME mode=%s preset=%s reward=%.4f rewarded=%s",
         mode,
@@ -445,7 +458,7 @@ def update_from_run_continuous(
     )
 
     return {
-        "updated": True,
+        "updated": bool(apply_update),
         "mode": mode,
         "selected_preset": selected_preset,
         "t_best": t_best,
@@ -458,6 +471,7 @@ def update_from_run_continuous(
         "transition": transition,
         "baseline_comparison": baseline_comparison,
         "reward_signal": reward_signal,
+        "compare_only": not bool(apply_update),
     }
 
 

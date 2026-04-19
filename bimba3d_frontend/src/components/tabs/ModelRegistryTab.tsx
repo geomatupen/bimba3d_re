@@ -499,9 +499,9 @@ export default function ModelRegistryTab({ projectId }: ModelRegistryTabProps) {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-          <div className="lg:col-span-1 rounded-lg border border-slate-200 bg-slate-50 p-2.5 space-y-2">
-            {viewMode === "reusable" ? (
-              <>
+          {viewMode === "reusable" ? (
+            <>
+              <div className="lg:col-span-1 rounded-lg border border-slate-200 bg-slate-50 p-2.5 space-y-2">
                 <div>
                   <label className="block text-xs font-semibold text-slate-600 mb-1">Model</label>
                   <select
@@ -633,29 +633,178 @@ export default function ModelRegistryTab({ projectId }: ModelRegistryTabProps) {
                   />
                   Show only contributors from this project
                 </label>
-              </>
-            ) : (
-              <>
-                <div className="rounded-md border border-blue-200 bg-blue-50 px-2.5 py-2 text-xs text-blue-900">
+
+                {modelsError && (
+                  <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-2 py-1.5">
+                    {modelsError}
+                  </div>
+                )}
+              </div>
+              <div id="model-lineage-detail" className="lg:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                {!selectedModelId && <p className="text-sm text-slate-500">Select a model to inspect lineage and copied configs.</p>}                {detailLoading && (
+                  <p className="text-sm text-blue-700 inline-flex items-center gap-2">
+                    <Clock className="w-4 h-4 animate-pulse" />
+                    Loading lineage...
+                  </p>
+                )}
+                {detailError && (
+                  <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-2 py-1.5">
+                    {detailError}
+                  </div>
+                )}
+                {!detailLoading && !detailError && detail && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                      <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
+                        <p className="text-xs font-semibold text-slate-500">Model</p>
+                        <p className="font-semibold text-slate-900">{detail.model?.model_name || detail.model?.model_id || "-"}</p>
+                        <p className="text-xs text-slate-600 mt-1">Created: {toLocaleDate(detail.model?.created_at)}</p>
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {buildModelProfileBadges(detail.model).map((badge) => (
+                            <span
+                              key={`detail_${detail.model?.model_id || "unknown"}_${badge}`}
+                              className="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-700"
+                            >
+                              {badge}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
+                        <p className="text-xs font-semibold text-slate-500">Provenance Summary</p>
+                        <p className="text-slate-900">Contributor Runs: {detail.provenance_summary?.contributor_count ?? 0}</p>
+                        <p className="text-slate-900">Projects: {detail.provenance_summary?.unique_project_count ?? 0}</p>
+                      </div>
+                    </div>
+
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-900 mb-2">Contributors (Grouped by Project)</h4>
+                      <div className="max-h-48 overflow-auto rounded-md border border-slate-200 divide-y divide-slate-100 bg-white">
+                        {contributorsByProject.length === 0 ? (
+                          <div className="px-3 py-2 text-xs text-slate-500">No contributors match this filter.</div>
+                        ) : (
+                          contributorsByProject.map((projectBucket) => (
+                            <div key={`project_bucket_${projectBucket.projectLabel}`} className="px-3 py-2 text-xs">
+                              <p className="font-semibold text-slate-800">{projectBucket.projectLabel}</p>
+                              <div className="mt-1 ml-2 space-y-1 border-l border-slate-200 pl-2">
+                                {projectBucket.runs.map((run) => (
+                                  <div key={run.contributorId}>
+                                    <p className="text-slate-700">{run.runId}</p>
+                                    <p className="text-slate-500">Captured: {toLocaleDate(run.capturedAt)}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-900 mb-2 inline-flex items-center gap-2">
+                        <FolderTree className="w-4 h-4" />
+                        Copied Config Tree
+                      </h4>
+                      <div className="max-h-60 overflow-auto rounded-md border border-slate-200 divide-y divide-slate-100 bg-white">
+                        {displayedConfigProjects.length === 0 ? (
+                          <div className="px-3 py-2 text-xs text-slate-500">No copied config snapshots match this filter.</div>
+                        ) : (
+                          displayedConfigProjects.map((projectNode) => (
+                            <div key={projectNode.project_id} className="px-3 py-2">
+                              <p className="text-xs font-semibold text-slate-800">Project: {projectNode.project_id}</p>
+                              <div className="mt-1 space-y-1">
+                                {(projectNode.runs || []).map((runNode) => (
+                                  <div key={runNode.run_id} className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5">
+                                    <p className="text-xs font-medium text-slate-700">Run: {runNode.run_id}</p>
+                                    <ul className="mt-1 space-y-0.5">
+                                      {(runNode.files || []).map((file) => (
+                                        <li key={`${runNode.run_id}_${file.path}`} className="text-[11px] text-slate-600 flex items-center justify-between gap-2">
+                                          <span className="truncate">{file.name} ({formatSize(file.size)})</span>
+                                          <span className="inline-flex items-center gap-1 shrink-0">
+                                            <button
+                                              type="button"
+                                              onClick={() => void viewConfigSnapshot(selectedModelId, projectNode.project_id, runNode.run_id, file.name)}
+                                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-100"
+                                            >
+                                              <Eye className="w-3 h-3" />
+                                              View
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => downloadConfigSnapshot(selectedModelId, projectNode.project_id, runNode.run_id, file.name)}
+                                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-100"
+                                            >
+                                              <Download className="w-3 h-3" />
+                                              Download
+                                            </button>
+                                          </span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="lg:col-span-1 rounded-lg border border-slate-200 bg-slate-50 p-2.5 space-y-2">
+                <div className="rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-700 space-y-2">
+                  <p className="font-semibold text-slate-900">How this works</p>
+                  <p className="text-xs text-slate-600">
+                    1. Train a session in this project until it is completed.
+                  </p>
+                  <p className="text-xs text-slate-600">
+                    2. In <span className="font-semibold">Project Sessions</span>, click <span className="font-semibold">Save as reusable</span>.
+                  </p>
+                  <p className="text-xs text-slate-600">
+                    3. The saved item appears under <span className="font-semibold">Reusable Models</span> and can be reused in other projects.
+                  </p>
+                  <div className="pt-1 text-xs text-slate-700">
+                    <span className="font-semibold">Pending sessions:</span> {projectReadyRuns.length}
+                  </div>
+                </div>
+
+                {projectRunsError && (
+                  <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-2 py-1.5">
+                    {projectRunsError}
+                  </div>
+                )}
+                {modelActionError && (
+                  <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-2 py-1.5">
+                    {modelActionError}
+                  </div>
+                )}
+              </div>
+
+              <div className="lg:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                <div className="rounded-md border border-blue-200 bg-blue-50 px-2.5 py-2 text-xs text-blue-900 mb-2.5">
                   <p className="font-semibold">Project sessions ready to save</p>
                   <p className="mt-0.5 text-blue-800">
                     Choose a completed gsplat session and click <span className="font-semibold">Save as reusable</span>.
                   </p>
                   <p className="mt-0.5 text-blue-800">Baseline sessions are hidden here because they are reference-only and not reusable session models.</p>
                 </div>
-                <div className="h-64 overflow-auto rounded-md border border-slate-200 divide-y divide-slate-100 bg-white">
+                <div className="overflow-auto rounded-md border border-slate-200 divide-y divide-slate-100 bg-white">
                   {projectRunsLoading ? (
                     <div className="px-2 py-2 text-xs text-slate-500">Loading sessions...</div>
                   ) : projectReadyRuns.length === 0 ? (
                     <div className="px-2 py-2 text-xs text-slate-500">No completed gsplat sessions pending save.</div>
                   ) : (
                     projectReadyRuns.map((run) => (
-                      <div key={`run_${run.run_id}`} className="px-2 py-1.5 flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold text-slate-800 truncate">{run.run_name || run.run_id}</p>
-                          <p className="text-[11px] text-slate-500 truncate">{run.run_id} • {toLocaleDate(run.saved_at)}</p>
+                      <div key={`run_${run.run_id}`} className="px-2 py-2 flex flex-col gap-2">
+                        <div>
+                          <p className="text-xs font-semibold text-slate-800">{run.run_name || run.run_id}</p>
+                          <p className="text-[11px] text-slate-500">{run.run_id} • {toLocaleDate(run.saved_at)}</p>
                         </div>
-                        <div className="shrink-0 inline-flex items-center gap-1">
+                        <div className="flex items-center gap-1">
                           <button
                             type="button"
                             onClick={() => void deleteProjectSession(run)}
@@ -679,156 +828,9 @@ export default function ModelRegistryTab({ projectId }: ModelRegistryTabProps) {
                     ))
                   )}
                 </div>
-              </>
-            )}
-
-            {modelsError && (
-              <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-2 py-1.5">
-                {modelsError}
               </div>
-            )}
-            {projectRunsError && viewMode === "project-ready" && (
-              <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-2 py-1.5">
-                {projectRunsError}
-              </div>
-            )}
-            {modelActionError && (
-              <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-2 py-1.5">
-                {modelActionError}
-              </div>
-            )}
-          </div>
-
-          <div id="model-lineage-detail" className="lg:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
-            {viewMode === "project-ready" && (
-              <div className="rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-700 space-y-2">
-                <p className="font-semibold text-slate-900">How this works</p>
-                <p className="text-xs text-slate-600">
-                  1. Train a session in this project until it is completed.
-                </p>
-                <p className="text-xs text-slate-600">
-                  2. In <span className="font-semibold">Project Sessions</span>, click <span className="font-semibold">Save as reusable</span>.
-                </p>
-                <p className="text-xs text-slate-600">
-                  3. The saved item appears under <span className="font-semibold">Reusable Models</span> and can be reused in other projects.
-                </p>
-                <div className="pt-1 text-xs text-slate-700">
-                  <span className="font-semibold">Pending sessions:</span> {projectReadyRuns.length}
-                </div>
-              </div>
-            )}
-            {viewMode === "reusable" && !selectedModelId && <p className="text-sm text-slate-500">Select a model to inspect lineage and copied configs.</p>}
-            {viewMode === "reusable" && detailLoading && (
-              <p className="text-sm text-blue-700 inline-flex items-center gap-2">
-                <Clock className="w-4 h-4 animate-pulse" />
-                Loading lineage...
-              </p>
-            )}
-            {viewMode === "reusable" && detailError && (
-              <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-2 py-1.5">
-                {detailError}
-              </div>
-            )}
-            {viewMode === "reusable" && !detailLoading && !detailError && detail && (
-              <div className="space-y-3">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-                  <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
-                    <p className="text-xs font-semibold text-slate-500">Model</p>
-                    <p className="font-semibold text-slate-900">{detail.model?.model_name || detail.model?.model_id || "-"}</p>
-                    <p className="text-xs text-slate-600 mt-1">Created: {toLocaleDate(detail.model?.created_at)}</p>
-                    <div className="mt-1.5 flex flex-wrap gap-1">
-                      {buildModelProfileBadges(detail.model).map((badge) => (
-                        <span
-                          key={`detail_${detail.model?.model_id || "unknown"}_${badge}`}
-                          className="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-700"
-                        >
-                          {badge}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
-                    <p className="text-xs font-semibold text-slate-500">Provenance Summary</p>
-                    <p className="text-slate-900">Contributor Runs: {detail.provenance_summary?.contributor_count ?? 0}</p>
-                    <p className="text-slate-900">Projects: {detail.provenance_summary?.unique_project_count ?? 0}</p>
-                  </div>
-                </div>
-
-                <div>
-                  <h4 className="text-sm font-semibold text-slate-900 mb-2">Contributors (Grouped by Project)</h4>
-                  <div className="max-h-48 overflow-auto rounded-md border border-slate-200 divide-y divide-slate-100 bg-white">
-                    {contributorsByProject.length === 0 ? (
-                      <div className="px-3 py-2 text-xs text-slate-500">No contributors match this filter.</div>
-                    ) : (
-                      contributorsByProject.map((projectBucket) => (
-                        <div key={`project_bucket_${projectBucket.projectLabel}`} className="px-3 py-2 text-xs">
-                          <p className="font-semibold text-slate-800">{projectBucket.projectLabel}</p>
-                          <div className="mt-1 ml-2 space-y-1 border-l border-slate-200 pl-2">
-                            {projectBucket.runs.map((run) => (
-                              <div key={run.contributorId}>
-                                <p className="text-slate-700">{run.runId}</p>
-                                <p className="text-slate-500">Captured: {toLocaleDate(run.capturedAt)}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <h4 className="text-sm font-semibold text-slate-900 mb-2 inline-flex items-center gap-2">
-                    <FolderTree className="w-4 h-4" />
-                    Copied Config Tree
-                  </h4>
-                  <div className="max-h-60 overflow-auto rounded-md border border-slate-200 divide-y divide-slate-100 bg-white">
-                    {displayedConfigProjects.length === 0 ? (
-                      <div className="px-3 py-2 text-xs text-slate-500">No copied config snapshots match this filter.</div>
-                    ) : (
-                      displayedConfigProjects.map((projectNode) => (
-                        <div key={projectNode.project_id} className="px-3 py-2">
-                          <p className="text-xs font-semibold text-slate-800">Project: {projectNode.project_id}</p>
-                          <div className="mt-1 space-y-1">
-                            {(projectNode.runs || []).map((runNode) => (
-                              <div key={runNode.run_id} className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5">
-                                <p className="text-xs font-medium text-slate-700">Run: {runNode.run_id}</p>
-                                <ul className="mt-1 space-y-0.5">
-                                  {(runNode.files || []).map((file) => (
-                                    <li key={`${runNode.run_id}_${file.path}`} className="text-[11px] text-slate-600 flex items-center justify-between gap-2">
-                                      <span className="truncate">{file.name} ({formatSize(file.size)})</span>
-                                      <span className="inline-flex items-center gap-1 shrink-0">
-                                        <button
-                                          type="button"
-                                          onClick={() => void viewConfigSnapshot(selectedModelId, projectNode.project_id, runNode.run_id, file.name)}
-                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-100"
-                                        >
-                                          <Eye className="w-3 h-3" />
-                                          View
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => downloadConfigSnapshot(selectedModelId, projectNode.project_id, runNode.run_id, file.name)}
-                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-100"
-                                        >
-                                          <Download className="w-3 h-3" />
-                                          Download
-                                        </button>
-                                      </span>
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
       </div>
 

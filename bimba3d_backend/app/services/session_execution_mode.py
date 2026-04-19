@@ -37,7 +37,6 @@ def apply_session_execution_mode_overrides(
             params_payload.pop(key, None)
 
         for key in (
-            "baseline_session_id",
             "ai_preset_override",
         ):
             params_payload.pop(key, None)

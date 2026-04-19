@@ -782,6 +782,16 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
       const r = rightGraphPoints[idx];
       return !!r && p.x === r.x && Math.abs(p.y - r.y) < 1e-12;
     });
+
+  const graphDirectionHint = useMemo(() => {
+    if (selectedGraphRow.type === "psnr_eval" || selectedGraphRow.type === "ssim_eval") {
+      return "Direction: higher (+) is better.";
+    }
+    if (selectedGraphRow.type === "loss_log" || selectedGraphRow.type === "loss_eval" || selectedGraphRow.type === "lpips_eval") {
+      return "Direction: lower (-) is better.";
+    }
+    return null;
+  }, [selectedGraphRow.type]);
   const graphXTicks = useMemo(() => {
     const tickCount = 6;
     return Array.from({ length: tickCount + 1 }, (_, i) => {
@@ -1604,6 +1614,9 @@ export default function ComparisonTab({ currentProjectId }: ComparisonTabProps) 
                   })}
                   {graphXTicks.map((tick, idx) => {
                     const x = stepToSvgX(tick, graphXMin, graphXMaxUsed, graphWidth, graphPad);
+                  {graphDirectionHint && (
+                    <p className="mt-2 text-xs text-slate-600">{graphDirectionHint}</p>
+                  )}
                     return (
                       <line
                         key={`xgrid-${idx}`}

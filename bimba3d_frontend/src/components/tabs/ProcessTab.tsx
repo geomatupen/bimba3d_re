@@ -644,6 +644,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     engine === "gsplat" && mode === "modified" && tuneScope === "core_ai_optimization";
   const hasAiInputModeFlow = showCoreAiSessionControls && Boolean(aiInputMode);
   const hasAiInputModeTrainFlow = hasAiInputModeFlow && sessionExecutionMode === "train";
+  const hasAiInputModeCompareFlow = hasAiInputModeFlow;
   const hasLegacyControllerFlow = showCoreAiSessionControls && !aiInputMode;
   const isSessionTestMode = showCoreAiSessionControls && sessionExecutionMode === "test";
   const effectiveStartModelMode: StartModelMode = isSessionTestMode ? "reuse" : startModelMode;
@@ -751,7 +752,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
     trend_scope: 'Core AI optimization trend scope setting retained for compatibility with existing payloads.',
     ai_input_mode: 'Initial preset mode for Core AI optimization. Leave empty to use the legacy controller-only flow. EXIF only uses image metadata, EXIF + flight plan adds sequence-derived flight features, and + external adds cheap image-derived scene features (no manual external inputs).',
     ai_selector_strategy: 'Core AI optimization selector strategy. Preset bias uses discrete preset learning. Continuous bandit linear predicts bounded continuous multipliers per run.',
-    baseline_session_id: 'Completed baseline gsplat session used as reference for baseline-relative scoring in Core AI optimization modes.',
+    baseline_session_id: 'Completed baseline gsplat session used as reference for baseline-relative scoring in Core AI optimization modes. Required in train mode, optional in test mode.',
     warmup_at_start: 'Runs an automatic 3-phase warmup from this project base-session config (keeps base max_steps and densify_until_iter). Phase A forces rotating presets (balanced, conservative, geometry_fast, appearance_fast) with wider random jitter; Phases B and C switch back to adaptive preset selection with tighter jitter. Manual batch jitter controls are ignored while enabled.',
     run_count: 'Total sessions in this batch, including the selected session as run 1. Default 1 keeps manual behavior.',
     run_jitter_mode: 'Jitter behavior for batch runs starting from run 2. Fixed uses deterministic multiplier growth; Random samples a new multiplier per run within min/max bounds. Bounds: fixed factor >= 0.1 (frontend), random min/max >= 0.000001.',
@@ -915,12 +916,12 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
   }, [selectedRunId]);
 
   useEffect(() => {
-    if (!hasAiInputModeTrainFlow) return;
+    if (!hasAiInputModeCompareFlow) return;
     const valid = baselineCandidateRuns.some((r) => r.run_id === baselineSessionIdForAi);
     if (!valid) {
       setBaselineSessionIdForAi(baselineCandidateRuns[0]?.run_id || "");
     }
-  }, [hasAiInputModeTrainFlow, baselineCandidateRuns, baselineSessionIdForAi]);
+  }, [hasAiInputModeCompareFlow, baselineCandidateRuns, baselineSessionIdForAi]);
 
   const applyTrainingDefaults = (defaults: ReturnType<typeof getDefaultProcessConfig>) => {
       setSaveBestSplat(typeof defaults.saveBestSplat === "boolean" ? defaults.saveBestSplat : false);
@@ -2825,7 +2826,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
             ? aiSelectorStrategy
             : undefined,
         baseline_session_id:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode && sessionExecutionMode === "train"
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode
             ? (baselineSessionIdForAi || undefined)
             : undefined,
         session_execution_mode: includeSessionControls ? sessionExecutionMode : undefined,
@@ -2991,7 +2992,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
             ? aiSelectorStrategy
             : undefined,
         baseline_session_id:
-          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode && sessionExecutionMode === "train"
+          effectiveMode === "modified" && tuneScope === "core_ai_optimization" && aiInputMode
             ? (baselineSessionIdForAi || undefined)
             : undefined,
         session_execution_mode: includeSessionControls ? sessionExecutionMode : undefined,
@@ -3180,7 +3181,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       ai_selector_strategy:
         tuneScope === "core_ai_optimization" && sessionExecutionMode === "train" ? aiSelectorStrategy : undefined,
       baseline_session_id:
-        tuneScope === "core_ai_optimization" && aiInputMode && sessionExecutionMode === "train" ? (baselineSessionIdForAi || undefined) : undefined,
+        tuneScope === "core_ai_optimization" && aiInputMode ? (baselineSessionIdForAi || undefined) : undefined,
       warmup_at_start: showCoreAiSessionControls ? effectiveWarmupAtStart : undefined,
       run_count: effectiveRunCount,
       run_jitter_mode: sessionExecutionMode === "train" ? runJitterMode : undefined,
@@ -3238,7 +3239,7 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
       ai_selector_strategy:
         tuneScope === "core_ai_optimization" && sessionExecutionMode === "train" ? aiSelectorStrategy : undefined,
       baseline_session_id:
-        tuneScope === "core_ai_optimization" && aiInputMode && sessionExecutionMode === "train" ? (baselineSessionIdForAi || undefined) : undefined,
+        tuneScope === "core_ai_optimization" && aiInputMode ? (baselineSessionIdForAi || undefined) : undefined,
       warmup_at_start: showCoreAiSessionControls ? effectiveWarmupAtStart : undefined,
       run_count: effectiveRunCount,
       run_jitter_mode: sessionExecutionMode === "train" ? runJitterMode : undefined,
@@ -5231,10 +5232,10 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                       <p className="mt-1 text-[10px] text-slate-500">Continuous bandit uses bounded continuous multipliers instead of fixed preset templates.</p>
                                     </div>
                                   )}
-                                  {hasAiInputModeTrainFlow && (
+                                  {hasAiInputModeCompareFlow && (
                                     <div className="md:col-span-2">
                                       <label className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-0.5">
-                                        <span>Baseline session (required)</span>
+                                        <span>{sessionExecutionMode === "train" ? "Baseline session (required)" : "Baseline session (optional)"}</span>
                                         <button onClick={() => setSelectedInfoKey("baseline_session_id")} className="p-1 text-slate-400 hover:text-slate-600"><Info /></button>
                                       </label>
                                       <select
@@ -5249,7 +5250,11 @@ export default function ProcessTab({ projectId }: ProcessTabProps) {
                                           </option>
                                         ))}
                                       </select>
-                                      <p className="mt-1 text-[10px] text-slate-500">Used as reference for baseline-relative scoring.</p>
+                                      <p className="mt-1 text-[10px] text-slate-500">
+                                        {sessionExecutionMode === "train"
+                                          ? "Used as reference for baseline-relative scoring."
+                                          : "Optional in test mode. Leave empty to run without baseline-relative reward/base-S comparison."}
+                                      </p>
                                     </div>
                                   )}
                                   {sessionExecutionMode === "train" && (
