@@ -336,41 +336,24 @@
             </div>
             <p><strong>Purpose:</strong> Camera and capture metadata only. Lightweight baseline suitable for datasets with standard EXIF information.</p>
             
-            <h4>Input Features (x) — 25 features</h4>
+            <h4>Input Features (x) — 8 features</h4>
             <div class="feature-list">
-                <div class="feature-tag primary">camera_make</div>
-                <div class="feature-tag primary">camera_model</div>
-                <div class="feature-tag primary">lens_model</div>
                 <div class="feature-tag primary">focal_length_mm</div>
-                <div class="feature-tag primary">aperture_f</div>
+                <div class="feature-tag secondary">focal_missing</div>
                 <div class="feature-tag primary">shutter_s</div>
+                <div class="feature-tag secondary">shutter_missing</div>
                 <div class="feature-tag primary">iso</div>
-                <div class="feature-tag primary">camera_angle_bucket</div>
-                <div class="feature-tag secondary">gps_lat_mean</div>
-                <div class="feature-tag secondary">gps_lon_mean</div>
-                <div class="feature-tag secondary">gps_alt_mean</div>
-                <div class="feature-tag secondary">timestamp_mode</div>
+                <div class="feature-tag secondary">iso_missing</div>
                 <div class="feature-tag secondary">img_width_median</div>
                 <div class="feature-tag secondary">img_height_median</div>
-                <div class="feature-tag secondary">img_orientation</div>
-                <div class="feature-tag secondary">camera_meta_missing</div>
-                <div class="feature-tag secondary">lens_missing</div>
-                <div class="feature-tag secondary">focal_missing</div>
-                <div class="feature-tag secondary">aperture_missing</div>
-                <div class="feature-tag secondary">shutter_missing</div>
-                <div class="feature-tag secondary">iso_missing</div>
-                <div class="feature-tag secondary">angle_missing</div>
-                <div class="feature-tag secondary">gps_missing</div>
-                <div class="feature-tag secondary">timestamp_missing</div>
-                <div class="feature-tag secondary">orientation_missing</div>
             </div>
 
             <h4>Characteristics</h4>
             <ul>
-                <li><strong>Scope:</strong> Camera equipment (make, model, lens), shooting parameters (ISO, aperture, shutter), spatial context (GPS, angle)</li>
-                <li><strong>Dependencies:</strong> None; works with standard image EXIF</li>
-                <li><strong>Complexity:</strong> Low (~25D feature space)</li>
-                <li><strong>Use Case:</strong> Consumer/prosumer cameras with complete EXIF; rapid baseline training</li>
+                <li><strong>Scope:</strong> Core capture parameters and image resolution (focal, shutter, ISO, width/height)</li>
+                <li><strong>Dependencies:</strong> Standard EXIF/XMP metadata only</li>
+                <li><strong>Complexity:</strong> Low (~8D feature space)</li>
+                <li><strong>Use Case:</strong> Fast baseline mode when only lightweight metadata is desired</li>
             </ul>
         </div>
 
@@ -382,29 +365,27 @@
             </div>
             <p><strong>Purpose:</strong> Adds drone flight and coverage metadata. Ideal for UAV/drone photogrammetry datasets.</p>
             
-            <h4>Additional Input Features (x) — 37 features total</h4>
-            <p>Inherits all 25 EXIF features, plus 12 flight plan features:</p>
+            <h4>Additional Input Features (x) — 18 features total</h4>
+            <p>Inherits all 8 EXIF features, plus 10 flight plan features:</p>
             <div class="feature-list">
-                <div class="feature-tag secondary">flight_type</div>
-                <div class="feature-tag secondary">flight_type_missing</div>
-                <div class="feature-tag secondary">camera_angle_profile</div>
-                <div class="feature-tag secondary">angle_profile_missing</div>
-                <div class="feature-tag secondary">average_altitude</div>
-                <div class="feature-tag secondary">altitude_missing</div>
-                <div class="feature-tag secondary">heading_consistency</div>
-                <div class="feature-tag secondary">heading_missing</div>
-                <div class="feature-tag secondary">coverage_spread</div>
-                <div class="feature-tag secondary">coverage_missing</div>
+                <div class="feature-tag secondary">gsd_median</div>
+                <div class="feature-tag secondary">gsd_missing</div>
                 <div class="feature-tag secondary">overlap_proxy</div>
                 <div class="feature-tag secondary">overlap_missing</div>
+                <div class="feature-tag secondary">coverage_spread</div>
+                <div class="feature-tag secondary">coverage_missing</div>
+                <div class="feature-tag secondary">camera_angle_bucket</div>
+                <div class="feature-tag secondary">angle_missing</div>
+                <div class="feature-tag secondary">heading_consistency</div>
+                <div class="feature-tag secondary">heading_missing</div>
             </div>
 
             <h4>Characteristics</h4>
             <ul>
-                <li><strong>Scope:</strong> Flight trajectory analysis; altitude profiles; coverage uniformity; heading stability; image overlap estimation</li>
-                <li><strong>Dependencies:</strong> EXIF complete + flight metadata (altitude, heading, coverage computed from GPS traces)</li>
-                <li><strong>Complexity:</strong> Medium (~37D feature space)</li>
-                <li><strong>Use Case:</strong> UAV datasets with GPS traces or mission logs; consistent flight patterns; terrain-aware optimization</li>
+                <li><strong>Scope:</strong> Flight geometry and coverage analysis (GSD, overlap, spread, heading) plus camera orientation bucket</li>
+                <li><strong>Dependencies:</strong> GPS traces for geometric features and COLMAP camera poses for camera angle bucket</li>
+                <li><strong>Complexity:</strong> Medium (~18D feature space)</li>
+                <li><strong>Use Case:</strong> UAV datasets where flight-path structure and camera pose context are available</li>
             </ul>
         </div>
 
@@ -416,8 +397,8 @@
             </div>
             <p><strong>Purpose:</strong> Adds image content analysis (vegetation, terrain, blur detection). Most comprehensive feature set.</p>
             
-            <h4>Additional Input Features (x) — 47 features total</h4>
-            <p>Inherits all 37 previous features, plus 10 external/content features:</p>
+            <h4>Additional Input Features (x) — 28 features total</h4>
+            <p>Inherits all 18 previous features, plus 10 external/content features:</p>
             <div class="feature-list">
                 <div class="feature-tag tertiary">vegetation_cover_percentage</div>
                 <div class="feature-tag tertiary">green_area_missing</div>

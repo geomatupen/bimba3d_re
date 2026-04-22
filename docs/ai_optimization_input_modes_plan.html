@@ -384,60 +384,32 @@
                 </thead>
                 <tbody>
                   <tr>
-                    <td>Camera make/model</td>
-                    <td>Different sensors and optics often converge differently.</td>
-                    <td><code>DJI</code>, <code>Zenmuse X7</code></td>
-                    <td><code>camera_make = EXIF.Make</code>, <code>camera_model = EXIF.Model</code></td>
-                    <td><code>unknown_make</code> and <code>unknown_model</code>; <code>camera_meta_missing=1</code></td>
-                  </tr>
-                  <tr>
-                    <td>Lens model</td>
-                    <td>Lens behavior affects sharpness, distortion, and view geometry.</td>
-                    <td><code>24mm</code>, <code>28mm equivalent</code></td>
-                    <td><code>lens_model = EXIF.LensModel</code></td>
-                    <td><code>unknown_lens</code>; <code>lens_missing=1</code></td>
-                  </tr>
-                  <tr>
                     <td>Focal length</td>
                     <td>Changes field of view and overlap sensitivity.</td>
-                    <td><code>8.8mm</code></td>
-                    <td><code>focal_length_mm = median(EXIF.FocalLength)</code></td>
-                    <td>Dataset middle focal length; <code>focal_missing=1</code></td>
+                    <td><code>24.0</code> mm</td>
+                    <td><code>focal_length_mm = clamp(median(EXIF.FocalLength), 8.0, 300.0)</code></td>
+                    <td><code>24.0</code>; <code>focal_missing=1</code></td>
                   </tr>
                   <tr>
-                    <td>Aperture, shutter speed, ISO</td>
-                    <td>Proxy for exposure quality and motion blur risk.</td>
-                    <td><code>f/2.8</code>, <code>1/500</code>, <code>ISO 100</code></td>
-                    <td><code>aperture_f = median(FNumber)</code>, <code>shutter_s = median(ExposureTime)</code>, <code>iso = median(ISO)</code></td>
-                    <td>Defaults: <code>f/2.8</code>, <code>1/250</code>, <code>ISO 100</code>; <code>aperture_missing=1</code>, <code>shutter_missing=1</code>, <code>iso_missing=1</code></td>
+                    <td>Shutter speed</td>
+                    <td>Proxy for motion blur risk and exposure time.</td>
+                    <td><code>0.004</code> s</td>
+                    <td><code>shutter_s = clamp(median(EXIF.ExposureTime), 0.0001, 1.0)</code></td>
+                    <td><code>0.004</code>; <code>shutter_missing=1</code></td>
                   </tr>
                   <tr>
-                    <td>Camera angle (if available)</td>
-                    <td>Very important for reconstruction behavior: nadir and oblique runs behave differently.</td>
-                    <td>Gimbal pitch near -90 (nadir) or near -70 (oblique)</td>
-                    <td><code>bucket(angle): nadir if a&lt;= -80, oblique if -80&lt;a&lt;= -60, high_oblique otherwise</code></td>
-                    <td><code>unknown_angle_bucket</code>; <code>angle_missing=1</code></td>
+                    <td>ISO</td>
+                    <td>Proxy for sensor noise and low-light capture conditions.</td>
+                    <td><code>100</code></td>
+                    <td><code>iso = clamp(median(EXIF.ISO), 50.0, 102400.0)</code></td>
+                    <td><code>100.0</code>; <code>iso_missing=1</code></td>
                   </tr>
                   <tr>
-                    <td>GPS lat/lon/alt</td>
-                    <td>Helps estimate flight path and scene coverage. Not mandatory, but very useful.</td>
-                    <td>Project-wide coordinate spread</td>
-                    <td><code>gps_lat_mean = median(lat)</code>, <code>gps_lon_mean = median(lon)</code>, <code>gps_alt_mean = median(alt)</code></td>
-                    <td>Set GPS-derived values to neutral defaults and set <code>gps_missing=1</code></td>
-                  </tr>
-                  <tr>
-                    <td>Timestamp sequence</td>
-                    <td>The order in which photos were captured. Helps estimate path direction and speed changes.</td>
-                    <td>Photo 001 -> 002 -> 003 by capture time</td>
-                    <td><code>timestamp_mode = exif if DateTimeOriginal exists else filename_order</code></td>
-                    <td>Use filename order; <code>timestamp_missing=1</code></td>
-                  </tr>
-                  <tr>
-                    <td>Image size / orientation</td>
-                    <td>Useful for load estimation and capture consistency.</td>
+                    <td>Image dimensions</td>
+                    <td>Resolution affects detail density and processing scale.</td>
                     <td><code>4000x3000</code></td>
-                    <td><code>img_width_median = median(width)</code>, <code>img_height_median = median(height)</code></td>
-                    <td>Dataset middle width/height; <code>img_size_missing=1</code></td>
+                    <td><code>img_width_median = clamp(median(width), 640, 8000)</code>, <code>img_height_median = clamp(median(height), 480, 6000)</code></td>
+                    <td><code>4000x3000</code> defaults; no separate size-missing flag</td>
                   </tr>
                 </tbody>
               </table>
@@ -459,25 +431,18 @@
                 </thead>
                 <tbody>
                   <tr>
-                    <td>Flight type</td>
-                    <td>Classify GPS path pattern as grid, corridor, orbit, oblique, or mixed.</td>
-                    <td>Scene geometry and motion style.</td>
-                    <td><code>rule(path_shape, heading_consistency, angle_mean) -> {grid,corridor,orbit,oblique,mixed}</code></td>
-                    <td><code>unknown_flight_type</code>; <code>flight_type_missing=1</code></td>
+                    <td>GSD median</td>
+                    <td>Uses effective ground resolution instead of raw altitude for stronger geometric relevance.</td>
+                    <td>Scene scale in meters-per-pixel.</td>
+                    <td><code>gsd_median = (altitude_m * sensor_width_mm) / (focal_mm * image_width_px)</code> (clamped)</td>
+                    <td><code>0.0</code>; <code>gsd_missing=1</code></td>
                   </tr>
                   <tr>
-                    <td>Camera angle profile</td>
-                    <td>Use per-image camera angle stats (mean and spread), from metadata if present.</td>
-                    <td>Separates nadir-heavy missions from oblique-heavy missions.</td>
-                    <td><code>camera_angle_profile = (mean(angle), std(angle))</code></td>
-                    <td>Use unknown-angle profile; <code>angle_profile_missing=1</code></td>
-                  </tr>
-                  <tr>
-                    <td>Average altitude</td>
-                    <td>Average EXIF GPS altitude when present.</td>
-                    <td>Scale of the reconstruction problem.</td>
-                    <td><code>average_altitude = mean(gps_alt)</code></td>
-                    <td>Dataset middle altitude; <code>altitude_missing=1</code></td>
+                    <td>Camera angle bucket (numeric)</td>
+                    <td>Dominant pose orientation from COLMAP camera poses, encoded numerically.</td>
+                    <td>0 = missing, 1 = nadir, 2 = oblique, 3 = mixed</td>
+                    <td><code>bucket(a): nadir if a&lt;= -80 else oblique</code>; output <code>3</code> when both classes appear, else <code>1/2</code></td>
+                    <td><code>0</code>; <code>angle_missing=1</code></td>
                   </tr>
                   <tr>
                     <td>Heading consistency</td>
@@ -583,7 +548,7 @@
                   <tr>
                     <td><code>x</code></td>
                     <td>Feature vector from EXIF and cheap derived scene summaries.</td>
-                    <td>Camera model, focal length, flight type, vegetation cover</td>
+                    <td>focal_length_mm, shutter_s, gsd_median, camera_angle_bucket, vegetation_cover_percentage</td>
                   </tr>
                   <tr>
                     <td><code>y</code></td>
@@ -951,20 +916,18 @@
             <div class="chapter-body">
               <h3>5.1 EXIF-only example</h3>
               <p>
-                Input images show a DJI camera, fixed focal length, stable shutter speed, and similar exposure values.
-                There is little or no GPS variation, so the model only sees capture hardware and exposure behavior.
+                Input images show stable focal length, shutter speed, ISO, and resolution.
+                This mode intentionally stays lightweight and uses only reduced EXIF-derived numeric fields.
               </p>
               <p>
                 Example x:
               </p>
               <ul>
-                <li>Camera make: DJI</li>
-                <li>Camera model: X7</li>
-                <li>Lens: 24mm equivalent</li>
-                <li>Focal length: 8.8mm</li>
+                <li>Focal length: 24.0mm</li>
                 <li>ISO: 100</li>
-                <li>Shutter: 1/500</li>
-                <li>Aperture: f/2.8</li>
+                <li>Shutter: 1/250</li>
+                <li>Image width median: 4000</li>
+                <li>Image height median: 3000</li>
               </ul>
               <p>
                 Example y: <code>balanced</code> if the run is general-purpose.
@@ -979,11 +942,10 @@
                 Example x adds:
               </p>
               <ul>
-                <li>Flight type: corridor</li>
+                <li>GSD median: 0.03 m/pixel</li>
                 <li>Heading consistency: high</li>
-                <li>Camera angle profile: mostly oblique (~70 degree)</li>
+                <li>Camera angle bucket code: 2 (oblique)</li>
                 <li>Coverage spread: narrow</li>
-                <li>Altitude mean: 120m</li>
                 <li>Overlap proxy: high</li>
               </ul>
               <p>

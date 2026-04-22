@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import struct
 from pathlib import Path
 import re
 from statistics import median
@@ -10,33 +12,19 @@ from PIL import ExifTags, Image
 from .common import ModeContext, PresetResult, apply_preset_updates, keep_only_feature_keys
 
 
+# ========== REDUCED FEATURE SET ==========
+# Mode 1 (EXIF-only): 5 core features + 3 missing flags = 8 total
+# Core features: focal_length_mm, shutter_s, iso, img_width_median, img_height_median
+# NOTE: img_size_missing removed - image dimensions always available (real or safe default 4000×3000)
 EXIF_ONLY_FEATURE_KEYS: set[str] = {
-    "camera_make",
-    "camera_model",
-    "camera_meta_missing",
-    "lens_model",
-    "lens_missing",
     "focal_length_mm",
     "focal_missing",
-    "aperture_f",
-    "aperture_missing",
     "shutter_s",
     "shutter_missing",
     "iso",
     "iso_missing",
-    "camera_angle_bucket",
-    "angle_missing",
-    "gps_lat_mean",
-    "gps_lon_mean",
-    "gps_alt_mean",
-    "gps_missing",
-    "timestamp_mode",
-    "timestamp_missing",
     "img_width_median",
     "img_height_median",
-    "img_orientation",
-    "orientation_missing",
-    "img_size_missing",
 }
 
 def _iter_images(image_dir: Path) -> list[Path]:
@@ -241,11 +229,88 @@ def _angle_bucket(exif: dict[str, Any]) -> str:
         angle = _as_float(exif.get("Pitch"))
     if angle is None:
         return "unknown_angle_bucket"
+    return _angle_bucket_from_pitch(angle)
+
+
+def _angle_bucket_from_pitch(angle: float) -> str:
+    """Classify pitch angle into bucket: nadir / oblique / high_oblique."""
     if angle <= -80:
         return "nadir"
     if angle <= -60:
         return "oblique"
     return "high_oblique"
+
+
+def _qvec_to_rotmat(qw: float, qx: float, qy: float, qz: float) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    return (
+        (
+            1.0 - 2.0 * (qy * qy + qz * qz),
+            2.0 * (qx * qy - qz * qw),
+            2.0 * (qx * qz + qy * qw),
+        ),
+        (
+            2.0 * (qx * qy + qz * qw),
+            1.0 - 2.0 * (qx * qx + qz * qz),
+            2.0 * (qy * qz - qx * qw),
+        ),
+        (
+            2.0 * (qx * qz - qy * qw),
+            2.0 * (qy * qz + qx * qw),
+            1.0 - 2.0 * (qx * qx + qy * qy),
+        ),
+    )
+
+
+def _candidate_colmap_images_bin(colmap_dir: Path) -> list[Path]:
+    base = Path(colmap_dir)
+    candidates = [
+        base / "images.bin",
+        base / "0" / "images.bin",
+        base / "sparse" / "images.bin",
+        base / "sparse" / "0" / "images.bin",
+    ]
+    return [p for p in candidates if p.exists() and p.is_file()]
+
+
+def _collect_colmap_pitch_angles(colmap_dir: Path, limit: int = 48) -> list[float]:
+    candidates = _candidate_colmap_images_bin(colmap_dir)
+    if not candidates:
+        return []
+
+    # Use the first valid COLMAP images.bin candidate.
+    path = candidates[0]
+    entries: list[tuple[str, float]] = []
+    try:
+        with path.open("rb") as f:
+            num_images = struct.unpack("Q", f.read(8))[0]
+            for _ in range(num_images):
+                _image_id = struct.unpack("I", f.read(4))[0]
+                qw, qx, qy, qz = struct.unpack("dddd", f.read(32))
+                _tx, _ty, _tz = struct.unpack("ddd", f.read(24))
+                _camera_id = struct.unpack("I", f.read(4))[0]
+
+                name_bytes = bytearray()
+                while True:
+                    ch = f.read(1)
+                    if ch == b"" or ch == b"\x00":
+                        break
+                    name_bytes.extend(ch)
+                name = name_bytes.decode("utf-8", errors="ignore")
+
+                num_points = struct.unpack("Q", f.read(8))[0]
+                f.read(24 * num_points)
+
+                r = _qvec_to_rotmat(qw, qx, qy, qz)
+                # COLMAP qvec is world->camera rotation. Camera forward in world is R^T * [0,0,1],
+                # which equals the 3rd row of R. Map Z component to EXIF-like pitch range [-90, 90].
+                fz = max(-1.0, min(1.0, r[2][2]))
+                pitch_deg = math.degrees(math.asin(fz))
+                entries.append((name, pitch_deg))
+    except Exception:
+        return []
+
+    entries.sort(key=lambda t: t[0])
+    return [pitch for _, pitch in entries[: min(limit, len(entries))]]
 
 
 def build_preset(ctx: ModeContext) -> PresetResult:
@@ -261,7 +326,6 @@ def build_preset(ctx: ModeContext) -> PresetResult:
     apertures: list[float] = []
     exposure_times: list[float] = []
     iso_values: list[float] = []
-    angle_buckets: list[str] = []
     gps_lat: list[float] = []
     gps_lon: list[float] = []
     gps_alt: list[float] = []
@@ -295,8 +359,6 @@ def build_preset(ctx: ModeContext) -> PresetResult:
         if iso is not None:
             iso_values.append(iso)
 
-        angle_buckets.append(_angle_bucket(exif))
-
         lat, lon, alt = _extract_gps(exif)
         if lat is not None:
             gps_lat.append(lat)
@@ -309,31 +371,37 @@ def build_preset(ctx: ModeContext) -> PresetResult:
         if ts:
             timestamps.append(ts)
 
+    # ========== REDUCED FEATURE CALCULATION ==========
+
+    # 1. FOCAL LENGTH (primary image scale parameter)
     med_focal = float(median(focal_lengths)) if focal_lengths else 24.0
-    med_aperture = float(median(apertures)) if apertures else 2.8
-    med_exposure = float(median(exposure_times)) if exposure_times else 0.004
+    # Clamp to reasonable range: 8mm (wide) to 300mm (telephoto)
+    med_focal = max(8.0, min(300.0, med_focal))
+    focal_missing = 0 if focal_lengths else 1
+
+    # 2. SHUTTER SPEED (exposure duration - affects motion blur)
+    med_exposure = float(median(exposure_times)) if exposure_times else 0.004  # 4ms typical
+    # Clamp to reasonable range: 1/10000s to 1s
+    med_exposure = max(0.0001, min(1.0, med_exposure))
+    shutter_missing = 0 if exposure_times else 1
+
+    # 3. ISO VALUE (sensor sensitivity)
     med_iso = float(median(iso_values)) if iso_values else 100.0
-    low_light_index = med_exposure * (med_iso / 100.0)
+    # Clamp to reasonable range: 50 to 102400
+    med_iso = max(50.0, min(102400.0, med_iso))
+    iso_missing = 0 if iso_values else 1
 
+    # 4. IMAGE DIMENSIONS (resolution affects feature extraction quality)
     widths, heights = _collect_processing_sizes(ctx.processing_image_dir, limit=24)
+    img_width_med = int(median(widths)) if widths else 4000
+    img_height_med = int(median(heights)) if heights else 3000
+    # Clamp to reasonable range: 640x480 to 8000x6000
+    img_width_med = max(640, min(8000, img_width_med))
+    img_height_med = max(480, min(6000, img_height_med))
+    # NOTE: No img_size_missing flag - dimensions always available (real or safe default)
 
-    orientations: list[str] = []
-    for path in sample:
-        try:
-            exif, _, _ = _read_exif(path)
-        except Exception:
-            continue
-        raw_orientation = exif.get("Orientation")
-        if raw_orientation is None:
-            continue
-        try:
-            orientations.append(str(int(raw_orientation)))
-        except Exception:
-            orientations.append(str(raw_orientation))
-
-    orientation_value = orientations[0] if orientations else "1"
-    orientation_missing = 0 if orientations else 1
-
+    # ========== PRESET SELECTION LOGIC ==========
+    low_light_index = med_exposure * (med_iso / 100.0)
     if low_light_index > 0.010:
         preset = "conservative"
     elif med_focal >= 30.0 and low_light_index < 0.006:
@@ -345,38 +413,22 @@ def build_preset(ctx: ModeContext) -> PresetResult:
 
     updates = apply_preset_updates(ctx.params, preset)
 
+    # ========== BUILD FEATURE DICTIONARY ==========
     features = {
-        "camera_make": makes[0] if makes else "unknown_make",
-        "camera_model": models[0] if models else "unknown_model",
-        "camera_meta_missing": 0 if (makes or models) else 1,
-        "lens_model": lenses[0] if lenses else "unknown_lens",
-        "lens_missing": 0 if lenses else 1,
         "focal_length_mm": med_focal,
-        "focal_missing": 0 if focal_lengths else 1,
-        "aperture_f": med_aperture,
-        "aperture_missing": 0 if apertures else 1,
+        "focal_missing": focal_missing,
         "shutter_s": med_exposure,
-        "shutter_missing": 0 if exposure_times else 1,
+        "shutter_missing": shutter_missing,
         "iso": med_iso,
-        "iso_missing": 0 if iso_values else 1,
-        "camera_angle_bucket": next((b for b in angle_buckets if b != "unknown_angle_bucket"), "unknown_angle_bucket"),
-        "angle_missing": 0 if any(b != "unknown_angle_bucket" for b in angle_buckets) else 1,
-        "gps_lat_mean": float(median(gps_lat)) if gps_lat else 0.0,
-        "gps_lon_mean": float(median(gps_lon)) if gps_lon else 0.0,
-        "gps_alt_mean": float(median(gps_alt)) if gps_alt else 0.0,
-        "gps_missing": 0 if (gps_lat and gps_lon) else 1,
-        "timestamp_mode": "exif" if timestamps else "filename",
-        "timestamp_missing": 0 if timestamps else 1,
-        "img_width_median": int(median(widths)) if widths else 4000,
-        "img_height_median": int(median(heights)) if heights else 3000,
-        "img_orientation": orientation_value,
-        "orientation_missing": orientation_missing,
-        "img_size_missing": 0 if (widths and heights) else 1,
+        "iso_missing": iso_missing,
+        "img_width_median": img_width_med,
+        "img_height_median": img_height_med,
     }
     features = keep_only_feature_keys(features, EXIF_ONLY_FEATURE_KEYS)
 
     notes = [
-        "Derived from direct EXIF/file metadata with explicit fallback flags.",
-        "Preset selected from conservative/balanced/geometry_fast/appearance_fast.",
+        "MODE 1 (EXIF-only): 8-feature reduced set.",
+        "Features: focal_length_mm, shutter_s, iso, img_width_median, img_height_median + 3 missing flags.",
+        "Image dimensions always available (real or safe default).",
     ]
     return PresetResult(mode="exif_only", updates=updates, features=features, notes=notes)

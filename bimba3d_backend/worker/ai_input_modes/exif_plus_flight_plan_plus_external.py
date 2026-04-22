@@ -11,8 +11,13 @@ from .exif_plus_flight_plan import (
     build_preset as build_exif_plus_flight_plan_preset,
 )
 from .exif_only import EXIF_ONLY_FEATURE_KEYS
+from .feature_utils import calculate_terrain_roughness, read_colmap_points3d
 
 
+# ========== REDUCED EXTERNAL FEATURE SET ==========
+# Mode 3 additions (stacked on Mode 1+2): 5 core features + 5 missing flags = 10 total
+# Core features: vegetation_cover_percentage, vegetation_complexity_score, terrain_roughness_proxy, texture_density, blur_motion_risk
+# Source: Image analysis (colors, edges) + COLMAP sparse geometry
 EXTERNAL_IMAGE_FEATURE_KEYS: set[str] = {
     "vegetation_cover_percentage",
     "green_area_missing",
@@ -93,6 +98,8 @@ def build_preset(ctx: ModeContext) -> PresetResult:
     features = dict(base.features)
     notes = list(base.notes)
 
+    # ========== REDUCED EXTERNAL FEATURE CALCULATION (10 features: 5 core + 5 missing flags) ==========
+
     img_files = _iter_images(ctx.processing_image_dir)
     metrics = []
     for path in img_files:
@@ -101,46 +108,74 @@ def build_preset(ctx: ModeContext) -> PresetResult:
         except Exception:
             continue
 
+    # 1-2. VEGETATION FEATURES (from image analysis)
     if metrics:
         green_cover = float(median([m[0] for m in metrics]))
         veg_complexity = float(median([m[1] for m in metrics]))
-        roughness_proxy = float(median([m[2] for m in metrics]))
-        texture_density = float(median([m[3] for m in metrics]))
-        blur_risk = float(median([m[4] for m in metrics]))
         green_area_missing = 0
         veg_complexity_missing = 0
-        roughness_missing = 0
-        texture_missing = 0
-        blur_missing = 0
     else:
         green_cover = 0.0
         veg_complexity = 0.5
-        roughness_proxy = 0.5
-        texture_density = 0.5
-        blur_risk = 0.5
         green_area_missing = 1
         veg_complexity_missing = 1
-        roughness_missing = 1
+
+    # 3. TERRAIN ROUGHNESS PROXY - prefer COLMAP geometric calculation over image-based
+    # Try to load COLMAP sparse reconstruction points
+    colmap_points = read_colmap_points3d(ctx.colmap_dir)
+    if colmap_points is not None and len(colmap_points) > 0:
+        # Use grid-based plane-fit algorithm: O(N), vectorized, robust
+        terrain_roughness_proxy = calculate_terrain_roughness(
+            colmap_points,
+            grid_size=20,
+            min_points_per_cell=3
+        )
+        roughness_missing = 0
+    else:
+        # Fallback to image-based roughness (luma std dev)
+        if metrics:
+            terrain_roughness_proxy = float(median([m[2] for m in metrics]))
+            roughness_missing = 0
+        else:
+            terrain_roughness_proxy = 0.0
+            roughness_missing = 1
+
+    # 4-5. IMAGE TEXTURE AND BLUR FEATURES
+    if metrics:
+        texture_density = float(median([m[3] for m in metrics]))
+        blur_risk = float(median([m[4] for m in metrics]))
+        texture_missing = 0
+        blur_missing = 0
+    else:
+        texture_density = 0.5
+        blur_risk = 0.5
         texture_missing = 1
         blur_missing = 1
 
-    # Select preset from richer scene understanding.
+    # ========== PRESET SELECTION LOGIC ==========
+    # Determine training preset based on scene characteristics
     if blur_risk >= 0.55 or (green_cover >= 0.60 and veg_complexity >= 0.60):
+        # High blur or complex vegetation: use conservative (slower, more stable)
         preset = "conservative"
-    elif roughness_proxy <= 0.35 and texture_density >= 0.60:
+    elif terrain_roughness_proxy <= 0.35 and texture_density >= 0.60:
+        # Smooth terrain with good texture: use geometry_fast (faster convergence)
         preset = "geometry_fast"
     elif texture_density >= 0.68 and blur_risk <= 0.35:
+        # High texture detail, sharp images: use appearance_fast (enhance colors)
         preset = "appearance_fast"
     else:
+        # Default middle ground
         preset = "balanced"
 
     updates = apply_preset_updates(ctx.params, preset)
 
+    # ========== BUILD FEATURE DICTIONARY (10 core features + missing flags) ==========
+    # Preserve Mode 1+2 features and add Mode 3 features
     features["vegetation_cover_percentage"] = green_cover
     features["green_area_missing"] = green_area_missing
     features["vegetation_complexity_score"] = veg_complexity
     features["veg_complexity_missing"] = veg_complexity_missing
-    features["terrain_roughness_proxy"] = roughness_proxy
+    features["terrain_roughness_proxy"] = terrain_roughness_proxy
     features["roughness_missing"] = roughness_missing
     features["texture_density"] = texture_density
     features["texture_missing"] = texture_missing
@@ -151,5 +186,7 @@ def build_preset(ctx: ModeContext) -> PresetResult:
         EXIF_ONLY_FEATURE_KEYS | FLIGHT_PLAN_FEATURE_KEYS | EXTERNAL_IMAGE_FEATURE_KEYS,
     )
 
-    notes.append("Added external image-derived features (vegetation, roughness, texture, blur) without manual input.")
+    notes.append("MODE 3 (External): 10-feature reduced set with terrain roughness via COLMAP geometry.")
+    notes.append("Terrain roughness: Grid-based plane-fit from sparse reconstruction (O(N), slope-invariant, robust).")
+    notes.append("Features: vegetation_cover_percentage, vegetation_complexity_score, terrain_roughness_proxy, texture_density, blur_motion_risk + missing flags.")
     return PresetResult(mode="exif_plus_flight_plan_plus_external", updates=updates, features=features, notes=notes)

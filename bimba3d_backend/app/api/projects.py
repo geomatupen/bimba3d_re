@@ -103,38 +103,32 @@ AI_INPUT_MODE_REWARD_OUTCOME_RE = re.compile(
 )
 
 EXIF_ONLY_INPUT_X_KEYS = {
-    "camera_make",
-    "camera_model",
-    "camera_meta_missing",
-    "lens_model",
-    "lens_missing",
     "focal_length_mm",
     "focal_missing",
-    "aperture_f",
-    "aperture_missing",
     "shutter_s",
     "shutter_missing",
     "iso",
     "iso_missing",
-    "camera_angle_bucket",
-    "angle_missing",
-    "gps_lat_mean",
-    "gps_lon_mean",
-    "gps_alt_mean",
-    "gps_missing",
-    "timestamp_mode",
-    "timestamp_missing",
     "img_width_median",
     "img_height_median",
-    "img_orientation",
-    "orientation_missing",
-    "img_size_missing",
+}
+
+FLIGHT_PLAN_INPUT_X_KEYS = {
+    "gsd_median",
+    "gsd_missing",
+    "overlap_proxy",
+    "overlap_missing",
+    "coverage_spread",
+    "coverage_missing",
+    "camera_angle_bucket",
+    "angle_missing",
+    "heading_consistency",
+    "heading_missing",
 }
 
 PROCESSED_DIMENSION_FEATURE_KEYS = {
     "img_width_median",
     "img_height_median",
-    "img_size_missing",
     "image_count",
 }
 
