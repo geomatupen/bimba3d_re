@@ -1,6 +1,6 @@
 import { useParams, Link } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { ArrowLeft, Images, Play, FileText, Columns2, Boxes, Clock, Check, GitBranch } from "lucide-react";
+import { ArrowLeft, Images, Play, FileText, Columns2, Boxes, Clock, Check, GitBranch, Settings } from "lucide-react";
 import { api } from "../api/client";
 
 // Tab components
@@ -10,8 +10,9 @@ import LogsTab from "../components/tabs/LogsTab";
 import ComparisonTab from "../components/tabs/ComparisonTab";
 import SessionsTab from "../components/tabs/SessionsTab";
 import ModelRegistryTab from "../components/tabs/ModelRegistryTab";
+import SettingsTab from "../components/tabs/SettingsTab";
 
-type TabType = "images" | "process" | "logs" | "sessions" | "comparison" | "models";
+type TabType = "images" | "process" | "logs" | "sessions" | "comparison" | "models" | "settings";
 
 interface ProjectStatus {
   project_id: string;
@@ -66,6 +67,7 @@ export default function ProjectDetail() {
     { id: "sessions" as TabType, label: "Sessions", icon: Boxes, enabled: true },
     { id: "models" as TabType, label: "Models", icon: GitBranch, enabled: true },
     { id: "comparison" as TabType, label: "Comparison", icon: Columns2, enabled: true },
+    { id: "settings" as TabType, label: "Settings", icon: Settings, enabled: true },
     // viewer tab removed: viewer functionality is available inside the Process tab
   ];
 
@@ -170,6 +172,7 @@ export default function ProjectDetail() {
         {activeTab === "sessions" && <SessionsTab projectId={id!} />}
         {activeTab === "models" && <ModelRegistryTab projectId={id!} />}
         {activeTab === "comparison" && <ComparisonTab currentProjectId={id!} />}
+        {activeTab === "settings" && <SettingsTab projectId={id!} />}
         {/* Viewer tab removed; viewer is available inside the Process tab */}
       </main>
     </div>
