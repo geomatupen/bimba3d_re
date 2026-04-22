@@ -32,8 +32,8 @@ SAFE_BOUNDS = {
 # Mode-specific context dimensions
 MODE_CONTEXT_DIMS = {
     "exif_only": 9,  # 1 intercept + 5 primary + 3 missing flags
-    "exif_plus_flight_plan": 16,  # +5 primary + 2 missing flags
-    "exif_plus_flight_plan_plus_external": 21,  # +4 primary + 1 missing flag
+    "exif_plus_flight_plan": 19,  # +5 primary + 5 missing flags (coverage, angle, heading)
+    "exif_plus_flight_plan_plus_external": 29,  # +5 primary + 5 missing flags (veg complexity, green, texture, blur, veg_complexity)
 }
 
 
@@ -94,8 +94,11 @@ def build_context_vector(features: dict[str, Any], mode: str) -> np.ndarray:
     - Intercept term (1.0) at position 0
     - Normalized continuous features (log-scale for wide ranges)
     - Binary missing flags
+
+    The intercept allows the model to predict non-zero values when all features
+    are at baseline. Without it, neutral feature values would force prediction to 0.
     """
-    x = [1.0]  # Intercept term for bias
+    x = [1.0]  # Intercept term for bias (allows baseline offset)
 
     # Mode 1: EXIF-only features (5 primary + 3 missing flags)
     focal = features.get("focal_length_mm", 50.0)
@@ -124,7 +127,7 @@ def build_context_vector(features: dict[str, Any], mode: str) -> np.ndarray:
     x.append(float(features.get("iso_missing", 0)))
 
     if mode in ["exif_plus_flight_plan", "exif_plus_flight_plan_plus_external"]:
-        # Mode 2: Flight plan features (5 primary + 2 missing flags)
+        # Mode 2: Flight plan features (5 primary + 5 missing flags)
         gsd = features.get("gsd_median", 0.05)
         gsd_norm = gsd / 0.5  # [0.001-0.5] → [0.002, 1.0]
         x.append(gsd_norm)
@@ -142,13 +145,20 @@ def build_context_vector(features: dict[str, Any], mode: str) -> np.ndarray:
         heading = features.get("heading_consistency", 0.5)
         x.append(heading)  # Already [0-1]
 
+        # ALL missing flags from flight plan
         x.append(float(features.get("gsd_missing", 0)))
         x.append(float(features.get("overlap_missing", 0)))
+        x.append(float(features.get("coverage_missing", 0)))
+        x.append(float(features.get("angle_missing", 0)))
+        x.append(float(features.get("heading_missing", 0)))
 
     if mode == "exif_plus_flight_plan_plus_external":
-        # Mode 3: External image features (4 primary + 1 missing flag)
+        # Mode 3: External image features (5 primary + 5 missing flags)
         veg_cover = features.get("vegetation_cover_percentage", 0.5)
         x.append(veg_cover)  # Already [0-1]
+
+        veg_complexity = features.get("vegetation_complexity_score", 0.5)
+        x.append(veg_complexity)  # Already [0-1]
 
         terrain_rough = features.get("terrain_roughness_proxy", 0.5)
         x.append(terrain_rough)  # Already [0-1]
@@ -159,7 +169,12 @@ def build_context_vector(features: dict[str, Any], mode: str) -> np.ndarray:
         blur_risk = features.get("blur_motion_risk", 0.5)
         x.append(blur_risk)  # Already [0-1]
 
+        # ALL missing flags from external features
+        x.append(float(features.get("green_area_missing", 0)))
+        x.append(float(features.get("veg_complexity_missing", 0)))
         x.append(float(features.get("roughness_missing", 0)))
+        x.append(float(features.get("texture_missing", 0)))
+        x.append(float(features.get("blur_missing", 0)))
 
     return np.array(x, dtype=np.float32)
 

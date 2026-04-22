@@ -37,9 +37,12 @@ x = [
 ```
 
 **Mode-specific dimensions:**
-- Mode 1 (exif_only): 9 features
-- Mode 2 (exif_plus_flight_plan): 16 features
-- Mode 3 (exif_plus_flight_plan_plus_external): 21 features
+- Mode 1 (exif_only): 9 features (1 intercept + 5 primary + 3 missing flags)
+- Mode 2 (exif_plus_flight_plan): 19 features (Mode 1 + 5 flight primary + 5 flight missing flags)
+- Mode 3 (exif_plus_flight_plan_plus_external): 29 features (Mode 2 + 5 external primary + 5 external missing flags)
+
+**What is the intercept?**
+The first element (1.0) is the intercept/bias term, allowing the model to predict non-zero multipliers when all features are at their normalized baseline values.
 
 ### 2. Linear Model Per Multiplier
 
@@ -245,14 +248,14 @@ project_dir/
 {
   "version": 2,
   "mode": "exif_plus_flight_plan",
-  "context_dim": 16,
+  "context_dim": 19,
   "lambda_ridge": 2.0,
   "runs": 42,
   "reward_mean": 0.08,
   "models": {
     "feature_lr_mult": {
-      "A": [[...], ...],  // 16×16 matrix
-      "b": [...],          // 16 vector
+      "A": [[...], ...],  // 19×19 matrix
+      "b": [...],          // 19 vector
       "n": 42
     },
     // ... 7 more multipliers
@@ -261,7 +264,7 @@ project_dir/
     "run_id": "run_20260422_142530",
     "selected_preset": "contextual_continuous",
     "reward_signal": 0.12,
-    "context_vector": [1.0, -0.173, ...],
+    "context_vector": [1.0, -0.173, ...],  // 19 elements
     "theta_norms": {
       "feature_lr_mult": 0.234,
       // ...

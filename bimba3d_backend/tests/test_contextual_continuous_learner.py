@@ -91,8 +91,8 @@ def test_build_context_vector_mode2(sample_features_mode2):
     """Test context vector building for exif_plus_flight_plan mode."""
     x = build_context_vector(sample_features_mode2, "exif_plus_flight_plan")
 
-    # Should have 16 features: 1 intercept + 5 exif + 3 exif_missing + 5 flight + 2 flight_missing
-    assert len(x) == 16
+    # Should have 19 features: 1 intercept + 5 exif + 3 exif_missing + 5 flight + 5 flight_missing
+    assert len(x) == 19
     assert x[0] == 1.0  # Intercept
     assert np.all(np.isfinite(x))
 

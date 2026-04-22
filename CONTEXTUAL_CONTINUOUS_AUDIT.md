@@ -30,7 +30,7 @@ The contextual continuous learner has been **fully implemented** and **integrate
 
 ### Key Features
 
-✅ **Context Vector Building:** Normalizes 9-21 features depending on mode  
+✅ **Context Vector Building:** Normalizes 9-29 features depending on mode (includes intercept + ALL extracted features)  
 ✅ **Thompson Sampling:** Exploration decreases as confidence grows  
 ✅ **Ridge Regression:** λ=2.0 prevents overfitting with N=15 datasets  
 ✅ **Per-Mode Persistence:** Separate models for exif_only, exif_plus_flight_plan, etc.  
