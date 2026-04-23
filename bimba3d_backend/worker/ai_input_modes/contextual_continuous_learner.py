@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import time
 import numpy as np
 from pathlib import Path
 from typing import Any
+import filelock
 
 from .common import clamp_float, clamp_int, safe_ratio
 
@@ -37,12 +39,40 @@ MODE_CONTEXT_DIMS = {
 }
 
 
+def _get_shared_model_dir(project_dir: Path) -> Path | None:
+    """Get shared model directory from project config if available (pipeline context)."""
+    config_path = project_dir / "config.json"
+    if not config_path.exists():
+        return None
+    try:
+        with open(config_path, "r") as f:
+            config = json.load(f)
+            shared_dir = config.get("shared_model_dir")
+            if shared_dir:
+                return Path(shared_dir)
+    except Exception:
+        pass
+    return None
+
+
 def _selector_dir(project_dir: Path) -> Path:
-    return project_dir / "models" / "contextual_continuous_selector"
+    """Get model directory - shared if in pipeline, else project-local."""
+    shared_dir = _get_shared_model_dir(project_dir)
+    if shared_dir:
+        # Pipeline context: use shared model directory for cross-project learning
+        return shared_dir / "contextual_continuous_selector"
+    else:
+        # Manual project: use project-local model directory
+        return project_dir / "models" / "contextual_continuous_selector"
 
 
 def _selector_path(project_dir: Path, mode: str) -> Path:
     return _selector_dir(project_dir) / f"{mode}.json"
+
+
+def _get_lock_path(model_path: Path) -> Path:
+    """Get lock file path for concurrent access control."""
+    return model_path.with_suffix(".lock")
 
 
 def _default_model(mode: str) -> dict[str, Any]:
@@ -66,25 +96,48 @@ def _default_model(mode: str) -> dict[str, Any]:
 
 
 def _load_model(project_dir: Path, mode: str) -> dict[str, Any]:
+    """Load model with file locking for concurrent access in pipeline context."""
     path = _selector_path(project_dir, mode)
     if not path.exists():
         return _default_model(mode)
+
+    # Use file lock to prevent race conditions in shared model access
+    lock_path = _get_lock_path(path)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and data.get("version") == 2:
-            return data
+        with filelock.FileLock(lock_path, timeout=10):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("version") == 2:
+                return data
+    except filelock.Timeout:
+        # Lock timeout - another process is updating, use existing file
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("version") == 2:
+                return data
+        except Exception:
+            pass
     except Exception:
         pass
     return _default_model(mode)
 
 
 def _save_model(project_dir: Path, mode: str, model: dict[str, Any]) -> None:
+    """Save model with file locking for concurrent access in pipeline context."""
     out_dir = _selector_dir(project_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = _selector_path(project_dir, mode)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(model, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    lock_path = _get_lock_path(path)
+
+    # Use file lock to prevent concurrent writes in shared model scenario
+    try:
+        with filelock.FileLock(lock_path, timeout=30):
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(model, indent=2), encoding="utf-8")
+            tmp.replace(path)
+    except filelock.Timeout:
+        # Lock timeout - skip save to avoid blocking pipeline
+        # Model update will happen in next training run
+        pass
 
 
 def build_context_vector(features: dict[str, Any], mode: str) -> np.ndarray:

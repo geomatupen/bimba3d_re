@@ -143,16 +143,23 @@ class PipelineOrchestrator:
 
         Structure:
           {pipeline_folder}/
-            ├── {project1_name}/  ← Project directory (COLMAP, runs, models)
+            ├── shared_models/  ← Shared models for cross-project learning
+            │   └── contextual_continuous_selector/
+            ├── {project1_name}/  ← Project directory (COLMAP, runs)
             ├── {project2_name}/
             └── ...
 
         Projects reference original data via config.json source_dir
+        Shared model directory enables cross-project knowledge accumulation
         """
         config = pipeline["config"]
         pipeline_folder = Path(config["pipeline_folder"])
         project_name = project["name"]
         project_dir = pipeline_folder / project_name
+
+        # Create shared model directory at pipeline level
+        shared_model_dir = pipeline_folder / "shared_models"
+        shared_model_dir.mkdir(parents=True, exist_ok=True)
 
         # Create project directory if it doesn't exist
         if not project_dir.exists():
@@ -163,6 +170,7 @@ class PipelineOrchestrator:
                 "id": str(uuid.uuid4()),
                 "name": project_name,
                 "source_dir": project["dataset_path"],  # Points to read-only data folder
+                "shared_model_dir": str(shared_model_dir),  # Shared models for cross-project learning
                 "created_at": datetime.utcnow().isoformat() + "Z",
                 "created_by": "training_pipeline",
                 "pipeline_id": pipeline["id"],
@@ -174,7 +182,7 @@ class PipelineOrchestrator:
             with open(config_path, "w") as f:
                 json.dump(config_data, f, indent=2)
 
-            logger.info(f"Created project directory: {project_dir}")
+            logger.info(f"Created project directory: {project_dir} with shared models at {shared_model_dir}")
 
         return project_dir
 
