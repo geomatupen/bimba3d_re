@@ -166,6 +166,11 @@ def run_training(
     session_execution_mode = str(p.get("session_execution_mode") or "train").strip().lower()
     is_session_test_mode = session_execution_mode == "test"
 
+    # Batch tracking: only update model on last run of batch
+    batch_index = int(p.get("batch_index", 1))
+    batch_total = int(p.get("batch_total", 1))
+    is_last_run_in_batch = (batch_index >= batch_total)
+
     # Optional initial preset for core-ai runs; leaves legacy behavior unchanged
     # when ai_input_mode is not selected.
     preset_summary = apply_initial_preset(
@@ -331,7 +336,12 @@ def run_training(
         and tune_scope == "core_ai_optimization"
         and bool(isinstance(preset_summary, dict) and preset_summary.get("applied"))
     )
-    allow_input_mode_learning_updates = bool(use_html_input_mode_flow and not is_session_test_mode)
+    # Only update learner model on last run of batch (or if batch_total=1)
+    allow_input_mode_learning_updates = bool(
+        use_html_input_mode_flow
+        and not is_session_test_mode
+        and is_last_run_in_batch
+    )
 
     run_artifact_root = project_dir
     if configured_run_id:
