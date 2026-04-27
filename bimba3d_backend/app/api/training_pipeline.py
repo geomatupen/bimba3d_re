@@ -697,6 +697,199 @@ async def get_pipeline_models(pipeline_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/{pipeline_id}/restart")
+async def restart_pipeline(pipeline_id: str):
+    """
+    Restart a pipeline from scratch.
+
+    Keeps per-project:
+    - images/ directory (original uploads)
+    - images_resized/ directory (resized copies)
+    - outputs/sparse/ directory (COLMAP point clouds)
+    - The baseline run directory (first run in runs/)
+
+    Deletes per-project:
+    - All non-baseline run directories under runs/
+    - outputs/engines/ (trained splat models)
+    - models/ (local learner weights)
+    - analytics/ files
+    - status.json (reset to pending)
+    - .batch_lineage_latest.json
+    - .project_model_state.json
+
+    Also deletes pipeline-level:
+    - shared_models/ directory (learner weights)
+    - pipeline status reset to pending
+    """
+    import shutil
+    import stat
+    import os
+
+    def _remove_readonly(func, path, _exc_info):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+        except Exception:
+            pass
+        func(path)
+
+    def _rmtree(p: Path) -> None:
+        if p.exists() or p.is_symlink():
+            if p.is_file() or p.is_symlink():
+                p.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(p, onerror=_remove_readonly)
+
+    try:
+        pipeline = training_pipeline_storage.get_pipeline(pipeline_id)
+        if not pipeline:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
+        config = pipeline.get("config", {})
+        pipeline_folder = Path(config.get("pipeline_folder", ""))
+        if not pipeline_folder.exists():
+            raise HTTPException(status_code=404, detail="Pipeline folder not found on disk")
+
+        # Stop any running orchestrator for this pipeline first
+        try:
+            training_pipeline_orchestrator.stop_pipeline_orchestrator(pipeline_id)
+        except Exception as exc:
+            logger.warning("Could not stop pipeline orchestrator before restart for %s: %s", pipeline_id, exc)
+
+        projects = config.get("projects", [])
+        deleted_summary: list[dict] = []
+
+        for project_cfg in projects:
+            project_id = str(project_cfg.get("project_id") or "").strip()
+            if not project_id:
+                continue
+
+            # Locate project directory — may be inside pipeline_folder or DATA_DIR
+            project_dir: Path | None = None
+            candidate_in_pipeline = pipeline_folder / project_id
+            if candidate_in_pipeline.exists() and candidate_in_pipeline.is_dir():
+                project_dir = candidate_in_pipeline
+            else:
+                candidate_in_data = DATA_DIR / project_id
+                if candidate_in_data.exists() and candidate_in_data.is_dir():
+                    project_dir = candidate_in_data
+                else:
+                    # Try scanning pipeline folder by config.json id
+                    for sub in pipeline_folder.iterdir():
+                        if not sub.is_dir():
+                            continue
+                        cfg_file = sub / "config.json"
+                        if cfg_file.exists():
+                            try:
+                                with open(cfg_file, "r", encoding="utf-8") as fh:
+                                    sub_cfg = json.load(fh)
+                                if str(sub_cfg.get("id") or "").strip() == project_id:
+                                    project_dir = sub
+                                    break
+                            except Exception:
+                                continue
+
+            if project_dir is None or not project_dir.exists():
+                logger.warning("Restart: project dir not found for %s, skipping", project_id)
+                continue
+
+            # Determine baseline run id (first run alphabetically / by name)
+            runs_root = project_dir / "runs"
+            baseline_run_id: str | None = None
+            if runs_root.exists() and runs_root.is_dir():
+                run_dirs = sorted([p for p in runs_root.iterdir() if p.is_dir()], key=lambda p: p.name)
+                if run_dirs:
+                    baseline_run_id = run_dirs[0].name
+
+            # Delete non-baseline run directories
+            deleted_runs: list[str] = []
+            if runs_root.exists() and runs_root.is_dir():
+                for run_dir in list(runs_root.iterdir()):
+                    if not run_dir.is_dir():
+                        continue
+                    if run_dir.name == baseline_run_id:
+                        continue  # keep baseline
+                    _rmtree(run_dir)
+                    deleted_runs.append(run_dir.name)
+
+            # Delete engine outputs (trained splat models)
+            _rmtree(project_dir / "outputs" / "engines")
+
+            # Delete local learner weights
+            _rmtree(project_dir / "models")
+
+            # Delete batch/model state metadata
+            for meta_file in (
+                project_dir / ".batch_lineage_latest.json",
+                project_dir / ".project_model_state.json",
+            ):
+                meta_file.unlink(missing_ok=True)
+
+            # Reset project status to pending
+            status_file = project_dir / "status.json"
+            if status_file.exists():
+                try:
+                    with open(status_file, "r", encoding="utf-8") as fh:
+                        existing_status = json.load(fh)
+                except Exception:
+                    existing_status = {}
+                reset_status = {
+                    "project_id": project_id,
+                    "status": "pending",
+                    "progress": 0,
+                    "name": existing_status.get("name"),
+                    "created_at": existing_status.get("created_at"),
+                    "base_session_id": baseline_run_id,
+                }
+                try:
+                    tmp = status_file.with_suffix(".tmp")
+                    with open(tmp, "w", encoding="utf-8") as fh:
+                        json.dump(reset_status, fh, indent=2)
+                    tmp.replace(status_file)
+                except Exception as exc:
+                    logger.warning("Failed to reset status for project %s: %s", project_id, exc)
+
+            deleted_summary.append({
+                "project_id": project_id,
+                "baseline_kept": baseline_run_id,
+                "deleted_runs": deleted_runs,
+            })
+
+        # Delete pipeline-level shared_models (learner weights)
+        shared_models_dir = pipeline_folder / "shared_models"
+        _rmtree(shared_models_dir)
+
+        # Reset pipeline state to pending
+        training_pipeline_storage.update_pipeline(pipeline_id, {
+            "status": "pending",
+            "current_phase": 0,
+            "current_pass": 0,
+            "current_run": 0,
+            "current_project_index": 0,
+            "completed_runs": 0,
+            "failed_runs": 0,
+            "mean_reward": None,
+            "best_reward": None,
+            "success_rate": None,
+            "last_error": None,
+            "started_at": None,
+            "completed_at": None,
+        })
+
+        logger.info("Pipeline %s restarted: %d projects cleaned", pipeline_id, len(deleted_summary))
+        return {
+            "status": "restarted",
+            "pipeline_id": pipeline_id,
+            "projects_cleaned": len(deleted_summary),
+            "details": deleted_summary,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to restart pipeline %s: %s", pipeline_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to restart pipeline: {exc}")
+
+
 @router.delete("/{pipeline_id}")
 async def delete_pipeline(pipeline_id: str):
     """Delete a pipeline."""

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Play, Pause, Square, RefreshCw, Clock, Check } from "lucide-react";
+import { ArrowLeft, Play, Pause, Square, RefreshCw, Clock, Check, RotateCcw } from "lucide-react";
 import { api } from "../api/client";
 
 interface Pipeline {
@@ -100,6 +100,10 @@ export default function PipelineDetailsPage() {
     detectedModes: [],
     selectedMode: "",
     elevating: false,
+  });
+  const [restartModal, setRestartModal] = useState<{ open: boolean; restarting: boolean }>({
+    open: false,
+    restarting: false,
   });
 
   const showToast = (message: string, type: "success" | "error" = "success") => {
@@ -203,6 +207,20 @@ export default function PipelineDetailsPage() {
       showToast(err.response?.data?.detail || `Failed to ${action} pipeline`, "error");
     } finally {
       setActioningId(null);
+    }
+  };
+
+  const handleRestart = async () => {
+    if (!pipeline || !id) return;
+    setRestartModal((prev) => ({ ...prev, restarting: true }));
+    try {
+      await api.post(`/training-pipeline/${id}/restart`);
+      showToast("Pipeline restarted successfully. All non-baseline runs and learner weights have been cleared.", "success");
+      setRestartModal({ open: false, restarting: false });
+      await loadPipeline();
+    } catch (err: any) {
+      showToast(err.response?.data?.detail || "Failed to restart pipeline", "error");
+      setRestartModal((prev) => ({ ...prev, restarting: false }));
     }
   };
 
@@ -400,6 +418,18 @@ export default function PipelineDetailsPage() {
                 >
                   <Play className="w-3.5 h-3.5" />
                   Resume
+                </button>
+              )}
+              {/* Restart button — available for any non-running status */}
+              {pipeline.status !== "running" && (
+                <button
+                  onClick={() => setRestartModal({ open: true, restarting: false })}
+                  disabled={actioningId === pipeline.id}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50"
+                  title="Restart pipeline from scratch (keeps baseline runs and images)"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Restart
                 </button>
               )}
             </div>
@@ -1323,6 +1353,59 @@ export default function PipelineDetailsPage() {
           </div>
         )}
       </main>
+
+      {/* Restart Confirmation Modal */}
+      {restartModal.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl border border-orange-200 w-full max-w-md mx-4 p-6">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center shrink-0">
+                <RotateCcw className="w-5 h-5 text-orange-600" />
+              </div>
+              <h2 className="text-lg font-bold text-gray-900">Restart Pipeline?</h2>
+            </div>
+            <p className="text-sm text-gray-700 mb-3">
+              This will reset the pipeline back to its initial state. The following will be <strong>permanently deleted</strong>:
+            </p>
+            <ul className="text-sm text-gray-700 mb-3 space-y-1 list-disc list-inside bg-orange-50 border border-orange-200 rounded-lg p-3">
+              <li>All non-baseline training runs (per project)</li>
+              <li>Trained splat models (<code className="text-xs bg-orange-100 px-1 rounded">outputs/engines/</code>)</li>
+              <li>Local learner weights (<code className="text-xs bg-orange-100 px-1 rounded">models/</code>)</li>
+              <li>Pipeline shared learner model (<code className="text-xs bg-orange-100 px-1 rounded">shared_models/</code>)</li>
+              <li>Batch lineage and model state metadata</li>
+            </ul>
+            <p className="text-sm text-gray-700 mb-4">
+              The following will be <strong>kept</strong>: original images, resized images, COLMAP sparse point clouds, and the baseline run for each project.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setRestartModal({ open: false, restarting: false })}
+                disabled={restartModal.restarting}
+                className="px-4 py-2 text-sm font-medium border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRestart}
+                disabled={restartModal.restarting}
+                className="px-4 py-2 text-sm font-semibold bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                {restartModal.restarting ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    Restarting...
+                  </>
+                ) : (
+                  <>
+                    <RotateCcw className="w-4 h-4" />
+                    Yes, Restart Pipeline
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Elevate Model Modal */}
       {elevateModal.open && (
