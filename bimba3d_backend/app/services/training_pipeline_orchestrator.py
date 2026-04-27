@@ -137,7 +137,7 @@ class PipelineOrchestrator:
                                 break
 
                             # Execute training run
-                            self._execute_run(
+                            run_outcome = self._execute_run(
                                 pipeline,
                                 project,
                                 phase,
@@ -146,8 +146,19 @@ class PipelineOrchestrator:
                                 runs_per_project,
                             )
 
+                            # Skipped runs should not leave cooldown UI state active.
+                            if run_outcome == "skipped":
+                                training_pipeline_storage.update_pipeline(self.pipeline_id, {
+                                    "cooldown_active": False,
+                                    "next_run_scheduled_at": None,
+                                })
+
                             # Apply thermal management (cooldown) between individual runs.
-                            if thermal.get("enabled", False) and not self.should_stop:
+                            if (
+                                thermal.get("enabled", False)
+                                and not self.should_stop
+                                and run_outcome != "skipped"
+                            ):
                                 self._apply_thermal_management(thermal)
 
             # Determine final status based on run results
@@ -420,8 +431,13 @@ class PipelineOrchestrator:
         pass_num: int,
         run_num: int,
         runs_per_project: int,
-    ):
-        """Execute a single training run."""
+    ) -> str:
+        """Execute a single training run.
+
+        Returns:
+            "skipped" when no run was executed (already completed)
+            "completed" when a run was attempted (success/failure)
+        """
         project_name = project["name"]
         self.current_run_project_name = project_name
         run_id: Optional[str] = None
@@ -435,7 +451,7 @@ class PipelineOrchestrator:
             # Get/create project directory in pipeline folder
             project_dir = self._get_or_create_project_dir(pipeline, project)
 
-            # Check if this run already completed successfully
+            # Check if this run already completed successfully in pipeline history
             for existing in pipeline.get("runs", []):
                 if (
                     str(existing.get("project_name") or "") == project_name
@@ -448,7 +464,47 @@ class PipelineOrchestrator:
                         f"Pipeline {self.pipeline_id}: Run already completed for {project_name} "
                         f"phase {phase['phase_number']} pass {pass_num} run {run_num}, skipping"
                     )
-                    return
+                    return "skipped"
+
+            # For phase 1 (baseline), also check if baseline run directory exists and succeeded
+            if phase["phase_number"] == 1:
+                runs_root = project_dir / "runs"
+                if runs_root.exists() and runs_root.is_dir():
+                    # Look for existing baseline run (first run alphabetically)
+                    run_dirs = sorted([p for p in runs_root.iterdir() if p.is_dir()], key=lambda p: p.name)
+                    if run_dirs:
+                        existing_baseline_dir = run_dirs[0]
+                        # Check if it completed successfully
+                        analytics_file = existing_baseline_dir / "analytics" / "run_analytics_v1.json"
+                        if analytics_file.exists():
+                            try:
+                                with open(analytics_file, "r", encoding="utf-8") as fh:
+                                    analytics = json.load(fh)
+                                    summary = analytics.get("summary", {})
+                                    status = str(summary.get("status", "")).lower()
+                                    if status in {"completed", "success", "done"}:
+                                        logger.info(
+                                            f"Pipeline {self.pipeline_id}: Baseline run {existing_baseline_dir.name} "
+                                            f"already completed successfully for {project_name}, skipping"
+                                        )
+                                        # Store baseline_run_id if not already stored
+                                        if not project.get("baseline_run_id"):
+                                            config = pipeline.get("config", {})
+                                            projects = config.get("projects", [])
+                                            for proj in projects:
+                                                if proj.get("name") == project_name:
+                                                    proj["baseline_run_id"] = existing_baseline_dir.name
+                                                    training_pipeline_storage.update_pipeline(self.pipeline_id, {"config": config})
+                                                    logger.info(f"Stored existing baseline_run_id={existing_baseline_dir.name} for project {project_name}")
+                                                    break
+                                        return "skipped"
+                                    else:
+                                        logger.info(
+                                            f"Pipeline {self.pipeline_id}: Existing baseline run {existing_baseline_dir.name} "
+                                            f"for {project_name} has status '{status}' - will re-run"
+                                        )
+                            except Exception as e:
+                                logger.warning(f"Failed to read baseline analytics for {project_name}: {e}")
 
             # Build run configuration
             run_config = self._build_run_config(pipeline, project, phase, pass_num, run_num, runs_per_project)
@@ -505,6 +561,8 @@ class PipelineOrchestrator:
             else:
                 logger.warning(f"Pipeline {self.pipeline_id}: Run failed")
 
+            return "completed"
+
         except Exception as e:
             logger.exception(f"Pipeline {self.pipeline_id}: Run execution failed: {e}")
             training_pipeline_storage.add_run_result(
@@ -522,6 +580,7 @@ class PipelineOrchestrator:
                 },
             )
             training_pipeline_storage.update_pipeline(self.pipeline_id, {"last_error": str(e)})
+            return "completed"
 
         finally:
             self.current_run_project_name = None
@@ -560,11 +619,10 @@ class PipelineOrchestrator:
         if phase.get("preset_override"):
             run_config["preset_override"] = phase["preset_override"]
 
-        # Context jitter for multi-pass learning
+        # Context jitter for multi-pass learning (always use uniform mode for full exploration)
         if phase.get("context_jitter", False):
             run_config["context_jitter_enabled"] = True
-            # Jitter mode: "uniform" (sample from bounds), "mild" (±10%), or "gaussian" (±15%)
-            run_config["context_jitter_mode"] = phase.get("context_jitter_mode", "uniform")
+            run_config["context_jitter_mode"] = "uniform"  # Fixed: uniform sampling from feature bounds
 
         # Session execution mode
         run_config["session_execution_mode"] = phase.get("session_execution_mode", "train")
@@ -594,15 +652,32 @@ class PipelineOrchestrator:
 
         phase_num = run_config.get("phase_number", 1)
 
-        # Determine stage based on phase and whether COLMAP exists
-        colmap_sparse = project_dir / "outputs" / "sparse" / "0"
+        # Determine stage based on phase and whether COLMAP is complete and successful
+        colmap_sparse_dir = project_dir / "outputs" / "sparse" / "0"
+        colmap_complete = False
 
-        if phase_num == 1 and not colmap_sparse.exists():
-            # Phase 1: Run full pipeline (COLMAP + training)
+        if colmap_sparse_dir.exists():
+            # Check if COLMAP completed successfully by looking for required files
+            cameras_file = colmap_sparse_dir / "cameras.bin"
+            images_file = colmap_sparse_dir / "images.bin"
+            points_file = colmap_sparse_dir / "points3D.bin"
+
+            if cameras_file.exists() and images_file.exists() and points_file.exists():
+                # All required COLMAP files exist, consider it complete
+                colmap_complete = True
+                logger.info(f"✓ COLMAP outputs found and complete for {project_dir.name}")
+            else:
+                logger.warning(f"⚠ COLMAP directory exists but incomplete for {project_dir.name} - will re-run COLMAP")
+
+        if phase_num == 1 and not colmap_complete:
+            # Phase 1 and COLMAP not complete: Run full pipeline (COLMAP + training)
             stage = "full"
+            logger.info(f"Phase 1: Running full pipeline (COLMAP + training) for {project_dir.name}")
         else:
-            # Phase 2+: COLMAP already exists, only run training
+            # Phase 2+ OR COLMAP already complete: Only run training
             stage = "train_only"
+            if phase_num == 1:
+                logger.info(f"Phase 1: Skipping COLMAP (already complete), running training only for {project_dir.name}")
 
         # Build params for the worker
         params = {
@@ -622,7 +697,7 @@ class PipelineOrchestrator:
             "baseline_session_id": run_config.get("baseline_session_id"),
             "update_model": run_config.get("update_model", True),
             "context_jitter_enabled": run_config.get("context_jitter_enabled", False),
-            "context_jitter_mode": run_config.get("context_jitter_mode", "uniform"),
+            "context_jitter_mode": "uniform",  # Always use uniform mode for consistent behavior
             "preset_override": run_config.get("preset_override"),
             "pipeline_id": run_config.get("pipeline_id"),
             "phase": phase_num,

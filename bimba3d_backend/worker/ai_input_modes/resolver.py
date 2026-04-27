@@ -15,6 +15,13 @@ from .continuous_learner import select_continuous
 from .contextual_continuous_learner import select_contextual_continuous
 from .learner import select_preset
 
+# Import jitter functions for multi-pass learning
+try:
+    from bimba3d_backend.app.services.context_jitter import apply_context_jitter
+except ImportError:
+    # Fallback if import path changes
+    apply_context_jitter = None
+
 VALID_AI_INPUT_MODES = {
     "exif_only",
     "exif_plus_flight_plan",
@@ -232,10 +239,26 @@ def apply_initial_preset(
         )
 
     if selector_strategy == "contextual_continuous":
+        # Apply context jitter if enabled (for multi-pass pipeline learning)
+        features_for_selection = result_features
+        if params.get("context_jitter_enabled", False) and apply_context_jitter is not None:
+            jitter_mode = str(params.get("context_jitter_mode", "uniform")).strip().lower()
+            # Support both "uniform" mode and simplified boolean mode
+            if jitter_mode in ["uniform", "mild", "gaussian", "true", "1"]:
+                actual_mode = jitter_mode if jitter_mode in ["uniform", "mild", "gaussian"] else "uniform"
+                features_for_selection = apply_context_jitter(result_features, jitter_mode=actual_mode)
+                logger.info(
+                    "CONTEXT_JITTER_APPLIED mode=%s jitter_mode=%s original_features=%s jittered_features=%s",
+                    mode,
+                    actual_mode,
+                    json.dumps({k: v for k, v in result_features.items() if not k.endswith("_missing")}, sort_keys=True),
+                    json.dumps({k: v for k, v in features_for_selection.items() if not k.endswith("_missing")}, sort_keys=True),
+                )
+
         selection = select_contextual_continuous(
             project_dir=project_dir,
             mode=mode,
-            x_features=result_features,
+            x_features=features_for_selection,
             params=params,
             exploration_mode="thompson",
         )

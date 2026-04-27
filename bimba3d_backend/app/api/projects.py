@@ -1164,8 +1164,12 @@ def _resolve_jitter_settings(params: dict) -> tuple[str, float, float, float]:
     mode = _normalize_jitter_mode(params.get("run_jitter_mode"))
     factor = _parse_jitter_value(params.get("run_jitter_factor"), 1.0)
 
-    default_min = min(1.0, factor)
-    default_max = max(1.0, factor)
+    if mode == "random":
+        default_min = 0.5
+        default_max = 1.5
+    else:
+        default_min = min(1.0, factor)
+        default_max = max(1.0, factor)
     jitter_min = _parse_jitter_value(params.get("run_jitter_min"), default_min)
     jitter_max = _parse_jitter_value(params.get("run_jitter_max"), default_max)
     if jitter_min > jitter_max:

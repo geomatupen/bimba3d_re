@@ -51,6 +51,32 @@ def mark_interrupted_projects():
     """
     note = "Backend restarted — processing interrupted. Please resume when ready."
     from bimba3d_backend.app.services.colmap import stop_project_worker_containers
+    from bimba3d_backend.app.services import training_pipeline_storage
+
+    # Recover training pipelines that were marked running before backend restart.
+    # Their orchestrator threads are gone after process restart, so they must be paused.
+    try:
+        for pipeline in training_pipeline_storage.list_pipelines(limit=1000):
+            if str(pipeline.get("status") or "").lower() != "running":
+                continue
+
+            pipeline_id = str(pipeline.get("id") or "")
+            if not pipeline_id:
+                continue
+
+            training_pipeline_storage.update_pipeline(
+                pipeline_id,
+                {
+                    "status": "paused",
+                    "cooldown_active": False,
+                    "next_run_scheduled_at": None,
+                    "last_error": note,
+                },
+            )
+            logging.info("Paused interrupted pipeline after restart: %s", pipeline_id)
+    except Exception:
+        logging.exception("Failed to recover interrupted training pipelines")
+
     for proj_dir in DATA_DIR.iterdir():
         try:
             if not proj_dir.is_dir():

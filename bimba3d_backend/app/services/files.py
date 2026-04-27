@@ -243,26 +243,40 @@ def get_output_files(project_id: str, run_id: str | None = None) -> dict:
         return files
 
     # Check for COLMAP sparse reconstructions under outputs/sparse/*
-    sparse_root = output_dir / "sparse"
-    if sparse_root.exists() and sparse_root.is_dir():
-        reconstructions = []
-        for recon in sorted([p for p in sparse_root.iterdir() if p.is_dir()]):
-            recon_info = {"name": recon.name, "path": str(recon), "files": []}
-            # Look for common COLMAP outputs
-            points = recon / "points3D.bin"
-            cams = recon / "cameras.bin"
-            imgs = recon / "images.bin"
-            proj = recon / "project.ini"
-            if points.exists():
-                recon_info["complete"] = True
-            else:
-                recon_info["complete"] = False
-            for f in (points, cams, imgs, proj):
-                if f.exists():
-                    recon_info["files"].append({"name": f.name, "size": f.stat().st_size, "path": str(f)})
-            reconstructions.append(recon_info)
-        if reconstructions:
-            files["sparse"] = reconstructions
+    # For pipeline projects, sparse is at project level while engines are in runs
+    # So check both the current output_dir and the project-level outputs/sparse
+    sparse_roots_to_check = [output_dir / "sparse"]
+
+    # If output_dir is in a run directory, also check project-level sparse
+    if run_id or "/runs/" in str(output_dir) or "\\runs\\" in str(output_dir):
+        project_level_sparse = project_dir / "outputs" / "sparse"
+        if project_level_sparse != sparse_roots_to_check[0]:
+            sparse_roots_to_check.insert(0, project_level_sparse)
+
+    reconstructions = []
+    for sparse_root in sparse_roots_to_check:
+        if sparse_root.exists() and sparse_root.is_dir():
+            for recon in sorted([p for p in sparse_root.iterdir() if p.is_dir()]):
+                recon_info = {"name": recon.name, "path": str(recon), "files": []}
+                # Look for common COLMAP outputs
+                points = recon / "points3D.bin"
+                cams = recon / "cameras.bin"
+                imgs = recon / "images.bin"
+                proj = recon / "project.ini"
+                if points.exists():
+                    recon_info["complete"] = True
+                else:
+                    recon_info["complete"] = False
+                for f in (points, cams, imgs, proj):
+                    if f.exists():
+                        recon_info["files"].append({"name": f.name, "size": f.stat().st_size, "path": str(f)})
+                reconstructions.append(recon_info)
+            # Only check first location with sparse data
+            if reconstructions:
+                break
+
+    if reconstructions:
+        files["sparse"] = reconstructions
 
     engines_root = output_dir / ENGINE_SUBDIR
     if engines_root.exists() and engines_root.is_dir():

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import axios from "axios";
 import ConfirmModal from "../components/ConfirmModal";
@@ -32,8 +32,7 @@ interface PhaseConfig {
   strategy_override?: string;
   preset_override?: string;
   update_model: boolean;
-  context_jitter: boolean;
-  context_jitter_mode: string;  // "uniform", "mild", "gaussian"
+  context_jitter: boolean;  // Enable feature jittering for diverse exploration
   shuffle_order: boolean;
   session_execution_mode: string;
 }
@@ -41,6 +40,10 @@ interface PhaseConfig {
 
 export default function TrainingPipelinePage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const editPipelineId = searchParams.get("edit");
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [loadingPipeline, setLoadingPipeline] = useState(false);
 
   // Step 1: Dataset Selection
   const [baseDirectory, setBaseDirectory] = useState("E:\\Thesis\\Training Data");
@@ -76,7 +79,6 @@ export default function TrainingPipelinePage() {
       preset_override: "balanced",
       update_model: false,
       context_jitter: false,
-      context_jitter_mode: "uniform",
       shuffle_order: false,
       session_execution_mode: "test",
     },
@@ -87,7 +89,6 @@ export default function TrainingPipelinePage() {
       passes: 1,
       update_model: true,
       context_jitter: false,
-      context_jitter_mode: "uniform",
       shuffle_order: true,
       session_execution_mode: "train",
     },
@@ -98,7 +99,6 @@ export default function TrainingPipelinePage() {
       passes: 5,
       update_model: true,
       context_jitter: true,
-      context_jitter_mode: "uniform",  // Sample uniformly from feature bounds
       shuffle_order: true,
       session_execution_mode: "train",
     },
@@ -122,6 +122,75 @@ export default function TrainingPipelinePage() {
     setToast({ message, type });
     window.setTimeout(() => setToast(null), 5000);
   };
+
+  // Load pipeline for editing
+  useEffect(() => {
+    if (editPipelineId) {
+      setIsEditMode(true);
+      setLoadingPipeline(true);
+      axios.get(`${API_BASE}/training-pipeline/${editPipelineId}`)
+        .then((response) => {
+          const pipeline = response.data;
+          const config = pipeline.config;
+
+          // Load configuration
+          setPipelineName(pipeline.name);
+          setBaseDirectory(config.base_directory || "");
+          setPipelineDirectory(config.pipeline_directory || "");
+
+          // Shared config
+          const shared = config.shared_config || {};
+          setAiInputMode(shared.ai_input_mode || "exif_plus_flight_plan");
+          setAiSelectorStrategy(shared.ai_selector_strategy || "contextual_continuous");
+          setMaxSteps(shared.max_steps || 5000);
+          setEvalInterval(shared.eval_interval || 1000);
+          setLogInterval(shared.log_interval || 100);
+          setDensifyUntil(shared.densify_until_iter || 4000);
+          setImagesMaxSize(shared.images_max_size || 1600);
+          setSaveEvalImages(shared.save_eval_images !== false);
+          setReplaceEvalImages(shared.replace_eval_images !== false);
+          setSaveCheckpoints(shared.save_checkpoints !== false);
+          setReplaceCheckpoints(shared.replace_checkpoints !== false);
+          setSaveFinalSplat(shared.save_final_splat !== false);
+
+          // Phases
+          if (config.phases && config.phases.length > 0) {
+            setPhases(config.phases);
+          }
+
+          // Thermal
+          const thermal = config.thermal_management || {};
+          setThermalEnabled(thermal.enabled !== false);
+          setThermalStrategy(thermal.strategy || "fixed_interval");
+          setCooldownMinutes(thermal.cooldown_minutes || 10);
+
+          // Projects (datasets)
+          if (config.projects && config.projects.length > 0) {
+            const loadedDatasets = config.projects.map((p: any) => ({
+              name: p.name,
+              path: p.dataset_path,
+              image_count: p.image_count || 0,
+              size_mb: 0,
+              has_images: true,
+              selected: true,
+              colmap_source_project_id: p.colmap_source_project_id,
+            }));
+            setDatasets(loadedDatasets);
+          }
+
+          showToast("Pipeline loaded for editing. Changes will require a restart to take effect.", "success");
+          setCurrentStep(5); // Go to review step
+        })
+        .catch((error) => {
+          console.error("Failed to load pipeline:", error);
+          showToast(error.response?.data?.detail || "Failed to load pipeline", "error");
+          navigate("/");
+        })
+        .finally(() => {
+          setLoadingPipeline(false);
+        });
+    }
+  }, [editPipelineId]);
 
   // Load existing projects with COLMAP
   const loadExistingProjects = async () => {
@@ -256,15 +325,20 @@ export default function TrainingPipelinePage() {
         },
       };
 
-      // Create pipeline
-      await axios.post(`${API_BASE}/training-pipeline/create`, config);
-
-      showToast(`Pipeline "${pipelineName}" created successfully!`, "success");
-
-      // Navigate after a short delay to allow user to see the toast
-      setTimeout(() => {
-        navigate("/");
-      }, 1500);
+      // Create or update pipeline
+      if (isEditMode && editPipelineId) {
+        await axios.put(`${API_BASE}/training-pipeline/${editPipelineId}/config`, config);
+        showToast(`Pipeline "${pipelineName}" updated successfully! Restart to apply changes.`, "success");
+        setTimeout(() => {
+          navigate(`/pipelines/${editPipelineId}`);
+        }, 1500);
+      } else {
+        await axios.post(`${API_BASE}/training-pipeline/create`, config);
+        showToast(`Pipeline "${pipelineName}" created successfully!`, "success");
+        setTimeout(() => {
+          navigate("/");
+        }, 1500);
+      }
 
     } catch (error: any) {
       console.error("Failed to create pipeline:", error);
@@ -273,6 +347,17 @@ export default function TrainingPipelinePage() {
       setCreating(false);
     }
   };
+
+  if (loadingPipeline) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading pipeline configuration...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-50">
@@ -290,19 +375,46 @@ export default function TrainingPipelinePage() {
               </button>
               <div>
                 <div className="inline-flex items-center gap-2 px-2 py-0.5 rounded-full bg-white/10 backdrop-blur-sm border border-white/20 mb-1">
-                  <span className="text-xs font-medium text-white uppercase tracking-wider">New Training Pipeline</span>
+                  <span className="text-xs font-medium text-white uppercase tracking-wider">
+                    {isEditMode ? "Edit Training Pipeline" : "New Training Pipeline"}
+                  </span>
                 </div>
                 <h1 className="text-2xl font-bold text-white mb-1">
-                  Create Training Pipeline
+                  {isEditMode ? "Edit Pipeline Configuration" : "Create Training Pipeline"}
                 </h1>
                 <p className="text-xs text-blue-100">
-                  Configure automated multi-phase training across projects
+                  {isEditMode
+                    ? "Update pipeline settings (requires restart to take effect)"
+                    : "Configure automated multi-phase training across projects"}
                 </p>
               </div>
             </div>
           </div>
         </div>
       </header>
+
+      {/* Edit Mode Warning */}
+      {isEditMode && (
+        <div className="bg-yellow-50 border-b-2 border-yellow-200">
+          <div className="max-w-7xl mx-auto px-6 lg:px-8 py-4">
+            <div className="flex items-start gap-3">
+              <div className="flex-shrink-0">
+                <svg className="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-semibold text-yellow-800 mb-1">
+                  Configuration Changes Require Pipeline Restart
+                </h3>
+                <p className="text-xs text-yellow-700">
+                  Any changes you make will only take effect after restarting the pipeline. Restarting will delete all training runs except the baseline, keeping only images, COLMAP data, and baseline splats.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Progress Indicator */}
       <div className="bg-white border-b border-gray-200 shadow-sm">
@@ -694,7 +806,7 @@ export default function TrainingPipelinePage() {
                 </div>
               </div>
 
-              {/* Context Jitter Settings */}
+              {/* Context Jitter and Shuffle Settings */}
               <div style={{ marginTop: "10px", padding: "10px", background: "#fff", border: "1px solid #ddd", borderRadius: "4px" }}>
                 <div style={{ marginBottom: "8px" }}>
                   <label style={{ display: "flex", alignItems: "center", fontSize: "12px" }}>
@@ -710,32 +822,15 @@ export default function TrainingPipelinePage() {
                     />
                     <strong>Enable Context Jitter</strong>
                     <span style={{ marginLeft: "8px", color: "#666", fontWeight: "normal" }}>
-                      (Vary context features for exploration)
+                      (Randomize context features for diverse exploration)
                     </span>
                   </label>
-                </div>
-
-                {phase.context_jitter && (
-                  <div style={{ marginTop: "8px" }}>
-                    <label style={{ display: "block", fontSize: "12px", marginBottom: "3px" }}>Jitter Mode:</label>
-                    <select
-                      value={phase.context_jitter_mode}
-                      onChange={(e) => {
-                        const updated = [...phases];
-                        updated[idx].context_jitter_mode = e.target.value;
-                        setPhases(updated);
-                      }}
-                      style={{ width: "100%", padding: "6px", fontSize: "12px" }}
-                    >
-                      <option value="uniform">Uniform (Sample from feature bounds)</option>
-                      <option value="mild">Mild (±10% variation)</option>
-                      <option value="gaussian">Gaussian (±15% with normal distribution)</option>
-                    </select>
-                    <p style={{ fontSize: "10px", color: "#888", marginTop: "3px" }}>
-                      Uniform: Wide exploration | Mild: Gentle variation | Gaussian: Moderate spread
+                  {phase.context_jitter && (
+                    <p style={{ fontSize: "10px", color: "#888", marginTop: "3px", marginLeft: "24px" }}>
+                      Features will be randomly sampled from valid ranges to explore different scenarios
                     </p>
-                  </div>
-                )}
+                  )}
+                </div>
 
                 <div style={{ marginTop: "8px" }}>
                   <label style={{ display: "flex", alignItems: "center", fontSize: "12px" }}>
@@ -869,7 +964,9 @@ export default function TrainingPipelinePage() {
               disabled={creating}
               style={{ padding: "8px 24px", background: "#4CAF50", color: "white", fontWeight: "bold", border: "none", borderRadius: "4px" }}
             >
-              {creating ? "Creating..." : "Create Pipeline"}
+              {creating
+                ? (isEditMode ? "Updating..." : "Creating...")
+                : (isEditMode ? "Save Changes" : "Create Pipeline")}
             </button>
           </div>
         </div>
@@ -877,21 +974,38 @@ export default function TrainingPipelinePage() {
 
       <ConfirmModal
         open={showCreateConfirm}
-        title="Create Pipeline"
+        title={isEditMode ? "Update Pipeline Configuration" : "Create Pipeline"}
         message={
           <>
-            You are about to create a training pipeline with:
-            <ul className="list-disc ml-5 mt-2 mb-2">
-              <li><strong>{datasets.filter(d => d.selected).length}</strong> projects</li>
-              <li><strong>{calculateTotalRuns()}</strong> total training runs</li>
-              <li><strong>~{calculateEstimatedTime().hours}h {calculateEstimatedTime().minutes}m</strong> estimated duration</li>
-            </ul>
-            The pipeline will be created with status "pending". You can start it manually from the pipeline list.
-            <br /><br />
-            Do you want to continue?
+            {isEditMode ? (
+              <>
+                You are about to update the pipeline configuration with:
+                <ul className="list-disc ml-5 mt-2 mb-2">
+                  <li><strong>{datasets.filter(d => d.selected).length}</strong> projects</li>
+                  <li><strong>{calculateTotalRuns()}</strong> total training runs</li>
+                  <li><strong>~{calculateEstimatedTime().hours}h {calculateEstimatedTime().minutes}m</strong> estimated duration</li>
+                </ul>
+                <strong className="text-yellow-700">⚠️ Warning:</strong> Changes will only take effect after restarting the pipeline.
+                Restart will delete all non-baseline runs and reset the pipeline state.
+                <br /><br />
+                Do you want to save these changes?
+              </>
+            ) : (
+              <>
+                You are about to create a training pipeline with:
+                <ul className="list-disc ml-5 mt-2 mb-2">
+                  <li><strong>{datasets.filter(d => d.selected).length}</strong> projects</li>
+                  <li><strong>{calculateTotalRuns()}</strong> total training runs</li>
+                  <li><strong>~{calculateEstimatedTime().hours}h {calculateEstimatedTime().minutes}m</strong> estimated duration</li>
+                </ul>
+                The pipeline will be created with status "pending". You can start it manually from the pipeline list.
+                <br /><br />
+                Do you want to continue?
+              </>
+            )}
           </>
         }
-        confirmLabel="Create Pipeline"
+        confirmLabel={isEditMode ? "Save Changes" : "Create Pipeline"}
         cancelLabel="Cancel"
         tone="default"
         busy={creating}

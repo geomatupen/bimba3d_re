@@ -57,8 +57,7 @@ class PhaseConfig(BaseModel):
     strategy_override: Optional[str] = None  # Override ai_selector_strategy for this phase
     preset_override: Optional[str] = None  # For baseline phase
     update_model: bool = True
-    context_jitter: bool = False
-    context_jitter_mode: str = "uniform"  # "uniform" (sample bounds), "mild" (±10%), "gaussian" (±15%)
+    context_jitter: bool = False  # Enable feature jittering for diverse exploration
     shuffle_order: bool = True
     session_execution_mode: str = "train"
 
@@ -619,7 +618,27 @@ async def get_pipeline_models(pipeline_id: str):
             raise HTTPException(status_code=404, detail="Pipeline not found")
 
         config = pipeline.get("config", {})
-        pipeline_folder = Path(config.get("pipeline_folder"))
+
+        # Get or compute pipeline_folder (migration for old pipelines)
+        pipeline_folder_str = config.get("pipeline_folder")
+        if not pipeline_folder_str:
+            # Compute from pipeline_directory and name (same logic as create)
+            pipeline_directory = config.get("pipeline_directory")
+            if pipeline_directory:
+                pipeline_root = Path(pipeline_directory)
+            else:
+                from bimba3d_backend.app.config import DATA_DIR
+                pipeline_root = DATA_DIR
+
+            pipeline_name = config.get("name", pipeline["name"])
+            sanitized_name = pipeline_name.replace(" ", "_")
+            pipeline_folder = pipeline_root / sanitized_name
+
+            # Update config with computed path
+            config["pipeline_folder"] = str(pipeline_folder)
+            training_pipeline_storage.update_pipeline(pipeline_id, {"config": config})
+        else:
+            pipeline_folder = Path(pipeline_folder_str)
 
         if not pipeline_folder or not pipeline_folder.exists():
             raise HTTPException(status_code=404, detail="Pipeline folder not found")
@@ -697,6 +716,63 @@ async def get_pipeline_models(pipeline_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.put("/{pipeline_id}/config")
+async def update_pipeline_config(pipeline_id: str, request: CreatePipelineRequest):
+    """
+    Update pipeline configuration.
+
+    WARNING: Configuration changes will only take effect after restarting the pipeline.
+    This will delete all training runs except baseline and reset the pipeline state.
+    """
+    try:
+        pipeline = training_pipeline_storage.get_pipeline(pipeline_id)
+        if not pipeline:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
+        # Don't allow config updates while pipeline is running
+        if pipeline["status"] == "running":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot update configuration while pipeline is running. Please stop the pipeline first."
+            )
+
+        # Update the configuration
+        new_config = request.model_dump()
+        pipeline["config"] = new_config
+        pipeline["name"] = request.name
+
+        # Recalculate total runs
+        total_runs = 0
+        for phase in new_config.get("phases", []):
+            runs_per_project = phase.get("runs_per_project", 1)
+            passes = phase.get("passes", 1)
+            project_count = len(new_config.get("projects", []))
+            total_runs += runs_per_project * passes * project_count
+        pipeline["total_runs"] = total_runs
+
+        # Save updated pipeline
+        training_pipeline_storage.update_pipeline(pipeline_id, {
+            "config": new_config,
+            "name": request.name,
+            "total_runs": total_runs,
+        })
+
+        logger.info(f"Updated pipeline configuration for {pipeline_id}")
+
+        return {
+            "success": True,
+            "message": "Configuration updated. Changes will take effect after restarting the pipeline.",
+            "pipeline_id": pipeline_id,
+            "total_runs": total_runs,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update pipeline config for {pipeline_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/{pipeline_id}/restart")
 async def restart_pipeline(pipeline_id: str):
     """
@@ -745,7 +821,27 @@ async def restart_pipeline(pipeline_id: str):
             raise HTTPException(status_code=404, detail="Pipeline not found")
 
         config = pipeline.get("config", {})
-        pipeline_folder = Path(config.get("pipeline_folder", ""))
+
+        # Get or compute pipeline_folder (migration for old pipelines)
+        pipeline_folder_str = config.get("pipeline_folder")
+        if not pipeline_folder_str:
+            # Compute from pipeline_directory and name (same logic as create)
+            pipeline_directory = config.get("pipeline_directory")
+            if pipeline_directory:
+                pipeline_root = Path(pipeline_directory)
+            else:
+                pipeline_root = DATA_DIR
+
+            pipeline_name = config.get("name", pipeline["name"])
+            sanitized_name = pipeline_name.replace(" ", "_")
+            pipeline_folder = pipeline_root / sanitized_name
+
+            # Update config with computed path
+            config["pipeline_folder"] = str(pipeline_folder)
+            training_pipeline_storage.update_pipeline(pipeline_id, {"config": config})
+        else:
+            pipeline_folder = Path(pipeline_folder_str)
+
         if not pipeline_folder.exists():
             raise HTTPException(status_code=404, detail="Pipeline folder not found on disk")
 
@@ -759,38 +855,29 @@ async def restart_pipeline(pipeline_id: str):
         deleted_summary: list[dict] = []
 
         for project_cfg in projects:
-            project_id = str(project_cfg.get("project_id") or "").strip()
-            if not project_id:
+            project_name = project_cfg.get("name", "")
+            if not project_name:
+                logger.warning("Restart: project has no name, skipping")
                 continue
 
-            # Locate project directory — may be inside pipeline_folder or DATA_DIR
-            project_dir: Path | None = None
-            candidate_in_pipeline = pipeline_folder / project_id
-            if candidate_in_pipeline.exists() and candidate_in_pipeline.is_dir():
-                project_dir = candidate_in_pipeline
-            else:
-                candidate_in_data = DATA_DIR / project_id
-                if candidate_in_data.exists() and candidate_in_data.is_dir():
-                    project_dir = candidate_in_data
-                else:
-                    # Try scanning pipeline folder by config.json id
-                    for sub in pipeline_folder.iterdir():
-                        if not sub.is_dir():
-                            continue
-                        cfg_file = sub / "config.json"
-                        if cfg_file.exists():
-                            try:
-                                with open(cfg_file, "r", encoding="utf-8") as fh:
-                                    sub_cfg = json.load(fh)
-                                if str(sub_cfg.get("id") or "").strip() == project_id:
-                                    project_dir = sub
-                                    break
-                            except Exception:
-                                continue
+            # Locate project directory by name (sanitized)
+            sanitized_project_name = project_name.replace(" ", "_")
+            project_dir = pipeline_folder / sanitized_project_name
 
-            if project_dir is None or not project_dir.exists():
-                logger.warning("Restart: project dir not found for %s, skipping", project_id)
+            if not project_dir.exists() or not project_dir.is_dir():
+                logger.warning("Restart: project dir not found for '%s' at %s, skipping", project_name, project_dir)
                 continue
+
+            # Read project_id from config.json
+            project_id: Optional[str] = None
+            config_file = project_dir / "config.json"
+            if config_file.exists():
+                try:
+                    with open(config_file, "r", encoding="utf-8") as fh:
+                        proj_config = json.load(fh)
+                    project_id = proj_config.get("id")
+                except Exception as e:
+                    logger.warning("Failed to read project config for %s: %s", project_name, e)
 
             # Determine baseline run id (first run alphabetically / by name)
             runs_root = project_dir / "runs"
@@ -849,6 +936,7 @@ async def restart_pipeline(pipeline_id: str):
                     logger.warning("Failed to reset status for project %s: %s", project_id, exc)
 
             deleted_summary.append({
+                "project_name": project_name,
                 "project_id": project_id,
                 "baseline_kept": baseline_run_id,
                 "deleted_runs": deleted_runs,
@@ -858,14 +946,92 @@ async def restart_pipeline(pipeline_id: str):
         shared_models_dir = pipeline_folder / "shared_models"
         _rmtree(shared_models_dir)
 
-        # Reset pipeline state to pending
+        # Update project configs to preserve baseline info while clearing other runs
+        updated_projects = []
+        for project_cfg in projects:
+            project_name = project_cfg.get("name", "")
+            baseline_run_id = None
+            found_project_id = None
+
+            # Find baseline_run_id and project_id from the kept baseline run
+            for proj_summary in deleted_summary:
+                if proj_summary.get("project_name") == project_name:
+                    baseline_run_id = proj_summary.get("baseline_kept")
+                    found_project_id = proj_summary.get("project_id")
+                    break
+
+            # Preserve project_id and baseline_run_id
+            updated_project = project_cfg.copy()
+            if found_project_id:
+                updated_project["project_id"] = found_project_id
+            if baseline_run_id:
+                updated_project["baseline_run_id"] = baseline_run_id
+            updated_projects.append(updated_project)
+
+        # Preserve config but with updated project info
+        config["projects"] = updated_projects
+
+        # Keep only baseline runs in runs history
+        baseline_runs = []
+        for run in pipeline.get("runs", []):
+            if run.get("phase") == 1:  # Baseline phase
+                baseline_runs.append(run)
+
+        # If no baseline runs in history, scan actual directories to rebuild them
+        if not baseline_runs:
+            logger.info("No baseline runs in history, scanning directories to rebuild...")
+            for proj_summary in deleted_summary:
+                baseline_run_id = proj_summary.get("baseline_kept")
+                project_name = proj_summary.get("project_name")
+
+                if not baseline_run_id or not project_name:
+                    continue
+
+                # Find project directory
+                sanitized_project_name = project_name.replace(" ", "_")
+                project_dir = pipeline_folder / sanitized_project_name
+
+                if not project_dir.exists():
+                    continue
+
+                # Read analytics to verify baseline completion
+                baseline_run_dir = project_dir / "runs" / baseline_run_id
+                analytics_file = baseline_run_dir / "analytics" / "run_analytics_v1.json"
+
+                if analytics_file.exists():
+                    try:
+                        with open(analytics_file, "r", encoding="utf-8") as f:
+                            analytics = json.load(f)
+
+                        summary = analytics.get("summary", {})
+                        status = str(summary.get("status", "")).lower()
+
+                        if status in {"completed", "success", "done"}:
+                            # Reconstruct baseline run record
+                            baseline_runs.append({
+                                "project_name": project_name,
+                                "phase": 1,
+                                "pass": 1,
+                                "run": 1,
+                                "run_id": baseline_run_id,
+                                "run_name": "Baseline Collection - Phase 1 Run 1",
+                                "status": "success",
+                                "reward": None,
+                                "completed_at": summary.get("end_time") or datetime.utcnow().isoformat() + "Z",
+                                "timestamp": summary.get("end_time") or datetime.utcnow().isoformat() + "Z",
+                            })
+                            logger.info(f"Reconstructed baseline run for {project_name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to reconstruct baseline run for {project_name}: {e}")
+
+        # Reset pipeline state to pending but preserve baseline runs and project info
         training_pipeline_storage.update_pipeline(pipeline_id, {
             "status": "pending",
             "current_phase": 0,
             "current_pass": 0,
             "current_run": 0,
             "current_project_index": 0,
-            "completed_runs": 0,
+            "completed_runs": len(baseline_runs),  # Count baseline runs
             "failed_runs": 0,
             "mean_reward": None,
             "best_reward": None,
@@ -873,14 +1039,32 @@ async def restart_pipeline(pipeline_id: str):
             "last_error": None,
             "started_at": None,
             "completed_at": None,
+            "runs": baseline_runs,  # Keep baseline runs
+            "config": config,  # Update config with preserved project info
         })
 
         logger.info("Pipeline %s restarted: %d projects cleaned", pipeline_id, len(deleted_summary))
+
+        # Automatically start the pipeline after restart
+        # Set current_phase to 1 so the orchestrator starts from the beginning,
+        # but it will skip already-completed baseline runs and jump to phase 2+
+        training_pipeline_storage.update_pipeline(pipeline_id, {
+            "status": "running",
+            "started_at": datetime.utcnow().isoformat() + "Z",
+            "current_phase": 1,  # Start from beginning, but orchestrator will skip completed runs
+            "current_pass": 1,
+            "current_project_index": 0,
+        })
+
+        # Start orchestrator in background thread
+        training_pipeline_orchestrator.start_pipeline_orchestrator(pipeline_id)
+
         return {
-            "status": "restarted",
+            "status": "restarted_and_running",
             "pipeline_id": pipeline_id,
             "projects_cleaned": len(deleted_summary),
             "details": deleted_summary,
+            "message": "Pipeline restarted and automatically started. Training will resume from phase 2.",
         }
 
     except HTTPException:
@@ -888,6 +1072,105 @@ async def restart_pipeline(pipeline_id: str):
     except Exception as exc:
         logger.error("Failed to restart pipeline %s: %s", pipeline_id, exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to restart pipeline: {exc}")
+
+
+@router.post("/{pipeline_id}/recover-stats")
+async def recover_pipeline_stats(pipeline_id: str):
+    """
+    Recover pipeline statistics by scanning actual baseline run directories.
+
+    This rebuilds the runs array and completed_runs count from existing baseline runs.
+    Useful after an incomplete restart that cleared metadata.
+    """
+    try:
+        pipeline = training_pipeline_storage.get_pipeline(pipeline_id)
+        if not pipeline:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
+        config = pipeline.get("config", {})
+        pipeline_folder_str = config.get("pipeline_folder")
+
+        if not pipeline_folder_str:
+            raise HTTPException(status_code=400, detail="Pipeline folder not configured")
+
+        pipeline_folder = Path(pipeline_folder_str)
+        if not pipeline_folder.exists():
+            raise HTTPException(status_code=404, detail="Pipeline folder not found")
+
+        projects = config.get("projects", [])
+        recovered_runs = []
+
+        for project_cfg in projects:
+            project_name = project_cfg.get("name", "")
+            baseline_run_id = project_cfg.get("baseline_run_id")
+
+            if not baseline_run_id:
+                continue
+
+            # Find project directory
+            sanitized_project_name = project_name.replace(" ", "_")
+            project_dir = pipeline_folder / sanitized_project_name
+
+            if not project_dir.exists():
+                continue
+
+            # Check if baseline run exists
+            baseline_run_dir = project_dir / "runs" / baseline_run_id
+            if not baseline_run_dir.exists():
+                continue
+
+            # Read analytics to verify completion
+            analytics_file = baseline_run_dir / "analytics" / "run_analytics_v1.json"
+            if not analytics_file.exists():
+                continue
+
+            try:
+                with open(analytics_file, "r", encoding="utf-8") as f:
+                    analytics = json.load(f)
+
+                summary = analytics.get("summary", {})
+                status = str(summary.get("status", "")).lower()
+
+                if status in {"completed", "success", "done"}:
+                    # Reconstruct run record
+                    run_result = {
+                        "project_name": project_name,
+                        "phase": 1,
+                        "pass": 1,
+                        "run": 1,
+                        "run_id": baseline_run_id,
+                        "run_name": "Baseline Collection - Phase 1 Run 1",
+                        "status": "success",
+                        "reward": None,  # Baseline runs don't have rewards
+                        "completed_at": summary.get("end_time") or datetime.utcnow().isoformat() + "Z",
+                        "timestamp": summary.get("end_time") or datetime.utcnow().isoformat() + "Z",
+                    }
+                    recovered_runs.append(run_result)
+            except Exception as e:
+                logger.warning(f"Failed to read analytics for {baseline_run_id}: {e}")
+                continue
+
+        # Update pipeline with recovered stats
+        training_pipeline_storage.update_pipeline(pipeline_id, {
+            "runs": recovered_runs,
+            "completed_runs": len(recovered_runs),
+            "success_rate": 100.0 if recovered_runs else None,
+        })
+
+        logger.info(f"Recovered {len(recovered_runs)} baseline runs for pipeline {pipeline_id}")
+
+        return {
+            "success": True,
+            "recovered_runs": len(recovered_runs),
+            "total_projects": len(projects),
+            "runs": recovered_runs,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to recover pipeline stats for {pipeline_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/{pipeline_id}")

@@ -134,6 +134,72 @@ interface AILearningTableRow {
   learned_input_params_status?: string | null;
 }
 
+const BASELINE_PARAM_DEFAULTS: Record<string, number> = {
+  feature_lr: 2.5e-3,
+  position_lr_init: 1.6e-4,
+  scaling_lr: 5.0e-3,
+  opacity_lr: 5.0e-2,
+  rotation_lr: 1.0e-3,
+  densify_grad_threshold: 2.0e-4,
+  opacity_threshold: 0.005,
+  lambda_dssim: 0.2,
+};
+
+function buildLearningParamRows(
+  params: Record<string, unknown> | null | undefined,
+  isBaselineRow = false,
+): Array<{ key: string; multiplier: number | null; actual: number | null }> {
+  if (!params || typeof params !== "object") {
+    if (!isBaselineRow) return [];
+    return Object.entries(BASELINE_PARAM_DEFAULTS).map(([key, actual]) => ({
+      key,
+      multiplier: 1.0,
+      actual,
+    }));
+  }
+
+  const rows: Array<{ key: string; multiplier: number | null; actual: number | null }> = [];
+
+  for (const [rawKey, rawValue] of Object.entries(params)) {
+    if (typeof rawValue !== "number" || !Number.isFinite(rawValue)) {
+      rows.push({ key: rawKey, multiplier: null, actual: null });
+      continue;
+    }
+
+    if (isBaselineRow) {
+      rows.push({ key: rawKey, multiplier: 1.0, actual: rawValue });
+      continue;
+    }
+
+    if (rawKey.endsWith("_mult")) {
+      const baseKey = rawKey.slice(0, -5);
+      const baseline = BASELINE_PARAM_DEFAULTS[baseKey];
+      rows.push({
+        key: baseKey,
+        multiplier: rawValue,
+        actual: typeof baseline === "number" ? baseline * rawValue : null,
+      });
+      continue;
+    }
+
+    const baseline = BASELINE_PARAM_DEFAULTS[rawKey];
+    rows.push({
+      key: rawKey,
+      multiplier: typeof baseline === "number" && baseline !== 0 ? rawValue / baseline : null,
+      actual: rawValue,
+    });
+  }
+
+  return rows.sort((a, b) => a.key.localeCompare(b.key));
+}
+
+function formatParamNumber(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "-";
+  const fixed = value.toFixed(6);
+  const trimmed = fixed.replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+  return trimmed === "-0" ? "0" : trimmed;
+}
+
 function buildPolylinePoints(points: ChartPoint[], width: number, height: number): ChartGeometry {
   if (points.length === 0) {
     return {
@@ -918,24 +984,6 @@ export default function LogsTab({ projectId }: LogsTabProps) {
     return value.toLocaleString();
   };
 
-  const fmtLearnedParams = (params: Record<string, unknown> | null | undefined) => {
-    if (!params || typeof params !== "object") return "-";
-    const entries = Object.entries(params);
-    if (entries.length === 0) return "-";
-    return entries
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, value]) => {
-        if (typeof value === "number" && Number.isFinite(value)) {
-          return `${key}=${Number(value.toFixed(6)).toString()}`;
-        }
-        if (typeof value === "boolean") {
-          return `${key}=${value ? "true" : "false"}`;
-        }
-        return `${key}=${String(value)}`;
-      })
-      .join("\n");
-  };
-
   const fmtLearnedParamSource = (source: string | null | undefined, status: string | null | undefined) => {
     const normalized = String(source || "").trim().toLowerCase();
     if (normalized === "run_start_log") {
@@ -1185,7 +1233,8 @@ export default function LogsTab({ projectId }: LogsTabProps) {
                       <tr>
                         <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Run</th>
                         <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Preset</th>
-                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Learned Input Params</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Actual Value (baseline x multiplier)</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Multiplier</th>
                         <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Best Loss</th>
                         <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Final Loss (- better)</th>
                         <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Best PSNR</th>
@@ -1209,7 +1258,7 @@ export default function LogsTab({ projectId }: LogsTabProps) {
                     <tbody>
                       {aiLearningRows.length === 0 ? (
                         <tr>
-                          <td className="px-3 py-6 text-slate-500" colSpan={21}>
+                          <td className="px-3 py-6 text-slate-500" colSpan={22}>
                             {aiLearningMessage || "No AI learning rows available for this project yet."}
                           </td>
                         </tr>
@@ -1222,8 +1271,37 @@ export default function LogsTab({ projectId }: LogsTabProps) {
                             </td>
                             <td className="px-2 py-2 text-slate-700">{row.selected_preset || "-"}</td>
                             <td className="px-2 py-2 text-slate-700 font-mono text-[10px] whitespace-pre-wrap break-words max-w-[360px]">
-                              <div>{fmtLearnedParams(row.learned_input_params)}</div>
-                              <div className="mt-1 text-[10px] font-sans text-slate-500">{fmtLearnedParamSource(row.learned_input_params_source, row.learned_input_params_status)}</div>
+                              {(() => {
+                                const paramRows = buildLearningParamRows(row.learned_input_params, Boolean(row.is_baseline_row));
+                                if (paramRows.length === 0) return "-";
+                                return (
+                                  <div className="space-y-0.5">
+                                    {paramRows.map((p) => (
+                                      <div key={`${row.run_id}-actual-${p.key}`} className="text-slate-700">
+                                        {p.key}: {formatParamNumber(p.actual)}
+                                      </div>
+                                    ))}
+                                    <div className="mt-1 text-[10px] font-sans text-slate-500">
+                                      {fmtLearnedParamSource(row.learned_input_params_source, row.learned_input_params_status)}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                            <td className="px-2 py-2 text-slate-700 font-mono text-[10px] whitespace-pre-wrap break-words max-w-[360px]">
+                              {(() => {
+                                const paramRows = buildLearningParamRows(row.learned_input_params, Boolean(row.is_baseline_row));
+                                if (paramRows.length === 0) return "-";
+                                return (
+                                  <div className="space-y-0.5">
+                                    {paramRows.map((p) => (
+                                      <div key={`${row.run_id}-mult-${p.key}`} className="text-slate-700">
+                                        {p.key}: {formatParamNumber(p.multiplier)}
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
                             </td>
                             <td className="px-2 py-2 text-slate-700">{fmt(row.best_loss)} @ {fmtStep(row.best_loss_step)}</td>
                             <td className="px-2 py-2 text-slate-700">{fmt(row.final_loss)} @ {fmtStep(row.final_loss_step)}</td>

@@ -78,6 +78,68 @@ interface AILearningTableRow {
   learned_input_params_status?: string | null;
 }
 
+const BASELINE_PARAM_DEFAULTS: Record<string, number> = {
+  feature_lr: 2.5e-3,
+  position_lr_init: 1.6e-4,
+  scaling_lr: 5.0e-3,
+  opacity_lr: 5.0e-2,
+  rotation_lr: 1.0e-3,
+  densify_grad_threshold: 2.0e-4,
+  opacity_threshold: 0.005,
+  lambda_dssim: 0.2,
+};
+
+function buildLearningParamRows(
+  params: Record<string, unknown> | null | undefined,
+  isBaselineRow = false,
+): Array<{ key: string; multiplier: number | null; actual: number | null }> {
+  if ((!params || typeof params !== "object") && isBaselineRow) {
+    return Object.entries(BASELINE_PARAM_DEFAULTS).map(([key, actual]) => ({
+      key,
+      multiplier: 1.0,
+      actual,
+    }));
+  }
+
+  if (!params || typeof params !== "object") return [];
+
+  const rows: Array<{ key: string; multiplier: number | null; actual: number | null }> = [];
+
+  for (const [rawKey, rawValue] of Object.entries(params)) {
+    if (typeof rawValue !== "number" || !Number.isFinite(rawValue)) {
+      rows.push({ key: rawKey, multiplier: null, actual: null });
+      continue;
+    }
+
+    if (rawKey.endsWith("_mult")) {
+      const baseKey = rawKey.slice(0, -5);
+      const baseline = BASELINE_PARAM_DEFAULTS[baseKey];
+      rows.push({
+        key: baseKey,
+        multiplier: rawValue,
+        actual: typeof baseline === "number" ? baseline * rawValue : null,
+      });
+      continue;
+    }
+
+    const baseline = BASELINE_PARAM_DEFAULTS[rawKey];
+    rows.push({
+      key: rawKey,
+      multiplier: typeof baseline === "number" && baseline !== 0 ? rawValue / baseline : null,
+      actual: rawValue,
+    });
+  }
+
+  return rows;
+}
+
+function formatParamNumber(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "-";
+  const fixed = value.toFixed(6);
+  const trimmed = fixed.replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+  return trimmed === "-0" ? "0" : trimmed;
+}
+
 export default function PipelineDetailsPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -418,6 +480,17 @@ export default function PipelineDetailsPage() {
                 >
                   <Play className="w-3.5 h-3.5" />
                   Resume
+                </button>
+              )}
+              {/* Edit button — available for any non-running status */}
+              {pipeline.status !== "running" && (
+                <button
+                  onClick={() => navigate(`/training-pipeline?edit=${pipeline.id}`)}
+                  disabled={actioningId === pipeline.id}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                  title="Edit pipeline configuration (requires restart to apply)"
+                >
+                  Edit Config
                 </button>
               )}
               {/* Restart button — available for any non-running status */}
@@ -869,7 +942,7 @@ export default function PipelineDetailsPage() {
                         </div>
                         <div className="flex justify-between">
                           <span className="text-gray-600">Context jitter:</span>
-                          <span className="text-gray-900">{phase.context_jitter ? phase.context_jitter_mode || "Yes" : "No"}</span>
+                          <span className="text-gray-900">{phase.context_jitter ? "Yes" : "No"}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-gray-600">Shuffle order:</span>
@@ -1275,7 +1348,8 @@ export default function PipelineDetailsPage() {
                         <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Baseline</th>
                         <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Strategy</th>
                         <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Preset</th>
-                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Learned Input Params</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Actual Value (baseline x multiplier)</th>
+                        <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Multiplier</th>
                         <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Best Loss</th>
                         <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Final Loss (- better)</th>
                         <th className="sticky top-0 z-10 bg-slate-100 px-2 py-2 text-left font-semibold">Best PSNR</th>
@@ -1315,11 +1389,40 @@ export default function PipelineDetailsPage() {
                           </td>
                           <td className="px-2 py-2 text-slate-700">{row.ai_selector_strategy || "-"}</td>
                           <td className="px-2 py-2 text-slate-700">{row.selected_preset || "-"}</td>
-                          <td className="px-2 py-2 text-slate-700 font-mono text-[10px] whitespace-pre-wrap break-words max-w-[360px]">
-                            <div>{row.learned_input_params ? JSON.stringify(row.learned_input_params, null, 1) : "-"}</div>
-                            <div className="mt-1 text-[10px] font-sans text-slate-500">
-                              {row.learned_input_params_source && `(${row.learned_input_params_source})`}
-                            </div>
+                          <td className="px-2 py-2 text-slate-700 font-mono text-[11px]">
+                            {(() => {
+                              const paramRows = buildLearningParamRows(row.learned_input_params, Boolean(row.is_baseline_row));
+                              if (paramRows.length === 0) return "-";
+                              return (
+                                <div className="space-y-0.5">
+                                  {paramRows.map((p) => (
+                                    <div key={`${row.run_id}-actual-${p.key}`} className="text-slate-700">
+                                      {p.key}: {formatParamNumber(p.actual)}
+                                    </div>
+                                  ))}
+                                  {row.learned_input_params_source && (
+                                    <div className="mt-1 text-[10px] font-sans text-slate-500 italic">
+                                      ({row.learned_input_params_source})
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </td>
+                          <td className="px-2 py-2 text-slate-700 font-mono text-[11px]">
+                            {(() => {
+                              const paramRows = buildLearningParamRows(row.learned_input_params, Boolean(row.is_baseline_row));
+                              if (paramRows.length === 0) return "-";
+                              return (
+                                <div className="space-y-0.5">
+                                  {paramRows.map((p) => (
+                                    <div key={`${row.run_id}-mult-${p.key}`} className="text-slate-700">
+                                      {p.key}: {formatParamNumber(p.multiplier)}
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="px-2 py-2 text-slate-700">{row.best_loss?.toFixed(6) || "-"} @ {row.best_loss_step || "-"}</td>
                           <td className="px-2 py-2 text-slate-700">{row.final_loss?.toFixed(6) || "-"} @ {row.final_loss_step || "-"}</td>
